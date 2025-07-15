@@ -17,7 +17,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
+common.initialize_mermaid()
 # AWS Color Scheme
 AWS_COLORS = {
     'primary': '#FF9900',

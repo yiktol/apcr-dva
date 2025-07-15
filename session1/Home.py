@@ -306,5 +306,3 @@ if __name__ == "__main__":
         # If authenticated, show the main app content
         if is_authenticated:
             main()
-        else:
-            st.error("You are not authorized to view this page. Please login with the correct credentials.")

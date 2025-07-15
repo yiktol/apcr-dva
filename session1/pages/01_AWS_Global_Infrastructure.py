@@ -16,6 +16,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+common.initialize_mermaid()
+
 # AWS Color Scheme
 AWS_COLORS = {
     'primary': '#FF9900',
@@ -504,7 +506,7 @@ def availability_zones_tab():
     
     # AZ Architecture
     st.markdown("### 🏗️ Availability Zone Architecture")
-    common.mermaid(create_region_architecture_mermaid(), height=200)
+    common.mermaid(create_region_architecture_mermaid(), height="auto")
     
     # Interactive AZ Explorer
     st.markdown("### 🔍 Interactive AZ Configuration")
@@ -789,7 +791,7 @@ def points_of_presence_tab():
     
     # Global Infrastructure Overview
     st.markdown("### 🌍 Global Infrastructure Overview")
-    common.mermaid(create_global_infrastructure_mermaid(), height=200)
+    common.mermaid(create_global_infrastructure_mermaid(), height=250)
     
     # Interactive Edge Location Finder
     st.markdown("### 🔍 Interactive Edge Location Explorer")
