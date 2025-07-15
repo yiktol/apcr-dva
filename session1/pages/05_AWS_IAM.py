@@ -304,7 +304,7 @@ def aws_iam_tab():
     
     # IAM Overview Architecture
     st.markdown("### 🏗️ IAM Components Overview")
-    common.mermaid(create_iam_overview_mermaid(), height=400)
+    common.mermaid(create_iam_overview_mermaid(), height=200)
     
     # IAM Statistics
     col1, col2, col3, col4 = st.columns(4)
@@ -780,7 +780,7 @@ def iam_roles_tab():
     
     # Role Assumption Process
     st.markdown("### 🔄 Role Assumption Process")
-    common.mermaid(create_role_assumption_mermaid(), height=400)
+    common.mermaid(create_role_assumption_mermaid(), height=200)
     
     # Role Types
     st.markdown("### 🎭 Types of IAM Roles")
@@ -1323,7 +1323,7 @@ def security_token_service_tab():
     
     # STS Flow Diagram
     st.markdown("### 🔄 STS Token Generation Flow")
-    common.mermaid(create_sts_flow_mermaid(), height=600)
+    common.mermaid(create_sts_flow_mermaid(), height=1000)
     
     # STS Operations
     st.markdown("### ⚙️ Key STS Operations")
@@ -2036,8 +2036,8 @@ def policy_interpretation_tab():
             }
         
         st.markdown('<div class="highlight-box">', unsafe_allow_html=True)
-        st.markdown(f"""
-        ### ✅ IAM Policy Generated!
+        
+        md = f'''### ✅ IAM Policy Generated!
         
         **Policy Summary:**
         - **Effect**: {effect}
@@ -2045,12 +2045,13 @@ def policy_interpretation_tab():
         - **Action**: {action if action_type == "Specific Action" else f"{service}:*"}
         - **Resource**: {resource}
         - **Conditions**: {'Yes' if add_condition else 'None'}
-        
+
         **Generated Policy:**
         ```json
         {json.dumps(policy, indent=2)}
         ```
-        """)
+        '''
+        st.markdown(md)
         st.markdown('</div>', unsafe_allow_html=True)
     
     # Policy Evaluation Flow
