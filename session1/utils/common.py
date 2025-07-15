@@ -46,7 +46,7 @@ def _generate_unique_id(code: str, key: Optional[str] = None) -> str:
         timestamp = int(time.time() * 1000) % 10000
         return f"mermaid_{code_hash}_{timestamp}"
 
-def render_mermaid(
+def mermaid(
     code: str, 
     width: str = "auto", 
     height: str = "auto", 
@@ -109,7 +109,7 @@ def render_mermaid(
     <!DOCTYPE html>
     <html>
     <head>
-        <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     </head>
     <body>
         <div class="mermaid-wrapper" id="wrapper-{unique_id}">
@@ -445,28 +445,6 @@ def render_mermaid(
         height=content_height + (80 if show_controls else 40),
     )
 
-def mermaid(
-    code: str, 
-    width: str = "auto", 
-    height: str = "auto", 
-    pan: bool = True, 
-    zoom: bool = True, 
-    show_controls: bool = True, 
-    key: Optional[str] = None
-) -> None:
-    """Render Mermaid diagrams in Streamlit with automatic initialization.
-    
-    Args:
-        code: The Mermaid diagram code to render
-        width: Width of the container ("auto", "100%", "500px", etc.)
-        height: Height of the container ("auto", "100%", "400px", etc.)
-        pan: Enable panning functionality
-        zoom: Enable zoom functionality
-        show_controls: Show zoom control buttons
-        key: Optional unique key for the component
-    """
-    render_mermaid(code, width, height, pan, zoom, show_controls, key)
-
 
 
 
@@ -491,6 +469,7 @@ def render_sidebar():
 
 def initialize_session_state():
     """Initialize session state variables if they don't exist."""
+    reset_session()
     
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())[:8]

@@ -16,8 +16,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-common.initialize_mermaid()
-
 # AWS Color Scheme
 AWS_COLORS = {
     'primary': '#FF9900',
@@ -1884,6 +1882,7 @@ def main():
     
     # Initialize session
     common.initialize_session_state()
+    common.initialize_mermaid()
     
     # Create sidebar
     create_sidebar()
