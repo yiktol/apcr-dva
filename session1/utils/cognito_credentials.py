@@ -32,7 +32,6 @@ def get_cognito_credentials(secret_name="apcr/dva/secrets",region_name="us-east-
                 'COGNITO_USER_POOL_ID': secret.get('COGNITO_USER_POOL_ID'),
                 'COGNITO_APP_CLIENT_SECRET': secret.get('COGNITO_APP_CLIENT_SECRET'),
                 'COGNITO_APP_CLIENT_ID': secret.get('COGNITO_APP_CLIENT_ID'),
-                'COGNITO_REDIRECT_URI': secret.get('COGNITO_REDIRECT_URI'),
                 'COGNITO_REDIRECT_URI_1': secret.get('COGNITO_REDIRECT_URI_1'),
                 'COGNITO_REDIRECT_URI_2': secret.get('COGNITO_REDIRECT_URI_2'),
                 'COGNITO_REDIRECT_URI_3': secret.get('COGNITO_REDIRECT_URI_3'),
