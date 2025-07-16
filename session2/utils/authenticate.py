@@ -74,7 +74,7 @@ def load_cognito_config() -> Dict[str, str]:
             "domain": credentials.get("COGNITO_DOMAIN"),
             "client_id": credentials.get("COGNITO_APP_CLIENT_ID"),
             "client_secret": credentials.get("COGNITO_APP_CLIENT_SECRET"),
-            "redirect_uri": credentials.get("COGNITO_REDIRECT_URI_1")
+            "redirect_uri": credentials.get("COGNITO_REDIRECT_URI_2")
         }
     except Exception as e:
         logger.error(f"Failed to retrieve Cognito credentials: {str(e)}")
