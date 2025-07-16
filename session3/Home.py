@@ -148,16 +148,6 @@ def render_overview():
     </div>
     """, unsafe_allow_html=True)
 
-    # Progress indicator
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.markdown("""
-        <div class="training-progress">
-            <h4>Session 3 of 6</h4>
-            <div style="font-size: 2rem;">🔄</div>
-            <p>Application Integration Focus</p>
-        </div>
-        """, unsafe_allow_html=True)
 
 def render_learning_objectives():
     st.markdown("## 🎯 What You'll Learn Today")
@@ -180,13 +170,10 @@ def render_learning_objectives():
     
     with col2:
         st.markdown("""
-        <div class="event-flow">
-            <strong>Event-Driven Flow:</strong><br>
-            Producer → Topic/Queue → Consumer<br>
-            ↓<br>
-            Decoupled & Scalable<br>
-            ↓<br>
-            Reliable Processing
+        <div class="training-progress">
+            <h4>Session 3 of 6</h4>
+            <div style="font-size: 2rem;">🔄</div>
+            <p>Application Integration Focus</p>
         </div>
         """, unsafe_allow_html=True)
 
