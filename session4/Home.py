@@ -3,6 +3,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
+import utils.common as common
+import utils.authenticate as authenticate
 
 # Page configuration
 st.set_page_config(
@@ -127,6 +129,12 @@ def main():
     }
     </style>
     """, unsafe_allow_html=True)
+
+common.initialize_session_state()
+
+with st.sidebar:
+    common.render_sidebar()
+
 
 def render_overview():
     # Main header
@@ -636,12 +644,28 @@ def render_footer():
 
 # Main execution flow
 if __name__ == "__main__":
-    main()
-    render_overview()
-    render_learning_objectives()
-    render_aws_services()
-    render_training_curriculum()
-    render_optional_courses()
-    render_deployment_strategies()
-    render_sam_pipeline()
-    render_footer()
+    if 'localhost' in st.context.headers.get("host", ""):
+        main()
+        render_overview()
+        render_learning_objectives()
+        render_aws_services()
+        render_training_curriculum()
+        render_optional_courses()
+        render_deployment_strategies()
+        render_sam_pipeline()
+        render_footer()
+    else:
+        # First check authentication
+        is_authenticated = authenticate.login()
+        
+        # If authenticated, show the main app content
+        if is_authenticated:
+            main()
+            render_overview()
+            render_learning_objectives()
+            render_aws_services()
+            render_training_curriculum()
+            render_optional_courses()
+            render_deployment_strategies()
+            render_sam_pipeline()
+            render_footer()
