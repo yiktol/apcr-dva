@@ -117,6 +117,10 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
+
+with st.sidebar:
+    common.render_sidebar()
+
 def render_overview():
     # Main header
     st.markdown("""

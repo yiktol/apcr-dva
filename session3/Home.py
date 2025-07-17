@@ -527,7 +527,7 @@ def render_footer():
 
 # Main execution flow
 if __name__ == "__main__":
-    if 'localhost' in st.context.headers.get("host", ""):
+    if 'localhost' in st.context.headers["host"]:
         main()
         render_overview()
         render_learning_objectives()

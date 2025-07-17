@@ -259,12 +259,14 @@ def create_kms_encryption_mermaid():
         I --> J
         J --> K
         
+
         subgraph "Key Types"
             L[👤 Customer Managed Keys]
             M[🏛️ AWS Managed Keys]
             N[🔒 AWS Owned Keys]
         end
         
+
         style B fill:#FF9900,stroke:#232F3E,color:#fff
         style C fill:#4B9EDB,stroke:#232F3E,color:#fff
         style E fill:#3FB34F,stroke:#232F3E,color:#fff
@@ -403,7 +405,7 @@ def aws_waf_tab():
     
     # WAF Architecture
     st.markdown("### 🏗️ AWS WAF Architecture")
-    common.mermaid(create_waf_architecture_mermaid(), height=600)
+    common.mermaid(create_waf_architecture_mermaid(), height=700)
     
     # Protected Resources
     st.markdown("### 🎯 Resources Protected by AWS WAF")
@@ -908,7 +910,7 @@ def secrets_manager_tab():
     
     # Secrets Manager Architecture
     st.markdown("### 🏗️ Secrets Manager Workflow")
-    common.mermaid(create_secrets_manager_mermaid(), height=500)
+    common.mermaid(create_secrets_manager_mermaid(), height=1200)
     
     # Key Features
     st.markdown("### ✨ Key Features")
@@ -1438,7 +1440,7 @@ def kms_tab():
     
     # KMS Architecture
     st.markdown("### 🏗️ KMS Encryption Process")
-    common.mermaid(create_kms_encryption_mermaid(), height=600)
+    common.mermaid(create_kms_encryption_mermaid(), height=1000)
     
     # Key Types
     st.markdown("### 🔐 AWS KMS Key Types")
@@ -2075,7 +2077,7 @@ def privatelink_tab():
     
     # PrivateLink Architecture
     st.markdown("### 🏗️ AWS PrivateLink Architecture")
-    common.mermaid(create_privatelink_mermaid(), height=500)
+    common.mermaid(create_privatelink_mermaid(), height=800)
     
     # Key Benefits
     st.markdown("### ✨ Key Benefits of AWS PrivateLink")
@@ -2707,7 +2709,7 @@ def certificate_manager_tab():
     
     # ACM Architecture
     st.markdown("### 🏗️ ACM Certificate Workflow")
-    common.mermaid(create_acm_certificate_mermaid(), height=600)
+    common.mermaid(create_acm_certificate_mermaid(), height=1200)
     
     # Key Features
     st.markdown("### ✨ Key Features & Benefits")
@@ -2909,18 +2911,34 @@ def certificate_manager_tab():
     # Certificate Lifecycle Management
     st.markdown("### 🔄 Certificate Lifecycle Management")
     
-    # Create lifecycle timeline
+    # Create lifecycle timeline with proper start and end dates
+    current_date = datetime.now()
     lifecycle_data = {
         'Stage': ['Request', 'Validation', 'Issued', 'In Use', 'Renewal (60 days)', 'Renewed'],
-        'Duration': ['Immediate', '5min-72hrs', 'Immediate', '1 year', 'Automatic', 'New 1 year'],
+        'Start': [
+            current_date,
+            current_date + timedelta(minutes=5),
+            current_date + timedelta(hours=1),
+            current_date + timedelta(hours=2),
+            current_date + timedelta(days=305),  # 10 months later
+            current_date + timedelta(days=365)   # 1 year later
+        ],
+        'End': [
+            current_date + timedelta(minutes=5),
+            current_date + timedelta(hours=1),
+            current_date + timedelta(hours=2),
+            current_date + timedelta(days=365),  # 1 year
+            current_date + timedelta(days=365),  # Same as certificate expiry
+            current_date + timedelta(days=730)   # 2 years total
+        ],
         'Status': ['Pending', 'Validation', 'Success', 'Active', 'In Progress', 'Active'],
         'Action Required': ['None', 'DNS/Email', 'Deploy', 'Monitor', 'None', 'None']
     }
     
     df_lifecycle = pd.DataFrame(lifecycle_data)
     
-    # Color-code the stages
-    fig = px.timeline(df_lifecycle, x_start=None, x_end=None, y='Stage', color='Status',
+    # Color-code the stages with proper start and end dates
+    fig = px.timeline(df_lifecycle, x_start='Start', x_end='End', y='Stage', color='Status',
                       title="ACM Certificate Lifecycle")
     st.plotly_chart(fig, use_container_width=True)
     
@@ -3397,7 +3415,7 @@ def s3_security_tab():
     
     # S3 Security Architecture
     st.markdown("### 🏗️ S3 Security Architecture")
-    common.mermaid(create_s3_security_mermaid(), height=600)
+    common.mermaid(create_s3_security_mermaid(), height=850)
     
     # Security Features Overview
     st.markdown("### 🔐 S3 Security Features Overview")
@@ -3645,6 +3663,7 @@ def s3_security_tab():
                     }
                 })
             
+            
             st.markdown('<div class="security-box">', unsafe_allow_html=True)
             st.markdown(f"""
             ### ✅ OAI Configuration Complete!
@@ -3657,7 +3676,7 @@ def s3_security_tab():
             
             **Required Bucket Policy:**
             ```json
-            {json.dumps(bucket_policy, indent=2)}
+            {bucket_policy}
             ```
             """)
             st.markdown('</div>', unsafe_allow_html=True)

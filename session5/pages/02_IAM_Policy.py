@@ -347,7 +347,7 @@ def aws_iam_tab():
     
     # IAM Core Components
     st.markdown("### 🏗️ IAM Architecture Overview")
-    common.mermaid(create_iam_architecture_mermaid(), height=600)
+    common.mermaid(create_iam_architecture_mermaid(), height=800)
     
     # IAM Components Statistics
     col1, col2, col3, col4 = st.columns(4)
@@ -475,7 +475,7 @@ def aws_iam_tab():
     
     # IAM Policy Types Overview
     st.markdown("### 📋 IAM Policy Types")
-    common.mermaid(create_policy_types_mermaid(), height=400)
+    common.mermaid(create_policy_types_mermaid(), height=1250)
     
     # Interactive Permission Calculator
     st.markdown("### 🧮 Permission Effectiveness Calculator")
@@ -812,7 +812,7 @@ def iam_policy_interpretation_tab():
     
     # Policy Evaluation Flow
     st.markdown("### 🔄 Policy Evaluation Process")
-    common.mermaid(create_policy_evaluation_mermaid(), height=600)
+    common.mermaid(create_policy_evaluation_mermaid(), height=1600)
     
     # Interactive Policy Builder and Analyzer
     st.markdown("### 🛠️ Interactive Policy Analyzer")
@@ -2237,7 +2237,7 @@ def iam_permissions_example_tab():
         style F fill:#232F3E,stroke:#FF9900,color:#fff
     """
     
-    common.mermaid(flow_logs_mermaid, height=400)
+    common.mermaid(flow_logs_mermaid, height=900)
     
     # Problem Analysis Interface
     st.markdown("### 🔍 Interactive Problem Diagnosis")

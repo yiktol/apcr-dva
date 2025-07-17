@@ -317,7 +317,7 @@ def s3_overview_tab():
     
     # S3 Architecture
     st.markdown("### 🏗️ S3 Architecture Overview")
-    common.mermaid(create_s3_architecture_mermaid(), height=400)
+    common.mermaid(create_s3_architecture_mermaid(), height=600)
     
     # Core S3 Statistics
     col1, col2, col3, col4 = st.columns(4)
@@ -822,7 +822,7 @@ def storage_classes_tab():
     
     # Storage Classes Flow
     st.markdown("### 🔄 Storage Class Selection Flow")
-    common.mermaid(create_storage_classes_flow_mermaid(), height=400)
+    common.mermaid(create_storage_classes_flow_mermaid(), height=1300)
     
     # Interactive Storage Class Selector
     st.markdown("### 🎯 Interactive Storage Class Advisor")
@@ -1325,7 +1325,7 @@ def lifecycle_management_tab():
     
     # Lifecycle Flow Diagram
     st.markdown("### 🔄 Lifecycle Management Flow")
-    common.mermaid(create_lifecycle_flow_mermaid(), height=350)
+    common.mermaid(create_lifecycle_flow_mermaid(), height=500)
     
     # Interactive Lifecycle Rule Builder
     st.markdown("### 🛠️ Interactive Lifecycle Rule Builder")
@@ -1957,7 +1957,7 @@ def bucket_policies_tab():
     
     # Bucket Policy Flow
     st.markdown("### 🔄 Bucket Policy Evaluation Flow")
-    common.mermaid(create_bucket_policy_flow_mermaid(), height=400)
+    common.mermaid(create_bucket_policy_flow_mermaid(), height=1000)
     
     # Interactive Policy Builder
     st.markdown("### 🛠️ Interactive Bucket Policy Builder")

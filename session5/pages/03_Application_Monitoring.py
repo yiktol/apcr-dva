@@ -332,7 +332,7 @@ def aws_xray_tab():
     
     # X-Ray Architecture Overview
     st.markdown("### 🏗️ X-Ray Architecture Overview")
-    common.mermaid(create_xray_overview_mermaid(), height=300)
+    common.mermaid(create_xray_overview_mermaid(), height=600)
     
     # Interactive Application Scenario
     st.markdown("### 🎮 Interactive Application Tracing Scenario")
@@ -717,7 +717,7 @@ def xray_key_concepts_tab():
     
     # Concept Hierarchy Visualization
     st.markdown("### 🏗️ X-Ray Data Model Hierarchy")
-    common.mermaid(create_segment_subsegment_mermaid(), height=400)
+    common.mermaid(create_segment_subsegment_mermaid(), height=500)
     
     # Interactive Concept Explorer
     st.markdown("### 🔍 Interactive Concept Explorer")
@@ -1308,7 +1308,7 @@ def xray_errors_tab():
     
     # Error Classification Diagram
     st.markdown("### 🏗️ Error Classification Hierarchy")
-    common.mermaid(create_error_classification_mermaid(), height=350)
+    common.mermaid(create_error_classification_mermaid(), height=400)
     
     # Error Types Overview
     st.markdown("### 📊 Error Types Overview")
