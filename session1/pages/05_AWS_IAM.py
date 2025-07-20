@@ -304,7 +304,7 @@ def aws_iam_tab():
     
     # IAM Overview Architecture
     st.markdown("### 🏗️ IAM Components Overview")
-    common.mermaid(create_iam_overview_mermaid(), height=200)
+    common.mermaid(create_iam_overview_mermaid(), height=350)
     
     # IAM Statistics
     col1, col2, col3, col4 = st.columns(4)
@@ -780,7 +780,7 @@ def iam_roles_tab():
     
     # Role Assumption Process
     st.markdown("### 🔄 Role Assumption Process")
-    common.mermaid(create_role_assumption_mermaid(), height=200)
+    common.mermaid(create_role_assumption_mermaid(), height=350)
     
     # Role Types
     st.markdown("### 🎭 Types of IAM Roles")
@@ -1323,7 +1323,7 @@ def security_token_service_tab():
     
     # STS Flow Diagram
     st.markdown("### 🔄 STS Token Generation Flow")
-    common.mermaid(create_sts_flow_mermaid(), height=1000)
+    common.mermaid(create_sts_flow_mermaid(), height=1200)
     
     # STS Operations
     st.markdown("### ⚙️ Key STS Operations")
@@ -2056,7 +2056,7 @@ def policy_interpretation_tab():
     
     # Policy Evaluation Flow
     st.markdown("### 🔄 Policy Evaluation Process")
-    common.mermaid(create_policy_evaluation_mermaid(), height=400)
+    common.mermaid(create_policy_evaluation_mermaid(), height=1100)
     
     # Policy Practice Examples
     st.markdown("### 🧮 Policy Interpretation Practice")

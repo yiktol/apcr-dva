@@ -289,6 +289,75 @@ def aws_regions_tab():
     """)
     st.markdown('</div>', unsafe_allow_html=True)
     
+    # Interactive Region Map
+    st.markdown("### 🗺️ Global Region Distribution")
+    regions_data_x = {
+    'Region': [
+        'us-east-1', 'us-east-2', 'us-west-1', 'us-west-2',
+        'ca-central-1', 'ca-west-1',
+        'eu-north-1', 'eu-west-1', 'eu-west-2', 'eu-west-3', 'eu-central-1', 'eu-central-2', 'eu-south-1', 'eu-south-2',
+        'ap-northeast-1', 'ap-northeast-2', 'ap-northeast-3', 'ap-southeast-1', 'ap-southeast-2', 'ap-southeast-3', 'ap-southeast-4', 'ap-south-1', 'ap-south-2', 'ap-east-1',
+        'sa-east-1',
+        'af-south-1',
+        'me-south-1', 'me-central-1',
+        'il-central-1'
+    ],
+    'Location': [
+        'N. Virginia', 'Ohio', 'N. California', 'Oregon',
+        'Central Canada', 'Calgary',
+        'Stockholm', 'Ireland', 'London', 'Paris', 'Frankfurt', 'Zurich', 'Milan', 'Spain',
+        'Tokyo', 'Seoul', 'Osaka', 'Singapore', 'Sydney', 'Jakarta', 'Melbourne', 'Mumbai', 'Hyderabad', 'Hong Kong',
+        'São Paulo',
+        'Cape Town',
+        'Bahrain', 'UAE',
+        'Tel Aviv'
+    ],
+    'Lat': [
+        38.9, 39.9, 37.4, 45.5,
+        43.7, 51.0,
+        59.3, 53.3, 51.5, 48.9, 50.1, 47.4, 45.5, 40.4,
+        35.7, 37.6, 34.7, 1.3, -33.9, -6.2, -37.8, 19.1, 17.4, 22.3,
+        -23.5,
+        -33.9,
+        26.2, 24.5,
+        32.1
+    ],
+    'Lon': [
+        -77.0, -82.9, -122.1, -121.3,
+        -79.4, -114.1,
+        18.1, -6.2, -0.1, 2.3, 8.7, 8.5, 9.2, -3.7,
+        139.7, 126.9, 135.5, 103.8, 151.2, 106.8, 144.9, 72.9, 78.5, 114.2,
+        -46.6,
+        18.4,
+        50.6, 54.4,
+        34.8
+    ],
+    'AZ_Count': [
+        6, 3, 3, 4,
+        3, 3,
+        3, 3, 3, 3, 3, 3, 3, 3,
+        4, 4, 3, 3, 3, 3, 3, 3, 3, 3,
+        3,
+        3,
+        3, 3,
+        3
+    ]
+}
+
+    
+    df_regions = pd.DataFrame(regions_data_x)
+    
+    fig = px.scatter_mapbox(df_regions, lat="Lat", lon="Lon", hover_name="Region",
+                           hover_data=["Location", "AZ_Count"], size="AZ_Count",
+                           color_discrete_sequence=[AWS_COLORS['primary']],
+                           zoom=1, height=400)
+    fig.update_layout(mapbox_style="open-street-map")
+    fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+    st.plotly_chart(fig, use_container_width=True)
+    
+    
+    
+    
     # Region statistics
     col1, col2, col3, col4 = st.columns(4)
     
@@ -789,7 +858,7 @@ def points_of_presence_tab():
     
     # Global Infrastructure Overview
     st.markdown("### 🌍 Global Infrastructure Overview")
-    common.mermaid(create_global_infrastructure_mermaid(), height=250)
+    common.mermaid(create_global_infrastructure_mermaid(), height=350)
     
     # Interactive Edge Location Finder
     st.markdown("### 🔍 Interactive Edge Location Explorer")
@@ -1061,7 +1130,7 @@ def cloudfront_tab():
     
     # CloudFront Architecture Flow
     st.markdown("### 🔄 CloudFront Content Delivery Flow")
-    common.mermaid(create_cloudfront_architecture_mermaid(), height=200)
+    common.mermaid(create_cloudfront_architecture_mermaid(), height=350)
     
     # Interactive CloudFront Distribution Builder
     st.markdown("### 🛠️ Interactive CloudFront Distribution Setup")
@@ -1466,7 +1535,7 @@ def regional_edge_caches_tab():
     
     # Regional Edge Cache Architecture
     st.markdown("### 🏗️ Regional Edge Cache Architecture")
-    common.mermaid(create_regional_edge_cache_mermaid(), height=750)
+    common.mermaid(create_regional_edge_cache_mermaid(), height=1300)
     
     # Cache Hierarchy Explanation
     st.markdown("### 📚 Cache Hierarchy Explained")

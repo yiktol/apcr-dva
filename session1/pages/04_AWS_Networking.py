@@ -291,7 +291,7 @@ def vpc_tab():
     
     # VPC Architecture Overview
     st.markdown("### 🏗️ VPC Architecture Overview")
-    common.mermaid(create_vpc_architecture_mermaid(), height=400)
+    common.mermaid(create_vpc_architecture_mermaid(), height=500)
     
     # VPC Components
     col1, col2, col3, col4 = st.columns(4)
@@ -834,7 +834,7 @@ def privatelink_tab():
     
     # PrivateLink Architecture
     st.markdown("### 🏗️ PrivateLink Architecture")
-    common.mermaid(create_privatelink_architecture_mermaid(), height=400)
+    common.mermaid(create_privatelink_architecture_mermaid(), height=500)
     
     # PrivateLink Benefits
     col1, col2, col3, col4 = st.columns(4)
@@ -1372,7 +1372,7 @@ def route53_tab():
     
     # Route 53 DNS Flow
     st.markdown("### 🔄 Route 53 DNS Resolution Flow")
-    common.mermaid(create_route53_dns_flow_mermaid(), height=400)
+    common.mermaid(create_route53_dns_flow_mermaid(), height=450)
     
     # Route 53 Features
     col1, col2, col3, col4 = st.columns(4)

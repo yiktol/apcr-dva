@@ -338,7 +338,7 @@ def aws_compute_offerings_tab():
     
     # Compute Services Overview
     st.markdown("### 🏗️ Compute Services Architecture")
-    common.mermaid(create_compute_services_mermaid(), height=400)
+    common.mermaid(create_compute_services_mermaid(), height=300)
     
     # Interactive Service Selector
     st.markdown("### 🔍 Interactive Compute Service Selector")
@@ -1332,7 +1332,7 @@ def ec2_instance_storage_tab():
     
     # Storage Architecture
     st.markdown("### 🏗️ EC2 Storage Architecture")
-    common.mermaid(create_storage_comparison_mermaid(), height=300)
+    common.mermaid(create_storage_comparison_mermaid(), height=1200)
     
     # Interactive Storage Selector
     st.markdown("### 🔍 Interactive Storage Selector")
@@ -3404,7 +3404,7 @@ def main():
     
     # Main header
     st.markdown("""
-    # ⚡ AWS Compute Services Hub
+    # ⚡ AWS Compute Services
     
     """)
     st.markdown("""<div class="info-box">

@@ -309,7 +309,7 @@ def amazon_ecs_tab():
     
     # ECS Architecture
     st.markdown("### 🏗️ ECS Architecture Overview")
-    common.mermaid(create_ecs_architecture_mermaid(), height=600)
+    common.mermaid(create_ecs_architecture_mermaid(), height=650)
     
     # ECS Core Components
     st.markdown("### 🔧 ECS Core Components")
@@ -773,7 +773,7 @@ def amazon_eks_tab():
     
     # EKS Architecture
     st.markdown("### 🏗️ EKS Architecture Overview")
-    common.mermaid(create_eks_architecture_mermaid(), height=600)
+    common.mermaid(create_eks_architecture_mermaid(), height=650)
     
     # EKS Core Components
     st.markdown("### ⚙️ EKS Core Components")
@@ -1362,7 +1362,7 @@ def aws_fargate_tab():
     
     # Fargate Architecture
     st.markdown("### 🏗️ Fargate vs EC2 Launch Types")
-    common.mermaid(create_fargate_architecture_mermaid(), height=600)
+    common.mermaid(create_fargate_architecture_mermaid(), height=800)
     
     # Fargate Benefits
     st.markdown("### ✨ Key Benefits of AWS Fargate")
@@ -1974,7 +1974,7 @@ def main():
     
     # Service comparison overview
     st.markdown("### 🎯 Container Services Comparison")
-    common.mermaid(create_container_comparison_mermaid(), height=200)
+    common.mermaid(create_container_comparison_mermaid(), height=300)
     
     # Service selection guide
     st.markdown("### 🤔 Which Container Service Should You Choose?")

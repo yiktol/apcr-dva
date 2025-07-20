@@ -154,7 +154,7 @@ def main():
     st.markdown("## 🏠 Program Overview")
 
     # Program introduction
-    col1, col2 = st.columns([2, 1])
+    col1, col2 = st.columns([3, 1])
 
     with col1:
         st.markdown("""
@@ -169,18 +169,9 @@ def main():
         """, unsafe_allow_html=True)
 
     with col2:
-        st.markdown("""
-        <div class="stats-container">
-            <h3>📊 Program Stats</h3>
-            <div style="font-size: 2rem; margin: 1rem 0;">6</div>
-            <div>Weeks Duration</div>
-            <div style="font-size: 2rem; margin: 1rem 0;">12</div>
-            <div>Live Sessions</div>
-            <div style="font-size: 2rem; margin: 1rem 0;">600+</div>
-            <div>Digital Courses Available</div>
-        </div>
-        """, unsafe_allow_html=True)
-
+        st.image("https://ds3iizg1ls8e1.cloudfront.net/dva/img/aws-certified-developer-associate.png", width=200,caption="AWS Certified Developer Associate")
+        
+        
     # Current week focus
     st.markdown("""
     <div class="week-timeline">
