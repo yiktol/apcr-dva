@@ -1,0 +1,16 @@
+streamlit
+langchain
+langchain-aws
+langchain-community
+boto3
+botocore
+redis
+python-dotenv
+pydantic
+streamlit-chat
+uuid
+datetime
+json5
+anthropic
+typing-extensions
+pydantic-settings
