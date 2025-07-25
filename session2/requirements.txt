@@ -5,3 +5,6 @@ numpy
 plotly
 Pillow
 requests
+langchain_aws
+langchain
+langchain_community
