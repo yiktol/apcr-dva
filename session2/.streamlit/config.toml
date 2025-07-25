@@ -7,3 +7,4 @@ toolbarMode = "minimal"
 [server]
 enableCORS = false
 enableXsrfProtection = false
+maxUploadSize = 10
