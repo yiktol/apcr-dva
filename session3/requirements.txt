@@ -1,5 +1,8 @@
 streamlit
 boto3
+botocore
 pandas
 numpy
 plotly
+asyncio
+python-dateutil
