@@ -21,6 +21,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+common.initialize_session_state()
+
 # Configure Streamlit page
 def configure_page():
     """Configure Streamlit page settings."""
@@ -34,8 +36,6 @@ def configure_page():
 
 def initialize_session_state():
     """Initialize Streamlit session state variables."""
-    
-    common.initialize_session_state()
     
     defaults = {
         'messages_sent': 0,
@@ -570,5 +570,14 @@ def main():
     # Render footer
     render_footer()
 
+# Main execution flow
 if __name__ == "__main__":
-    main()
+    if 'localhost' in st.context.headers["host"]:
+        main()
+    else:
+        # First check authentication
+        is_authenticated = authenticate.login()
+        
+        # If authenticated, show the main app content
+        if is_authenticated:
+            main()

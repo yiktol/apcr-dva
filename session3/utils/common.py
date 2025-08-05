@@ -469,7 +469,6 @@ def render_sidebar():
 
 def initialize_session_state():
     """Initialize session state variables if they don't exist."""
-    reset_session()
     
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())[:8]

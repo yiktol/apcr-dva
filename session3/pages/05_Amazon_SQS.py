@@ -1,3 +1,4 @@
+
 import streamlit as st
 import json
 import asyncio
@@ -111,6 +112,8 @@ def initialize_session_state():
     if 'sqs_service' not in st.session_state:
         config = load_aws_config()
         st.session_state.sqs_service = SQSService(config)
+    if 'queue_stats' not in st.session_state:
+        st.session_state.queue_stats = {}
 
 def render_header():
     """Render the application header"""
@@ -118,58 +121,45 @@ def render_header():
     st.markdown("""
     <div class="main-header">
         <h1>🚀 AWS SQS Producer/Consumer Application</h1>
-        <p>Modern, responsive SQS message handling with real-time processing</p>
+        <p>SQS message handling with real-time processing</p>
     </div>
     """, unsafe_allow_html=True)
 
 def render_sidebar():
-    """Render the sidebar with configuration and metrics"""
+    """Render the sidebar with simplified content"""
     
     with st.sidebar:
-        
         common.render_sidebar()
-        
-        st.markdown("### 📊 Metrics")
-        
-        st.markdown(f"""
-        <div class="metric-container">
-            <h4>📤 Messages Sent</h4>
-            <h2>{st.session_state.messages_sent}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown(f"""
-        <div class="metric-container">
-            <h4>📥 Messages Received</h4>
-            <h2>{st.session_state.messages_received}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown("### ⚙️ Configuration")
-        config = load_aws_config()
-        
-        st.text_input("AWS Region", value=config.region, disabled=True)
-        
-        if config.queue_url:
-            st.text_input("Queue URL", value=config.queue_url[:50] + "...", disabled=True)
-        else:
-            st.warning("⚠️ Queue URL not configured")
-        
-        # Queue attributes
-        if st.button("🔄 Refresh Queue Stats"):
-            with st.spinner("Fetching queue attributes..."):
-                attrs = st.session_state.sqs_service.get_queue_attributes()
-                if attrs:
-                    st.success("✅ Queue connected")
-                    st.json({
-                        "Messages Available": attrs.get('ApproximateNumberOfMessages', 'N/A'),
-                        "Messages in Flight": attrs.get('ApproximateNumberOfMessagesNotVisible', 'N/A')
-                    })
 
 def render_producer_tab():
     """Render the producer tab"""
     st.markdown("## 📤 Message Producer")
     st.markdown("Send messages to your SQS queue with ease.")
+    
+    # Metrics section for Producer tab
+    st.markdown("### 📊 Producer Metrics")
+    
+    col_metric1, col_metric2,col_metric3 = st.columns([1,1,2])
+    
+    with col_metric1:
+        st.metric(
+            label="📤 Messages Sent",
+            value=st.session_state.messages_sent,
+            delta=None,
+            border=True,
+            width="stretch"
+        )
+    
+    with col_metric2:
+        st.metric(
+            label="📥 Messages Received",
+            value=st.session_state.messages_received,
+            delta=None,
+            border=True,
+            width="stretch"
+        )
+    
+    st.divider()
     
     col1, col2 = st.columns([2, 1])
     
@@ -261,6 +251,48 @@ def render_consumer_tab():
     st.markdown("## 📥 Message Consumer")
     st.markdown("Receive and process messages from your SQS queue.")
     
+    # Queue Stats section for Consumer tab
+    st.markdown("### 📊 Queue Statistics")
+    
+    col_stats1, col_stats2, col_stats3 = st.columns([1,1,2])
+    
+    if st.button("🔄 Refresh Queue Stats"):
+        with st.spinner("Fetching queue attributes..."):
+            attrs = st.session_state.sqs_service.get_queue_attributes()
+            if attrs:
+                st.session_state.queue_stats = attrs
+                st.success("✅ Queue stats refreshed")
+            else:
+                st.error("❌ Failed to fetch queue stats")
+    
+    with col_stats1:
+        available_messages = st.session_state.queue_stats.get('ApproximateNumberOfMessages', '0')
+        st.metric(
+            label="📬 Available Messages",
+            value=available_messages,
+            delta=None,            border=True,
+            width="stretch"
+        )
+    
+    with col_stats2:
+        in_flight_messages = st.session_state.queue_stats.get('ApproximateNumberOfMessagesNotVisible', '0')
+        st.metric(
+            label="✈️ Messages in Flight",
+            value=in_flight_messages,
+            delta=None,            border=True,
+            width="stretch"
+        )
+    
+    with col_stats3:
+        queue_status = "🟢 Connected" if st.session_state.queue_stats else "🔴 Not Connected"
+        st.metric(
+            label="Queue Status",
+            value=queue_status,
+            delta=None
+        )
+    
+    st.divider()
+    
     col1, col2 = st.columns([1, 1])
     
     with col1:
@@ -349,5 +381,14 @@ def main():
     # Add some spacing at the bottom for the fixed footer
     st.markdown("<br><br><br>", unsafe_allow_html=True)
 
+# Main execution flow
 if __name__ == "__main__":
-    main()
+    if 'localhost' in st.context.headers["host"]:
+        main()
+    else:
+        # First check authentication
+        is_authenticated = authenticate.login()
+        
+        # If authenticated, show the main app content
+        if is_authenticated:
+            main()
