@@ -141,6 +141,11 @@ def apply_custom_styles():
             color: white;
             margin: 10px 0;
         }}
+        
+        .mermaid {{
+                width: 100% !important;
+                max-width: none !important; /* Or remove max-width if present */
+            }}
     </style>
     """, unsafe_allow_html=True)
 
