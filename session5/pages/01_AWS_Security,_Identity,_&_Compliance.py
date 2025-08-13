@@ -405,7 +405,7 @@ def aws_waf_tab():
     
     # WAF Architecture
     st.markdown("### 🏗️ AWS WAF Architecture")
-    common.mermaid(create_waf_architecture_mermaid(), height=700)
+    common.mermaid(create_waf_architecture_mermaid(), height=700, width="100%")
     
     # Protected Resources
     st.markdown("### 🎯 Resources Protected by AWS WAF")
