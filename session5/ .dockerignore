@@ -1,0 +1,17 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.git
+.gitignore
+README.md
+.env
+.venv
+venv/
+.pytest_cache
+.coverage
+app.log
+deploy.sh
+setup.sh
+build-and-push.sh
