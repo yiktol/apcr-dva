@@ -287,6 +287,7 @@ def mermaid(
             mermaid.initialize({{ 
                 startOnLoad: false,
                 theme: 'default',
+                useMaxWidth: false,
                 flowchart: {{ useMaxWidth: false, htmlLabels: true }},
                 sequence: {{ useMaxWidth: false }},
                 gantt: {{ useMaxWidth: false }},
