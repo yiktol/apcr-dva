@@ -109,7 +109,7 @@ def mermaid(
     <!DOCTYPE html>
     <html>
     <head>
-        <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     </head>
     <body>
         <div class="mermaid-wrapper" id="wrapper-{unique_id}">
