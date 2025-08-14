@@ -10,7 +10,7 @@ import uuid
 import logging
 import sys
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, List
 import utils.common as common
 import utils.authenticate as authenticate
 
@@ -159,7 +159,7 @@ def get_logger():
 
 logger = get_logger()
 
-# Custom CSS for modern UI (same as before)
+# Custom CSS for modern UI with support for three columns
 st.markdown("""
 <style>
     .main-header {
@@ -222,6 +222,36 @@ st.markdown("""
         max-height: 200px;
         overflow-y: auto;
     }
+    
+    .variant-card {
+        background: #ffffff;
+        border: 1px solid #dee2e6;
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        text-align: center;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    
+    .variant-title {
+        font-weight: bold;
+        color: #495057;
+        margin-bottom: 0.5rem;
+    }
+    
+    .processing-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 1rem;
+        margin-top: 1rem;
+    }
+    
+    .download-section {
+        background: #e8f5e8;
+        padding: 1rem;
+        border-radius: 8px;
+        margin-top: 1rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -233,6 +263,12 @@ class ImageProcessor:
         self.s3_client = None
         self.bucket_name = None
         self.processed_bucket_name = None
+        self.size_variants = ['web', 'mobile', 'tablet']
+        self.size_info = {
+            'web': {'icon': '💻', 'description': 'Desktop/Web', 'typical_size': '1920x1080'},
+            'mobile': {'icon': '📱', 'description': 'Mobile Devices', 'typical_size': '750x1334'},
+            'tablet': {'icon': '📋', 'description': 'Tablet Devices', 'typical_size': '1024x768'}
+        }
         self.initialize_aws_clients()
     
     def initialize_aws_clients(self):
@@ -292,11 +328,12 @@ class ImageProcessor:
             st.error(f"{error_msg}, Bucket Name {self.bucket_name}")
             return False
     
-    def check_processed_image(self, filename: str, max_attempts: int = 30) -> Tuple[Optional[str], Optional[str]]:
-        """Check if processed image is available and return URL with logging"""
+    def check_all_processed_images(self, filename: str, max_attempts: int = 30) -> Dict[str, Dict]:
+        """Check for all size variants and return their status and URLs"""
         base_name = filename.rsplit('.', 1)[0]
+        results = {}
         
-        self.logger.info(f"Checking for processed image: {filename}", {
+        self.logger.info(f"Checking for all processed image variants: {filename}", {
             'filename': filename,
             'base_name': base_name,
             'max_attempts': max_attempts
@@ -305,57 +342,188 @@ class ImageProcessor:
         for attempt in range(max_attempts):
             self.logger.debug(f"Attempt {attempt + 1}/{max_attempts} for {filename}")
             
-            try:
-                # Check for different size variants
-                for size in ['web', 'mobile', 'tablet']:
-                    key = f"{base_name}_{size}.jpg"
+            # Check each size variant
+            for size in self.size_variants:
+                if size in results:  # Skip if already found
+                    continue
                     
-                    try:
-                        self.s3_client.head_object(Bucket=self.processed_bucket_name, Key=key)
-                        
-                        # Generate presigned URL
-                        url = self.s3_client.generate_presigned_url(
-                            'get_object',
-                            Params={'Bucket': self.processed_bucket_name, 'Key': key},
-                            ExpiresIn=3600
-                        )
-                        
-                        self.logger.info(f"Found processed image: {key}", {
-                            'filename': filename,
-                            'size_variant': size,
-                            'key': key,
-                            'attempt': attempt + 1
-                        })
-                        
-                        return url, size
-                        
-                    except ClientError as e:
-                        if e.response['Error']['Code'] != 'NoSuchKey':
-                            self.logger.warning(f"Unexpected error checking {key}: {e}")
-                        continue
-                        
-            except Exception as e:
-                self.logger.error(f"Error in attempt {attempt + 1}: {e}", {
-                    'filename': filename,
-                    'attempt': attempt + 1,
-                    'error_type': type(e).__name__
-                })
+                key = f"{base_name}_{size}.jpg"
                 
+                try:
+                    # Check if file exists
+                    self.s3_client.head_object(Bucket=self.processed_bucket_name, Key=key)
+                    
+                    # Generate presigned URL
+                    url = self.s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={'Bucket': self.processed_bucket_name, 'Key': key},
+                        ExpiresIn=3600
+                    )
+                    
+                    # Get image dimensions
+                    try:
+                        response = requests.get(url, timeout=10)
+                        img = Image.open(io.BytesIO(response.content))
+                        dimensions = img.size
+                    except Exception as e:
+                        self.logger.warning(f"Could not get dimensions for {key}: {e}")
+                        dimensions = None
+                    
+                    results[size] = {
+                        'url': url,
+                        'key': key,
+                        'dimensions': dimensions,
+                        'found_at_attempt': attempt + 1
+                    }
+                    
+                    self.logger.info(f"Found processed image: {key}", {
+                        'filename': filename,
+                        'size_variant': size,
+                        'key': key,
+                        'attempt': attempt + 1,
+                        'dimensions': dimensions
+                    })
+                    
+                except ClientError as e:
+                    if e.response['Error']['Code'] != 'NoSuchKey':
+                        self.logger.warning(f"Unexpected error checking {key}: {e}")
+                except Exception as e:
+                    self.logger.error(f"Error checking {key}: {e}")
+            
+            # If we found all variants, break early
+            if len(results) == len(self.size_variants):
+                self.logger.info(f"All variants found after {attempt + 1} attempts", {
+                    'filename': filename,
+                    'variants_found': list(results.keys()),
+                    'attempts': attempt + 1
+                })
+                break
+            
+            # Wait before next attempt
             if attempt < max_attempts - 1:
                 time.sleep(2)
         
-        self.logger.warning(f"Processed image not found after {max_attempts} attempts", {
+        # Log final results
+        found_variants = list(results.keys())
+        missing_variants = [v for v in self.size_variants if v not in results]
+        
+        self.logger.info(f"Processing check completed", {
             'filename': filename,
-            'max_attempts': max_attempts
+            'found_variants': found_variants,
+            'missing_variants': missing_variants,
+            'total_attempts': max_attempts
         })
         
-        return None, None
+        return results
 
 def initialize_session():
     """Initialize session state with logging"""
     if 'session_id' not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
         logger.info("New session started", {'session_id': st.session_state.session_id})
+
+def render_processed_images(processor, filename: str, processed_images: Dict[str, Dict]):
+    """Render all processed image variants in a organized layout"""
+    st.markdown("### 🎯 Processed Images")
+    
+    if not processed_images:
+        st.warning("No processed images found yet...")
+        return
+    
+    # Create tabs for different views
+    tab1, tab2 = st.tabs(["📋 Grid View", "📊 Details View"])
+    
+    with tab1:
+        # Grid layout for images
+        cols = st.columns(len(processed_images))
+        
+        for idx, (size, data) in enumerate(processed_images.items()):
+            with cols[idx]:
+                info = processor.size_info[size]
+                
+                st.markdown(f"""
+                <div class="variant-card">
+                    <div class="variant-title">
+                        {info['icon']} {info['description']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                try:
+                    # Load and display image
+                    response = requests.get(data['url'], timeout=10)
+                    img = Image.open(io.BytesIO(response.content))
+                    
+                    # Display image
+                    st.image(
+                        img, 
+                        caption=f"{size.title()}: {img.size[0]}x{img.size[1]}",
+                        use_container_width=True
+                    )
+                    
+                    # Download button
+                    st.download_button(
+                        label=f"💾 Download {size.title()}",
+                        data=response.content,
+                        file_name=f"{size}_{filename}",
+                        mime="image/jpg",
+                        key=f"download_{size}_{filename}"
+                    )
+                    
+                except Exception as e:
+                    st.error(f"Error loading {size} image: {str(e)}")
+                    logger.error(f"Error displaying {size} variant", {
+                        'filename': filename,
+                        'size': size,
+                        'error': str(e)
+                    })
+    
+    with tab2:
+        # Detailed view with statistics
+        st.markdown("#### 📊 Processing Details")
+        
+        for size, data in processed_images.items():
+            info = processor.size_info[size]
+            
+            with st.expander(f"{info['icon']} {info['description']} Details", expanded=True):
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    try:
+                        response = requests.get(data['url'], timeout=10)
+                        img = Image.open(io.BytesIO(response.content))
+                        st.image(img, caption=f"{size.title()} variant", use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Error loading image: {str(e)}")
+                
+                with col2:
+                    if data['dimensions']:
+                        width, height = data['dimensions']
+                        st.metric("Width", f"{width}px")
+                        st.metric("Height", f"{height}px")
+                        st.metric("Aspect Ratio", f"{width/height:.2f}:1")
+                    
+                    st.info(f"**Typical Use:** {info['typical_size']}")
+                    st.info(f"**Found at attempt:** {data['found_at_attempt']}")
+                    
+                    # Individual download button
+                    try:
+                        response = requests.get(data['url'], timeout=10)
+                        st.download_button(
+                            label=f"💾 Download {size.title()} Image",
+                            data=response.content,
+                            file_name=f"{size}_{filename}",
+                            mime="image/jpg",
+                            key=f"detail_download_{size}_{filename}",
+                            use_container_width=True
+                        )
+                    except Exception as e:
+                        st.error(f"Download preparation failed: {str(e)}")
+    
+    # Bulk download section
+    st.markdown("### 📦 Bulk Download")
+    if st.button("📥 Download All Variants", type="secondary"):
+        st.info("Individual downloads available above. Bulk download feature coming soon!")
 
 def main():
     """Main Streamlit application with comprehensive logging"""
@@ -379,7 +547,6 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        
         common.render_sidebar()
         
         st.markdown("### ⚙️ Configuration")
@@ -394,6 +561,13 @@ def main():
                 <li>🔄 Auto-resize for multiple devices</li>
                 <li>✅ Download processed images</li>
             </ol>
+            
+            <h4>Output Variants:</h4>
+            <ul>
+                <li>💻 <strong>Web:</strong> Optimized for desktop</li>
+                <li>📱 <strong>Mobile:</strong> Optimized for phones</li>
+                <li>📋 <strong>Tablet:</strong> Optimized for tablets</li>
+            </ul>
         </div>
         """, unsafe_allow_html=True)
         
@@ -417,7 +591,7 @@ def main():
                 st.markdown(f"**Elapsed:** `{elapsed}s`")
     
     # Main content
-    col1, col2 = st.columns([1, 1])
+    col1, col2 = st.columns([1, 2])  # Adjusted ratio for better display
     
     with col1:
         st.markdown("### 📤 Upload Image")
@@ -452,6 +626,13 @@ def main():
             try:
                 image = Image.open(uploaded_file)
                 st.image(image, caption=f"Original: {uploaded_file.name}", use_container_width=True)
+                
+                # Show original image stats
+                st.markdown(f"""
+                **Original Dimensions:** {image.size[0]} × {image.size[1]}  
+                **File Size:** {uploaded_file.size / 1024:.1f} KB  
+                **Format:** {image.format}
+                """)
                 
                 logger.debug("Image displayed successfully", {
                     'filename': uploaded_file.name,
@@ -504,6 +685,7 @@ def main():
             <div class="status-card info-card">
                 <h4>⏳ Processing: {filename}</h4>
                 <p>Elapsed time: {elapsed_time} seconds</p>
+                <p>Creating variants: Web, Mobile, Tablet</p>
                 <div style="width: 100%; background-color: #e9ecef; border-radius: 5px;">
                     <div style="width: {min(elapsed_time * 2, 100)}%; background-color: #007bff; height: 10px; border-radius: 5px; transition: width 0.5s;"></div>
                 </div>
@@ -512,72 +694,67 @@ def main():
             
             # Check for processed images
             with st.spinner("Checking for processed images..."):
-                processed_url, size_variant = processor.check_processed_image(filename)
+                processed_images = processor.check_all_processed_images(filename)
                 
-                if processed_url:
-                    logger.info("Processing completed successfully", {
-                        'filename': filename,
-                        'size_variant': size_variant,
-                        'processing_time': elapsed_time
-                    })
+                if processed_images:
+                    # Show completion status
+                    total_variants = len(processor.size_variants)
+                    found_variants = len(processed_images)
                     
-                    st.markdown(f"""
-                    <div class="status-card success-card">
-                        <h4>✅ Processing Complete!</h4>
-                        <p>Your image has been successfully processed and resized.</p>
+                    if found_variants == total_variants:
+                        st.markdown(f"""
+                        <div class="status-card success-card">
+                            <h4>✅ Processing Complete!</h4>
+                            <p>All {total_variants} image variants have been successfully processed and are ready for download.</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        logger.info("All processing completed successfully", {
+                            'filename': filename,
+                            'variants_processed': list(processed_images.keys()),
+                            'processing_time': elapsed_time
+                        })
+                    else:
+                        st.markdown(f"""
+                        <div class="status-card info-card">
+                            <h4>⏳ Partial Processing Complete</h4>
+                            <p>Found {found_variants} of {total_variants} variants. Still processing...</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    # Render processed images
+                    render_processed_images(processor, filename, processed_images)
+                    
+                    # Show "Process Another" button only when all variants are ready
+                    if found_variants == total_variants:
+                        st.markdown("---")
+                        if st.button("🔄 Process Another Image", type="secondary"):
+                            logger.info("Starting new processing session", {
+                                'previous_filename': filename
+                            })
+                            del st.session_state.processing_file
+                            del st.session_state.upload_time
+                            st.rerun()
+                
+                else:
+                    st.markdown("""
+                    <div class="status-card info-card">
+                        <h4>⏳ Processing in Progress</h4>
+                        <p>Your image is being processed. Please wait while we create optimized versions for different devices.</p>
                     </div>
                     """, unsafe_allow_html=True)
-                    
-                    # Display processed image
-                    st.markdown("#### Processed Image")
-                    try:
-                        response = requests.get(processed_url)
-                        processed_image = Image.open(io.BytesIO(response.content))
-                        st.image(
-                            processed_image, 
-                            caption=f"Processed ({size_variant} size): {processed_image.size}",
-                            use_container_width=True
-                        )
-                        
-                        # Download button
-                        st.download_button(
-                            label="💾 Download Processed Image",
-                            data=response.content,
-                            file_name=f"processed_{filename}",
-                            mime="image/jpg"
-                        )
-                        
-                        logger.info("Processed image displayed and download enabled", {
-                            'filename': filename,
-                            'processed_size': processed_image.size
-                        })
-                        
-                    except Exception as e:
-                        error_msg = f"Error displaying processed image: {str(e)}"
-                        logger.error(error_msg, {
-                            'filename': filename,
-                            'error_type': type(e).__name__
-                        })
-                        st.error(error_msg)
-                    
-                    # Cleanup session state
-                    if st.button("🔄 Process Another Image"):
-                        logger.info("Starting new processing session", {
-                            'previous_filename': filename
-                        })
-                        del st.session_state.processing_file
-                        del st.session_state.upload_time
-                        st.rerun()
             
-            # Auto-refresh
-            if auto_refresh and not processed_url:
-                logger.debug(f"Auto-refresh triggered, waiting {refresh_interval}s", {
-                    'filename': filename,
-                    'elapsed_time': elapsed_time
-                })
-                time.sleep(refresh_interval)
-                st.rerun()
-    
+            # Auto-refresh logic
+            if auto_refresh:
+                # Only auto-refresh if not all variants are found
+                if not processed_images or len(processed_images) < len(processor.size_variants):
+                    logger.debug(f"Auto-refresh triggered, waiting {refresh_interval}s", {
+                        'filename': filename,
+                        'elapsed_time': elapsed_time,
+                        'found_variants': len(processed_images) if processed_images else 0
+                    })
+                    time.sleep(refresh_interval)
+                    st.rerun()
 
 
 # Main execution flow
@@ -591,4 +768,3 @@ if __name__ == "__main__":
         # If authenticated, show the main app content
         if is_authenticated:
             main()
-
