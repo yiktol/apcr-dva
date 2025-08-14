@@ -278,8 +278,8 @@ class ImageProcessor:
             self.s3_client = boto3.client('s3', region_name='ap-southeast-1')
             
             # Get bucket names from environment or Streamlit secrets
-            self.bucket_name = st.secrets.get("S3_UPLOAD_BUCKET", "image-processor-upload-875692608981")
-            self.processed_bucket_name = st.secrets.get("S3_PROCESSED_BUCKET", "image-processor-processed-dev-875692608981")
+            self.bucket_name = st.secrets.get("S3_UPLOAD_BUCKET", "demo-875692608981")
+            self.processed_bucket_name = st.secrets.get("S3_PROCESSED_BUCKET", "demo-875692608981")
             
             self.logger.info("AWS clients initialized successfully", {
                 'upload_bucket': self.bucket_name,
