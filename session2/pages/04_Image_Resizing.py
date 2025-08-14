@@ -561,7 +561,6 @@ def main():
                 <li>🔄 Auto-resize for multiple devices</li>
                 <li>✅ Download processed images</li>
             </ol>
-            
             <h4>Output Variants:</h4>
             <ul>
                 <li>💻 <strong>Web:</strong> Optimized for desktop</li>
