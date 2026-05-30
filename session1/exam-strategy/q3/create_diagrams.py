@@ -1,12 +1,7 @@
-"""Auto-generated script to regenerate diagrams for Session 1 Q3."""
+"""Regenerate enhanced diagrams for Session 1 Q3."""
 import sys
-sys.path.insert(0, "/home/ubuntu/apcr-dva")
-from generate_diagrams import generate_diagrams_for_question
-import json
+sys.path.insert(0, "/Users/erictole/demo/apcr-dva")
+from generate_diagrams_v2 import generate_diagrams_for_question_v2
 
-with open("/home/ubuntu/apcr-dva/extracted_questions.json") as f:
-    sessions = json.load(f)
-
-question = sessions["1"][2]
-generate_diagrams_for_question(question, 1, 3)
+generate_diagrams_for_question_v2(1, 3)
 print("Done!")

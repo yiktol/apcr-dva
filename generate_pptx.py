@@ -86,32 +86,55 @@ def _create_question_slide(prs, question: dict, session_num: int, q_num: int):
 
     # Question text
     q_box = slide.shapes.add_textbox(
-        Inches(0.3), Inches(0.75), Inches(7.0), Inches(1.8)
+        Inches(0.3), Inches(0.7), Inches(7.2), Inches(1.4)
     )
     tf = q_box.text_frame
     tf.word_wrap = True
+    tf.margin_top = Pt(0)
+    tf.margin_bottom = Pt(0)
     p = tf.paragraphs[0]
     # Truncate very long questions
     q_text = question["question"]
-    if len(q_text) > 500:
-        q_text = q_text[:497] + "..."
+    if len(q_text) > 350:
+        q_text = q_text[:347] + "..."
     p.text = q_text
-    p.font.size = Pt(11)
+    p.font.size = Pt(9)
     p.font.color.rgb = WHITE
     p.font.name = "Segoe UI"
 
-    # Options
+    # Options - dynamically sized based on count
     options = question["options"]
-    y_start = 2.6
+    num_options = len(options)
+    y_start = 2.2
+    available_height = 5.5 - y_start  # Leave small margin at bottom
+    spacing = available_height / num_options
+    # Truncate option text to fit 2 lines at 8pt in ~6.8" wide box
+    # At 8pt Segoe UI, ~6.8" fits roughly 95 chars per line, so 2 lines = ~190
+    # But keep it shorter for readability
+    max_chars = 90 if num_options >= 6 else 110
+
     for i, letter in enumerate(sorted(options.keys())):
         opt = options[letter]
-        opt_text = opt["text"] if opt["text"] else opt["explanation"][:120]
-        y = y_start + (i * 0.5)
+        opt_text = opt["text"] if opt["text"] else opt["explanation"][:100]
+        # Truncate to fit
+        if len(opt_text) > max_chars:
+            # Try to cut at a natural boundary
+            cut_at = opt_text.rfind('. ', 0, max_chars)
+            if cut_at < 40:
+                cut_at = opt_text.rfind(': ', 0, max_chars)
+            if cut_at < 40:
+                cut_at = opt_text.rfind(', ', 0, max_chars)
+            if cut_at < 40:
+                cut_at = max_chars
+            opt_text = opt_text[:cut_at] + "..."
+
+        y = y_start + (i * spacing)
+        box_height = spacing - 0.02
 
         # Badge circle
         badge = slide.shapes.add_shape(
             MSO_SHAPE.OVAL,
-            Inches(0.4), Inches(y), Inches(0.3), Inches(0.3)
+            Inches(0.3), Inches(y + 0.05), Inches(0.22), Inches(0.22)
         )
         badge.fill.solid()
         badge.fill.fore_color.rgb = BADGE_BLUE
@@ -124,20 +147,23 @@ def _create_question_slide(prs, question: dict, session_num: int, q_num: int):
         badge_tf.vertical_anchor = MSO_ANCHOR.MIDDLE
         bp = badge_tf.paragraphs[0]
         bp.text = letter
-        bp.font.size = Pt(9)
+        bp.font.size = Pt(7)
         bp.font.bold = True
         bp.font.color.rgb = WHITE
         bp.alignment = PP_ALIGN.CENTER
 
         # Option text
         opt_box = slide.shapes.add_textbox(
-            Inches(0.85), Inches(y), Inches(6.5), Inches(0.45)
+            Inches(0.6), Inches(y), Inches(7.0), Inches(box_height)
         )
         otf = opt_box.text_frame
         otf.word_wrap = True
+        otf.margin_top = Pt(2)
+        otf.margin_bottom = Pt(0)
+        otf.margin_left = Pt(0)
         op = otf.paragraphs[0]
         op.text = f"{opt_text}"
-        op.font.size = Pt(10)
+        op.font.size = Pt(8)
         op.font.color.rgb = LIGHT_GRAY
         op.font.name = "Segoe UI"
 
@@ -297,49 +323,79 @@ def _create_option_slide(prs, question: dict, letter: str, session_num: int, q_n
     p.font.name = "Segoe UI"
     p.space_after = Pt(6)
 
-    # Bullet points
+    # Bullet points (shorter, more numerous)
     bullets = _split_for_pptx(explanation)
     for bullet in bullets:
         p = tf.add_paragraph()
         p.text = f"• {bullet}"
-        p.font.size = Pt(9)
+        p.font.size = Pt(8)
         p.font.color.rgb = DARK_TEXT
         p.font.name = "Segoe UI"
-        p.space_after = Pt(6)
+        p.space_after = Pt(4)
 
 
 def _split_for_pptx(text: str) -> list[str]:
-    """Split explanation into bullet points for PPTX."""
+    """Split explanation into short, scannable bullet points for PPTX.
+    
+    Strategy: split at sentence boundaries, then break overly long sentences
+    at natural clause boundaries. Target ~60-90 chars per bullet, up to 8 bullets.
+    """
     if not text:
         return ["No explanation provided"]
 
-    sentences = []
-    current = ""
-    for char in text:
-        current += char
-        if char == "." and len(current) > 15:
-            sentences.append(current.strip())
-            current = ""
-    if current.strip():
-        sentences.append(current.strip())
+    import re
 
-    # Combine into 3-5 bullets
-    if len(sentences) <= 5:
-        return [s for s in sentences if s]
+    # Split on sentence boundaries (period followed by space + capital letter)
+    raw_sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', text.strip())
+    raw_sentences = [s.strip().rstrip('.').strip() for s in raw_sentences if s.strip()]
 
+    # Break sentences > 90 chars at natural clause boundaries
+    fragments = []
+    clause_splitters = re.compile(
+        r',\s+(?:which |allowing |enabling |ensuring |eliminating |rather than |instead of |as it |it (?:is|does|can|will) )'
+        r'|;\s+'
+        r'|\s+(?:Additionally|However|Furthermore|This ensures|This eliminates|This enhances|This allows)\b',
+        flags=re.IGNORECASE
+    )
+
+    for sentence in raw_sentences:
+        if len(sentence) > 90:
+            parts = clause_splitters.split(sentence)
+            parts = [p.strip().rstrip('.').strip() for p in parts if p and p.strip()]
+            if len(parts) > 1:
+                for part in parts:
+                    if part and len(part) > 10:
+                        fragments.append(part)
+            else:
+                # Try splitting at ", " followed by a verb phrase
+                alt_parts = re.split(r',\s+(?=\w)', sentence, maxsplit=2)
+                if len(alt_parts) > 1 and all(len(p) > 15 for p in alt_parts):
+                    for part in alt_parts:
+                        part = part.strip().rstrip('.')
+                        if part and len(part) > 10:
+                            fragments.append(part)
+                else:
+                    fragments.append(sentence)
+        elif len(sentence) > 10:
+            fragments.append(sentence)
+
+    # Deduplicate near-identical fragments
+    seen = set()
+    unique = []
+    for f in fragments:
+        key = f.lower()[:40]
+        if key not in seen:
+            seen.add(key)
+            unique.append(f)
+
+    # Capitalize first letter of each bullet
     bullets = []
-    combined = ""
-    for s in sentences:
-        if len(combined) + len(s) < 120:
-            combined += " " + s if combined else s
-        else:
-            if combined:
-                bullets.append(combined)
-            combined = s
-    if combined:
-        bullets.append(combined)
+    for f in unique:
+        if f:
+            bullets.append(f[0].upper() + f[1:] if len(f) > 1 else f.upper())
 
-    return bullets[:5] if bullets else [text[:200]]
+    # Return up to 8 bullets
+    return bullets[:8] if bullets else [text[:150]]
 
 
 def generate_all_pptx():
