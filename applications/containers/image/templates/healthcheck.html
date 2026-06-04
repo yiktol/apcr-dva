@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Container Health Check</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <style>
+        .metadata-card {
+            transition: transform 0.3s;
+        }
+        .metadata-card:hover {
+            transform: translateY(-5px);
+        }
+        .container-info {
+            background-color: #f8f9fa;
+            border-radius: 10px;
+        }
+        .status-badge {
+            font-size: 0.9rem;
+        }
+        .uptime {
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="https://cicd.aws.yikyakyuk.com/">
+                <i class="bi bi-cup-hot-fill me-2"></i>Coffee Shop
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link" href="https://cicd.aws.yikyakyuk.com/"><i class="bi bi-house-door me-1"></i>Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="order"><i class="bi bi-cart me-1"></i>Orders</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="healthcheck"><i class="bi bi-heart-pulse me-1"></i>Health Check</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="dashboard"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="environment"><i class="bi bi-gear-fill me-1"></i>Environment</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <h1 class="mb-4">
+            <i class="bi bi-info-circle-fill text-primary me-2"></i>
+            Container Information
+            <span class="badge bg-success ms-2">HEALTHY</span>
+        </h1>
+        
+        <div class="alert alert-info">
+            <i class="bi bi-gear-fill me-2"></i>
+            This container is running in <strong>{{ data.LaunchType }}</strong> mode
+        </div>
+        
+        <div class="row">
+            <div class="col-md-6 mb-4">
+                <div class="card metadata-card h-100 shadow-sm">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0"><i class="bi bi-hdd-rack me-2"></i>Container Details</h5>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-hover">
+                            <tr>
+                                <th><i class="bi bi-fingerprint me-2"></i>Container ID</th>
+                                <td><code>{{ data.ContainerId }}</code></td>
+                            </tr>
+                            <tr>
+                                <th><i class="bi bi-globe me-2"></i>Public IP</th>
+                                <td>{{ data.PublicIP }}</td>
+                            </tr>
+                            <tr>
+                                <th><i class="bi bi-ethernet me-2"></i>Private IP</th>
+                                <td>{{ data.PrivateIP }}</td>
+                            </tr>
+                            <tr>
+                                <th><i class="bi bi-geo-alt me-2"></i>Availability Zone</th>
+                                <td>{{ data.AZ }}</td>
+                            </tr>
+                            {% if data.LaunchType == "Fargate" %}
+                            <tr>
+                                <th><i class="bi bi-cpu me-2"></i>CPU</th>
+                                <td>{{ data.CPU }}</td>
+                            </tr>
+                            <tr>
+                                <th><i class="bi bi-memory me-2"></i>Memory</th>
+                                <td>{{ data.Memory }}</td>
+                            </tr>
+                            {% endif %}
+                        </table>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-6 mb-4">
+                <div class="card metadata-card h-100 shadow-sm">
+                    <div class="card-header bg-success text-white">
+                        <h5 class="mb-0"><i class="bi bi-diagram-3 me-2"></i>Task Information</h5>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-hover">
+                            <tr>
+                                <th><i class="bi bi-layers me-2"></i>Cluster</th>
+                                <td>{{ data.ClusterName }}</td>
+                            </tr>
+                            <tr>
+                                <th><i class="bi bi-tag me-2"></i>Task Definition</th>
+                                <td>{{ data.TaskDefinition }}</td>
+                            </tr>
+                            {% if data.LaunchType == "Fargate" %}
+                            <tr>
+                                <th><i class="bi bi-code-slash me-2"></i>Task Revision</th>
+                                <td>{{ data.TaskRevision }}</td>
+                            </tr>
+                            {% endif %}
+                            <tr>
+                                <th><i class="bi bi-arrow-up-right me-2"></i>Host Port</th>
+                                <td>{{ data.HostPort }}</td>
+                            </tr>
+                            <tr>
+                                <th><i class="bi bi-arrow-down-left me-2"></i>Container Port</th>
+                                <td>{{ data.ContainerPort }}</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Environment Configuration Section -->
+        <div class="row mt-4">
+            <div class="col-md-12">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-info text-white">
+                        <h5 class="mb-0"><i class="bi bi-gear me-2"></i>Environment Configuration</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <p><strong><i class="bi bi-globe me-2"></i>Region:</strong> {{ data.Region }}</p>
+                                <p><strong><i class="bi bi-table me-2"></i>DynamoDB Table:</strong> {{ data.TableName }}</p>
+                            </div>
+                            <div class="col-md-6">
+                                <a href="environment" class="btn btn-info">
+                                    <i class="bi bi-gear-fill me-2"></i>View Full Environment Details
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row mt-3">
+            <div class="col-12">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-dark text-white">
+                        <h5 class="mb-0"><i class="bi bi-activity me-2"></i>System Status</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-3 mb-3">
+                                <div class="d-flex align-items-center">
+                                    <div class="text-success me-3">
+                                        <i class="bi bi-check-circle-fill" style="font-size: 2rem;"></i>
+                                    </div>
+                                    <div>
+                                        <h6 class="mb-0">SQS Connection</h6>
+                                        <span class="badge bg-success">CONNECTED</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <div class="d-flex align-items-center">
+                                    <div class="text-success me-3">
+                                        <i class="bi bi-check-circle-fill" style="font-size: 2rem;"></i>
+                                    </div>
+                                    <div>
+                                        <h6 class="mb-0">DynamoDB</h6>
+                                        <span class="badge bg-success">CONNECTED</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <div class="d-flex align-items-center">
+                                    <div class="text-success me-3">
+                                        <i class="bi bi-check-circle-fill" style="font-size: 2rem;"></i>
+                                    </div>
+                                    <div>
+                                        <h6 class="mb-0">App Server</h6>
+                                        <span class="badge bg-success">RUNNING</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <div class="d-flex align-items-center">
+                                    <div class="text-success me-3">
+                                        <i class="bi bi-clock-fill" style="font-size: 2rem;"></i>
+                                    </div>
+                                    <div>
+                                        <h6 class="mb-0">Uptime</h6>
+                                        <span id="uptime">Calculating...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="bg-light text-center text-muted py-3 mt-5">
+        <div class="container">
+            <p class="mb-0">© 2023 Coffee Shop Management System</p>
+        </div>
+    </footer>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Simple uptime counter
+        const startTime = new Date();
+        
+        function updateUptime() {
+            const now = new Date();
+            const diff = now - startTime;
+            const seconds = Math.floor(diff / 1000) % 60;
+            const minutes = Math.floor(diff / (1000 * 60)) % 60;
+            const hours = Math.floor(diff / (1000 * 60 * 60));
+            
+            document.getElementById('uptime').textContent = 
+                `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+        
+        updateUptime();
+        setInterval(updateUptime, 1000);
+    </script>
+</body>
+</html>

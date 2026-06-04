@@ -1,0 +1,282 @@
+/* AWS Color Scheme */
+:root {
+  --aws-squid-ink: #232f3e;
+  --aws-anchor: #0073bb;
+  --aws-smile-orange: #ff9900;
+  --aws-light-grey: #f2f3f3;
+  --aws-charcoal: #31465f;
+  --aws-squid-ink-light: #465973;
+  --aws-font: 'Amazon Ember', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, 'Helvetica Neue', sans-serif;
+  --box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--aws-font);
+  line-height: 1.6;
+  color: var(--aws-charcoal);
+  background-color: var(--aws-light-grey);
+}
+
+.container {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+header {
+  background-color: var(--aws-squid-ink);
+  color: white;
+  padding: 1.5rem 0;
+  box-shadow: var(--box-shadow);
+}
+
+header h1 {
+  margin: 0;
+  font-size: 2rem;
+}
+
+/* Grid Layout */
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2rem;
+  margin-top: 2rem;
+  margin-bottom: 2rem;
+}
+
+@media (min-width: 768px) {
+  .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  
+  .orders-table {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (min-width: 992px) {
+  .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* Cards */
+.card {
+  background-color: white;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: var(--box-shadow);
+  transition: transform 0.3s ease;
+  height: 100%;
+}
+
+.card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+}
+
+.card-header {
+  background-color: var(--aws-squid-ink);
+  color: white;
+  padding: 1rem;
+  border-bottom: 4px solid var(--aws-smile-orange);
+}
+
+.card-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.card-body {
+  padding: 1.5rem;
+}
+
+/* Forms */
+.form-group {
+  margin-bottom: 1.25rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+input, select {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 1rem;
+  font-family: inherit;
+  transition: border 0.3s ease;
+}
+
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--aws-anchor);
+  box-shadow: 0 0 0 2px rgba(0, 115, 187, 0.2);
+}
+
+/* Buttons */
+.btn {
+  display: inline-block;
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 4px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.btn-primary {
+  background-color: var(--aws-anchor);
+  color: white;
+}
+
+.btn-primary:hover {
+  background-color: #005d96;
+}
+
+.btn-secondary {
+  background-color: #e7e7e7;
+  color: var(--aws-charcoal);
+}
+
+.btn-secondary:hover {
+  background-color: #d0d0d0;
+}
+
+/* Status */
+.status-refresh {
+  text-align: center;
+  margin-bottom: 1rem;
+  font-weight: 500;
+}
+
+.highlight {
+  color: var(--aws-smile-orange);
+  font-weight: bold;
+}
+
+.status-data {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 1rem;
+  background-color: #fafafa;
+}
+
+/* Table */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1rem;
+  text-align: left;
+}
+
+th, td {
+  padding: 0.75rem;
+  border-bottom: 1px solid #ddd;
+}
+
+th {
+  background-color: var(--aws-squid-ink-light);
+  color: white;
+}
+
+tr:nth-child(even) {
+  background-color: #f2f2f2;
+}
+
+tr:hover {
+  background-color: #e9f5ff;
+}
+
+/* Pagination */
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 1.5rem;
+}
+
+.pagination button {
+  padding: 0.5rem 1rem;
+}
+
+.pagination span {
+  margin: 0 1rem;
+}
+
+/* Footer */
+footer {
+  background-color: var(--aws-squid-ink);
+  color: white;
+  text-align: center;
+  padding: 2rem 0;
+  margin-top: 2rem;
+}
+
+/* Notification styles */
+.notification-container {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  width: 80%;
+  max-width: 500px;
+}
+
+.notification {
+  padding: 15px;
+  margin-bottom: 10px;
+  border-radius: 4px;
+  color: white;
+  text-align: center;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+  animation: slideIn 0.3s ease-out;
+}
+
+.notification.success {
+  background-color: #4CAF50;
+}
+
+.notification.error {
+  background-color: #f44336;
+}
+
+.notification.fade-out {
+  opacity: 0;
+  transition: opacity 0.5s;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(-20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Refresh button styling */
+.refresh-button {
+  margin-left: 10px;
+}
+
+.orders-table .card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}

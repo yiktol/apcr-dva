@@ -1,0 +1,456 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Security resources - VPC Flow Logs, AWS Config, and CloudTrail'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: ID of the VPC to enable flow logs on
+
+  FlowLogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+    Description: Number of days to retain flow log data in CloudWatch Logs
+
+  TrafficType:
+    Type: String
+    Default: REJECT
+    AllowedValues: [ACCEPT, REJECT, ALL]
+    Description: Type of traffic to capture
+
+  ConfigBucketName:
+    Type: String
+    Description: Name of the S3 bucket for AWS Config delivery (will be created)
+    Default: ''
+
+  ConfigAllSupported:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Whether AWS Config records all supported resource types
+
+  ConfigIncludeGlobalResources:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Whether AWS Config includes global resources (IAM, etc.)
+
+  CloudTrailRetentionDays:
+    Type: Number
+    Default: 90
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+    Description: Number of days to retain CloudTrail logs in CloudWatch Logs
+
+Conditions:
+  GenerateBucketName: !Equals [!Ref ConfigBucketName, '']
+
+Resources:
+  FlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FlowLogCloudWatchAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: '*'
+
+  FlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/vpc/flowlogs/${VpcId}'
+      RetentionInDays: !Ref FlowLogRetentionDays
+
+  VPCFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref VpcId
+      ResourceType: VPC
+      TrafficType: !Ref TrafficType
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref FlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
+      MaxAggregationInterval: 60
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-vpc-flow-log'
+
+  # ========== AWS Config Resources ==========
+
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !If
+        - GenerateBucketName
+        - !Sub 'aws-config-${AWS::AccountId}-${AWS::Region}'
+        - !Ref ConfigBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 90
+          - Id: TransitionToGlacier
+            Status: Enabled
+            Transitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 365
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-config-bucket'
+
+  ConfigBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ConfigBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSConfigBucketPermissionsCheck
+            Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt ConfigBucket.Arn
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+          - Sid: AWSConfigBucketDelivery
+            Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${ConfigBucket.Arn}/AWSLogs/${AWS::AccountId}/Config/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                AWS:SourceAccount: !Ref AWS::AccountId
+
+  ConfigRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWS_ConfigRole
+      Policies:
+        - PolicyName: ConfigS3DeliveryAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetBucketAcl
+                Resource:
+                  - !GetAtt ConfigBucket.Arn
+                  - !Sub '${ConfigBucket.Arn}/*'
+
+  ConfigRecorder:
+    Type: AWS::Config::ConfigurationRecorder
+    Properties:
+      Name: !Sub '${AWS::StackName}-recorder'
+      RoleARN: !GetAtt ConfigRole.Arn
+      RecordingGroup:
+        AllSupported: !Ref ConfigAllSupported
+        IncludeGlobalResourceTypes: !Ref ConfigIncludeGlobalResources
+
+  ConfigDeliveryChannel:
+    Type: AWS::Config::DeliveryChannel
+    DependsOn: ConfigBucketPolicy
+    Properties:
+      Name: !Sub '${AWS::StackName}-delivery-channel'
+      S3BucketName: !Ref ConfigBucket
+      ConfigSnapshotDeliveryProperties:
+        DeliveryFrequency: TwentyFour_Hours
+
+  # ========== CloudTrail Resources ==========
+
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'cloudtrail-logs-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToIA
+            Status: Enabled
+            Transitions:
+              - StorageClass: STANDARD_IA
+                TransitionInDays: 90
+          - Id: TransitionToGlacier
+            Status: Enabled
+            Transitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 365
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-cloudtrail-bucket'
+
+  CloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudTrailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt CloudTrailBucket.Arn
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${AWS::StackName}-trail'
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${CloudTrailBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                AWS:SourceArn: !Sub 'arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${AWS::StackName}-trail'
+
+  CloudTrailLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/cloudtrail/${AWS::StackName}'
+      RetentionInDays: !Ref CloudTrailRetentionDays
+
+  CloudTrailCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudTrailCloudWatchLogsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub '${CloudTrailLogGroup.Arn}:*'
+
+  CloudTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: CloudTrailBucketPolicy
+    Properties:
+      TrailName: !Sub '${AWS::StackName}-trail'
+      IsLogging: true
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      EnableLogFileValidation: true
+      S3BucketName: !Ref CloudTrailBucket
+      CloudWatchLogsLogGroupArn: !GetAtt CloudTrailLogGroup.Arn
+      CloudWatchLogsRoleArn: !GetAtt CloudTrailCloudWatchRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-trail'
+
+  # ========== Config Rules ==========
+
+  ConfigRuleCloudTrailEnabled:
+    Type: AWS::Config::ConfigRule
+    DependsOn: ConfigRecorder
+    Properties:
+      ConfigRuleName: cloudtrail-enabled
+      Description: Checks whether CloudTrail is enabled and sending logs to CloudWatch Logs
+      Source:
+        Owner: AWS
+        SourceIdentifier: CLOUD_TRAIL_ENABLED
+      MaximumExecutionFrequency: TwentyFour_Hours
+
+  ConfigRuleCloudTrailCloudWatchLogs:
+    Type: AWS::Config::ConfigRule
+    DependsOn: ConfigRecorder
+    Properties:
+      ConfigRuleName: cloud-trail-cloud-watch-logs-enabled
+      Description: Checks whether CloudTrail trails are configured to send logs to CloudWatch Logs
+      Source:
+        Owner: AWS
+        SourceIdentifier: CLOUD_TRAIL_CLOUD_WATCH_LOGS_ENABLED
+      MaximumExecutionFrequency: TwentyFour_Hours
+
+  ConfigRuleS3BucketSSE:
+    Type: AWS::Config::ConfigRule
+    DependsOn: ConfigRecorder
+    Properties:
+      ConfigRuleName: s3-bucket-server-side-encryption-enabled
+      Description: Checks whether S3 buckets have server-side encryption enabled
+      Source:
+        Owner: AWS
+        SourceIdentifier: S3_BUCKET_SERVER_SIDE_ENCRYPTION_ENABLED
+
+  ConfigRuleS3BucketSSLOnly:
+    Type: AWS::Config::ConfigRule
+    DependsOn: ConfigRecorder
+    Properties:
+      ConfigRuleName: s3-bucket-ssl-requests-only
+      Description: Checks whether S3 bucket policies require SSL for all requests
+      Source:
+        Owner: AWS
+        SourceIdentifier: S3_BUCKET_SSL_REQUESTS_ONLY
+
+  ConfigRuleCloudTrailEncryption:
+    Type: AWS::Config::ConfigRule
+    DependsOn: ConfigRecorder
+    Properties:
+      ConfigRuleName: cloud-trail-encryption-enabled
+      Description: Checks whether CloudTrail uses server-side encryption with KMS
+      Source:
+        Owner: AWS
+        SourceIdentifier: CLOUD_TRAIL_ENCRYPTION_ENABLED
+      MaximumExecutionFrequency: TwentyFour_Hours
+
+  # ========== S3 Bucket Cleanup on Stack Delete ==========
+
+  BucketCleanupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3BucketCleanupAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                  - s3:DeleteObject
+                  - s3:DeleteObjectVersion
+                Resource:
+                  - !GetAtt ConfigBucket.Arn
+                  - !Sub '${ConfigBucket.Arn}/*'
+                  - !GetAtt CloudTrailBucket.Arn
+                  - !Sub '${CloudTrailBucket.Arn}/*'
+
+  BucketCleanupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-bucket-cleanup'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 300
+      Role: !GetAtt BucketCleanupRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      s3 = boto3.resource('s3')
+                      bucket_names = event['ResourceProperties']['BucketNames']
+                      for bucket_name in bucket_names:
+                          try:
+                              bucket = s3.Bucket(bucket_name)
+                              bucket.object_versions.all().delete()
+                              bucket.objects.all().delete()
+                          except Exception as e:
+                              print(f"Error cleaning bucket {bucket_name}: {e}")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+
+  CleanupConfigBucket:
+    Type: Custom::S3BucketCleanup
+    Properties:
+      ServiceToken: !GetAtt BucketCleanupFunction.Arn
+      BucketNames:
+        - !Ref ConfigBucket
+        - !Ref CloudTrailBucket
+
+Outputs:
+  FlowLogId:
+    Description: ID of the VPC Flow Log
+    Value: !Ref VPCFlowLog
+
+  FlowLogGroupArn:
+    Description: ARN of the CloudWatch Log Group for flow logs
+    Value: !GetAtt FlowLogGroup.Arn
+
+  FlowLogRoleArn:
+    Description: ARN of the IAM Role used by VPC Flow Logs
+    Value: !GetAtt FlowLogRole.Arn
+
+  ConfigBucketArn:
+    Description: ARN of the S3 bucket used by AWS Config
+    Value: !GetAtt ConfigBucket.Arn
+
+  ConfigRecorderName:
+    Description: Name of the AWS Config Configuration Recorder
+    Value: !Ref ConfigRecorder
+
+  ConfigRoleArn:
+    Description: ARN of the IAM Role used by AWS Config
+    Value: !GetAtt ConfigRole.Arn
+
+  CloudTrailArn:
+    Description: ARN of the CloudTrail trail
+    Value: !GetAtt CloudTrail.Arn
+
+  CloudTrailBucketArn:
+    Description: ARN of the S3 bucket used by CloudTrail
+    Value: !GetAtt CloudTrailBucket.Arn
+
+  CloudTrailLogGroupArn:
+    Description: ARN of the CloudWatch Log Group for CloudTrail
+    Value: !GetAtt CloudTrailLogGroup.Arn

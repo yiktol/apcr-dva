@@ -1,0 +1,814 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Complete KMS App Manager Infrastructure with ECS Fargate Deployment'
+
+Parameters:
+  # Application Configuration
+  AppName:
+    Type: String
+    Default: kms-app
+    Description: Application name
+
+  # Networking Configuration
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where resources will be created
+    
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of public subnet IDs for the load balancer (minimum 2)
+
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of private subnet IDs for the ECS service (minimum 2)
+
+  # Container Configuration
+  DockerImage:
+    Type: String
+    Default: 'yiktol/kms-app:latest'
+    Description: Docker image from Docker Hub (format - image:tag)
+    
+  ContainerPort:
+    Type: Number
+    Default: 8501
+    Description: Port that the container exposes
+
+  # ECS Configuration
+  ServiceName:
+    Type: String
+    Default: 'kms-app-service'
+    Description: Name for the ECS service
+    
+  ClusterName:
+    Type: String
+    Default: 'kms-app-cluster'
+    Description: Name for the ECS cluster
+    
+  DesiredCount:
+    Type: Number
+    Default: 2
+    Description: Number of tasks to run
+    
+  TaskCpu:
+    Type: String
+    Default: '256'
+    AllowedValues: ['256', '512', '1024', '2048', '4096']
+    Description: CPU units for the task (256 = 0.25 vCPU)
+    
+  TaskMemory:
+    Type: String
+    Default: '512'
+    AllowedValues: ['512', '1024', '2048', '3072', '4096', '5120', '6144', '7168', '8192']
+    Description: Memory in MB for the task
+
+  # DNS and CloudFront Configuration
+  DomainName:
+    Type: String
+    Description: "Public Hosted Zone (must already exist in Route 53)"
+    
+  CloudFrontALBHandshakeSecretName:
+    Type: String
+    Description: "Name of the Secrets Manager secret for CloudFront-ALB handshake headers"
+    
+  CloudFrontPriceClass:
+    Type: String
+    Default: 'PriceClass_All'
+    AllowedValues: ['PriceClass_All', 'PriceClass_200', 'PriceClass_100']
+    Description: CloudFront distribution price class
+
+  MinimumProtocolVersion:
+    Type: String
+    Default: 'TLSv1.2_2021'
+    AllowedValues: ['TLSv1', 'TLSv1_2016', 'TLSv1.1_2016', 'TLSv1.2_2018', 'TLSv1.2_2019', 'TLSv1.2_2021']
+    Description: Minimum SSL/TLS protocol version for CloudFront
+
+Resources:
+  # ============================================================================
+  # DATA STORAGE RESOURCES
+  # ============================================================================
+  
+  # DynamoDB Table
+  KmsAppTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AppName}-table"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: name
+          AttributeType: S
+      KeySchema:
+        - AttributeName: name
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+
+  # ============================================================================
+  # SECURITY AND ENCRYPTION RESOURCES
+  # ============================================================================
+  
+  # KMS Key
+  KmsAppManagerKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "KMS Key for ${AppName} encryption"
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: 
+                - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+                - !GetAtt KmsAppManagerRole.Arn
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: Deny Decrypt for App Role
+            Effect: Deny
+            Principal:
+              AWS: 
+                - !GetAtt KmsAppManagerRole.Arn
+            Action: "kms:Decrypt"
+            Resource: "*"
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+
+  # KMS Key Alias
+  KmsAppManagerKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${AppName}"
+      TargetKeyId: !Ref KmsAppManagerKey
+
+  # ============================================================================
+  # IAM ROLES AND POLICIES
+  # ============================================================================
+  
+  # IAM Role for the application
+  KmsAppManagerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+      Policies:
+        - PolicyName: KmsAppManagerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:DescribeTable
+                  - dynamodb:CreateTable
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:ListTables
+                  - dynamodb:ListTagsOfResource
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                  - kms:GetKeyPolicy
+                  - kms:GetKeyRotationStatus
+                  - kms:ListKeys
+                  - kms:ListAliases
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "aws:PrincipalTag/Role": "Developer"
+              - Effect: Deny
+                Action:
+                  - kms:Encrypt
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:ListSecrets
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:GetLogEvents
+                  - logs:FilterLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                  - sts:AssumeRole
+                Resource: "*"
+  NoIssueKmsAppManagerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-role-2"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+      Policies:
+        - PolicyName: KmsAppManagerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:DescribeTable
+                  - dynamodb:CreateTable
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:ListTables
+                  - dynamodb:ListTagsOfResource
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                  - kms:GetKeyPolicy
+                  - kms:GetKeyRotationStatus
+                  - kms:ListKeys
+                  - kms:ListAliases
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:ListSecrets
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:GetLogEvents
+                  - logs:FilterLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                  - sts:AssumeRole
+                Resource: "*"
+  # ECS Task Execution Role
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-execution-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "${ECSLogGroup.Arn}*"
+
+  # ============================================================================
+  # SECRETS MANAGEMENT
+  # ============================================================================
+  
+  # Secrets Manager Secret
+  KmsAppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: kms/app-secrets
+      Description: !Sub "Configuration secrets for ${AppName} application"
+      SecretString: !Sub |
+        {
+          "aws_region": "${AWS::Region}",
+          "dynamodb_table_name": "${KmsAppTable}",
+          "kms_key_id": "${KmsAppManagerKey}",
+          "iam_role_arn": "${KmsAppManagerRole.Arn}"
+        }
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+
+  # ============================================================================
+  # NETWORKING AND SECURITY GROUPS
+  # ============================================================================
+  
+  # Security Group for ECS Tasks
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${AppName}-ecs-sg'
+        - Key: Application
+          Value: !Ref AppName
+
+  # Security Group for Application Load Balancer
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourcePrefixListId: pl-31a34658
+          Description: Allow HTTP from CloudFront
+        # - IpProtocol: tcp
+        #   FromPort: 443
+        #   ToPort: 443
+        #   SourcePrefixListId: pl-31a34658
+        #   Description: Allow HTTPS from CloudFront
+      Tags:
+        - Key: Name
+          Value: !Sub '${AppName}-alb-sg'
+        - Key: Application
+          Value: !Ref AppName
+
+  # ============================================================================
+  # LOAD BALANCER
+  # ============================================================================
+  
+  # Application Load Balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${AppName}-alb'
+      Scheme: internet-facing
+      Type: application
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${AppName}-alb'
+        - Key: Application
+          Value: !Ref AppName
+
+  # ALB Target Group
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${AppName}-tg'
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+      HealthCheckProtocol: HTTP
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+  NoIssueTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${AppName}-tg-2'
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+      HealthCheckProtocol: HTTP
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+  # Default ALB Listener - Deny all traffic not from CloudFront
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig: 
+            ContentType: text/plain
+            MessageBody: "Access Denied"
+            StatusCode: 403
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # ALB Custom Header Listener Rule for CloudFront traffic
+  NoIssueALBCustomHeaderListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref NoIssueTargetGroup
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_NAME}}']]
+            Values:
+              - !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_VALUE}}']]
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: 'x-cloudfront-path-pattern'
+            Values:
+              - '/no-issue/'
+      ListenerArn: !Ref ALBListener
+      Priority: 1
+  ALBCustomHeaderListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_NAME}}']]
+            Values:
+              - !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_VALUE}}']]
+      ListenerArn: !Ref ALBListener
+      Priority: 2
+  # ============================================================================
+  # DNS CONFIGURATION
+  # ============================================================================
+  
+  # DNS Record for Load Balancer
+  ApplicationDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub "${DomainName}."
+      Name: !Sub "lbkms.${DomainName}"
+      Type: A
+      SetIdentifier: !Sub "${AppName}-alb"
+      Weight: 100
+      AliasTarget:
+        HostedZoneId: !GetAtt ApplicationLoadBalancer.CanonicalHostedZoneID
+        DNSName: !GetAtt ApplicationLoadBalancer.DNSName
+        EvaluateTargetHealth: true
+      Comment: !Sub "DNS record for ${AppName} load balancer"
+
+  # ============================================================================
+  # CONTAINER ORCHESTRATION
+  # ============================================================================
+  
+  # ECS Cluster
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${AppName}-cluster"
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+
+  # ECS Task Definition
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${AppName}-task'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      ExecutionRoleArn: !Ref TaskExecutionRole
+      TaskRoleArn: !Ref KmsAppManagerRole
+      ContainerDefinitions:
+        - Name: !Sub '${AppName}-container'
+          Image: !Ref DockerImage
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Essential: true
+          Environment:
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+            - Name: DYNAMODB_TABLE_NAME
+              Value: !Ref KmsAppTable
+            - Name: KMS_KEY_ID
+              Value: !Ref KmsAppManagerKey
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - "curl -f http://localhost:8501/_stcore/health || exit 1"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+  NoIssueTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${AppName}-task-2'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      ExecutionRoleArn: !Ref TaskExecutionRole
+      TaskRoleArn: !Ref NoIssueKmsAppManagerRole
+      ContainerDefinitions:
+        - Name: !Sub '${AppName}-container'
+          Image: !Ref DockerImage
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Essential: true
+          Environment:
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+            - Name: DYNAMODB_TABLE_NAME
+              Value: !Ref KmsAppTable
+            - Name: KMS_KEY_ID
+              Value: !Ref KmsAppManagerKey
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - "curl -f http://localhost:8501/_stcore/health || exit 1"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+
+  # ECS Service
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: !Sub "${AppName}-service"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      EnableExecuteCommand: true
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets: !Ref PrivateSubnetIds
+      LoadBalancers:
+        - ContainerName: !Sub '${AppName}-container'
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      HealthCheckGracePeriodSeconds: 60
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+  NoIssueECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: !Sub "${AppName}-service-2"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref NoIssueTaskDefinition
+      EnableExecuteCommand: true
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets: !Ref PrivateSubnetIds
+      LoadBalancers:
+        - ContainerName: !Sub '${AppName}-container'
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref NoIssueTargetGroup
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      HealthCheckGracePeriodSeconds: 60
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+  # ============================================================================
+  # MONITORING AND LOGGING
+  # ============================================================================
+  
+  # CloudWatch Log Groups
+  KMSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/${AppName}/kms"
+      RetentionInDays: 30
+
+  DynamoDBLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/${AppName}/dynamodb"
+      RetentionInDays: 30
+
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${AppName}'
+      RetentionInDays: 7
+
+  ApplicationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/${AppName}/application"
+      RetentionInDays: 30
+
+  # CloudWatch Dashboard
+  KmsAppManagerDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${AppName}-dashboard"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "log",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/${AppName}/kms' | fields @timestamp, @message | sort @timestamp desc | limit 100",
+                "region": "${AWS::Region}",
+                "title": "KMS Activity Logs",
+                "view": "table"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/${AppName}/dynamodb' | fields @timestamp, @message | sort @timestamp desc | limit 100",
+                "region": "${AWS::Region}",
+                "title": "DynamoDB Activity Logs",
+                "view": "table"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 6,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/ecs/${AppName}' | fields @timestamp, @message | sort @timestamp desc | limit 100",
+                "region": "${AWS::Region}",
+                "title": "ECS Container Logs",
+                "view": "table"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  # ============================================================================
+  # INFRASTRUCTURE OUTPUTS
+  # ============================================================================
+  
+  # Data Storage Outputs
+  DynamoDBTableName:
+    Description: DynamoDB table name
+    Value: !Ref KmsAppTable
+    Export:
+      Name: !Sub '${AWS::StackName}-DynamoDBTableName'
+
+  # Security Outputs
+  KMSKeyId:
+    Description: KMS Key ID
+    Value: !Ref KmsAppManagerKey
+
+  KMSKeyAlias:
+    Description: KMS Key Alias
+    Value: !Ref KmsAppManagerKeyAlias
+
+  KMSAppRoleArn:
+    Description: IAM Role ARN for KMS App
+    Value: !GetAtt KmsAppManagerRole.Arn
+
+  TaskExecutionRoleArn:
+    Description: IAM Role ARN for ECS Task Execution
+    Value: !GetAtt TaskExecutionRole.Arn
+
+  # Secrets Management Outputs  
+  SecretsManagerSecretArn:
+    Description: Secrets Manager Secret ARN
+    Value: !Ref KmsAppSecret
+
+  SecretsManagerSecretName:
+    Description: Secrets Manager Secret Name
+    Value: kms/app-secrets
+
+
+  # Load Balancer Outputs
+  LoadBalancerDNS:
+    Description: DNS name of the load balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+      
+  LoadBalancerArn:
+    Description: ARN of the load balancer
+    Value: !Ref ApplicationLoadBalancer
+
+  ApplicationURL:
+    Description: Application DNS URL
+    Value: !Sub "http://lbkms.${DomainName}"
+
+  # Container Orchestration Outputs
+  ECSClusterArn:
+    Description: ARN of the ECS cluster
+    Value: !GetAtt ECSCluster.Arn
+      
+  ECSServiceArn:
+    Description: ARN of the ECS service
+    Value: !Ref ECSService
+
+  TaskDefinitionArn:
+    Description: ARN of the ECS Task Definition
+    Value: !Ref TaskDefinition
+
+  # Monitoring Outputs
+  CloudWatchDashboard:
+    Description: CloudWatch Dashboard URL
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${AppName}-dashboard"
+
+  ECSLogGroupName:
+    Description: ECS CloudWatch Log Group Name
+    Value: !Ref ECSLogGroup
+

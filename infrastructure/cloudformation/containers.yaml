@@ -1,0 +1,2345 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Amazon ECS - Fargate with CI/CD Pipeline and Auto Scaling'
+
+Parameters:
+  AppName:
+    Type: String
+    Default: coffeeshop
+    AllowedPattern: "[a-zA-Z0-9-]+"
+    ConstraintDescription: "App name can include letters, numbers, and hyphens only"
+    Description: "Name of the application (lowercase, no spaces)"
+  
+  SourceCodeBucket:
+    Type: String
+    Default: yikyakyuk-ap-southeast-1-875692608981
+    Description: "S3 bucket containing application source code"
+  
+  SourceCodeKey:
+    Type: String
+    Default: artifacts/website.zip
+    Description: "S3 key for application source code zip file"
+  
+  DomainName:
+    Type: String
+    Description: "Public Hosted Zone (must already exist in Route 53)"
+    
+  CloudFrontALBHandshakeSecretName:
+    Type: String
+    Description: "Name of the Secrets Manager secret for CloudFront-ALB handshake headers"
+
+  CertificateArn:
+    Type: String
+    Description: "ARN of the SSL certificate for HTTPS listener"
+
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: "VPC ID where resources will be deployed"
+
+  PrivateSubnetOne:
+    Type: AWS::EC2::Subnet::Id
+    Description: "First private subnet for ECS tasks"
+
+  PrivateSubnetTwo:
+    Type: AWS::EC2::Subnet::Id
+    Description: "Second private subnet for ECS tasks"
+
+  PrivateSubnetThree:
+    Type: AWS::EC2::Subnet::Id
+    Description: "Third private subnet for ECS tasks"
+
+  PublicSubnetOne:
+    Type: AWS::EC2::Subnet::Id
+    Description: "First public subnet for Load Balancer"
+
+  PublicSubnetTwo:
+    Type: AWS::EC2::Subnet::Id
+    Description: "Second public subnet for Load Balancer"
+
+  PublicSubnetThree:
+    Type: AWS::EC2::Subnet::Id
+    Description: "Third public subnet for Load Balancer"
+
+  DynamoDBTableName:
+    Type: String
+    Description: "DynamoDB table name for the application"
+
+  QueueOneUrl:
+    Type: String
+    Description: "URL of the first SQS queue"
+    Default: "https://sqs.us-east-1.amazonaws.com/123456789012/queue-one"
+
+  QueueTwoUrl:
+    Type: String
+    Description: "URL of the second SQS queue"
+    Default: "https://sqs.us-east-1.amazonaws.com/123456789012/queue-two"
+
+  MinCapacity:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 100
+    Description: "Minimum number of ECS tasks"
+
+  MaxCapacity:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 100
+    Description: "Maximum number of ECS tasks"
+
+  NotificationEmail:
+    Type: String
+    Description: "Email address for CloudWatch alarms"
+    Default: "admin@example.com"
+
+  CloudFrontPrefixListId:
+    Description: CloudFront prefix list ID for the region
+    Type: String
+
+Resources:
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Description: Security group for Application Load Balancer - allows HTTPS from CloudFront
+    Properties:
+      GroupName: ContainerAlbSecGroup
+      GroupDescription: Access to the public facing load balancer
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - SourcePrefixListId: !Ref CloudFrontPrefixListId
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+      Tags:
+        - Key: Name
+          Value: "ALB-Security-Group"
+
+  FargateSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Description: Security group for Fargate containers - allows HTTP(S) from ALB
+    Properties:
+      GroupName: FargateSecurityGroup
+      GroupDescription: Access to the fargate containers from the Internet
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - CidrIp: 10.0.0.0/8
+          IpProtocol: -1
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !GetAtt LoadBalancerSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !GetAtt LoadBalancerSecurityGroup.GroupId
+      Tags:
+        - Key: Name
+          Value: "Fargate-Security-Group"
+
+  #################################################
+  # KMS Key for Encryption
+  #################################################
+  
+  ApplicationKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "KMS Key for ${AppName} application encryption"
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Allow CloudWatch Logs
+            Effect: Allow
+            Principal:
+              Service: !Sub "logs.${AWS::Region}.amazonaws.com"
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-kms-key"
+        - Key: Purpose
+          Value: "Encryption for application resources"
+
+  ApplicationKMSAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${AppName}-key"
+      TargetKeyId: !Ref ApplicationKMSKey
+
+  #################################################
+  # S3 Resources - Moved up to avoid circular dependencies
+  #################################################
+  
+  # Pipeline Artifacts Bucket - IMPROVED
+  PipelineArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub "pipeline-${AWS::Region}-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref ApplicationKMSKey
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      # NotificationConfiguration:
+      #   CloudWatchConfigurations:
+      #     - Event: s3:ObjectCreated:*
+      #       CloudWatchConfiguration:
+      #         LogGroupName: !Sub "/aws/s3/${AppName}"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-pipeline-artifacts"
+        - Key: Purpose
+          Value: "Stores pipeline artifacts during CI/CD process"
+
+  #################################################
+  # IAM Roles and Policies
+  #################################################
+  
+  # ECS Auto Scaling Role - FIXED
+  ECSAutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: ECSAutoScalingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeServices
+                  - ecs:UpdateService
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:PutMetricAlarm
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-ecs-autoscaling-role"
+        - Key: Purpose
+          Value: "Enables ECS service auto scaling"
+  
+  # ECS Task Role - IMPROVED
+  ECSTaskRole:  
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: AmazonECSTaskRolePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: SSMPermissionsForTagAccess
+                Effect: Allow
+                Action: 
+                  - ec2:DescribeInstances
+                  - ssm:ListTagsForResource
+                  - ssm:DescribeParameters
+                  - ssm:GetParameter
+                Resource: "*"
+              
+              - Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Resource: "*"
+                
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - logs:CreateLogStream
+                  - logs:CreateLogGroup
+                  - logs:PutLogEvents
+                Resource: "*"
+
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}"
+
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: "*"
+
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:SendMessage
+                  - sqs:GetQueueAttributes
+                Resource: 
+                  - "*"
+
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt ApplicationKMSKey.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-ecs-task-role"
+        - Key: Purpose
+          Value: "Provides permissions to ECS tasks"
+  
+  # ECS Task Execution Role - IMPROVED
+  ECSTaskExecutionRole: 
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ECSTaskExecutionCustomPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:AttachNetworkInterface
+                  - ec2:CreateNetworkInterface
+                  - ec2:CreateNetworkInterfacePermission
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DeleteNetworkInterfacePermission
+                  - ec2:Describe*
+                  - ec2:DetachNetworkInterface
+                Resource: "*"
+              
+              - Effect: Allow
+                Action:
+                  - elasticloadbalancing:DeregisterTargets
+                  - elasticloadbalancing:Describe*
+                  - elasticloadbalancing:RegisterTargets
+                Resource: "*"
+              
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt ECSTaskRole.Arn
+              
+              - Effect: Allow
+                Action:
+                  - logs:DescribeLogStreams
+                  - logs:CreateLogStream
+                  - logs:CreateLogGroup
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/fargate/${AppName}*"
+
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt ApplicationKMSKey.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-ecs-task-execution-role"
+        - Key: Purpose
+          Value: "Executes ECS tasks"
+  
+  # CodePipeline Service Role - Create first without dependencies
+  CodePipelineServiceRole:  
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: 
+            - codebuild.amazonaws.com
+            - codedeploy.amazonaws.com
+            - codepipeline.amazonaws.com
+            - events.amazonaws.com
+          Action: "sts:AssumeRole"
+      Path: /
+      Policies:
+      - PolicyName: S3AccessPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:PutObject
+              - s3:GetBucketVersioning
+              - s3:ListBucket
+            Resource: 
+              - !Sub "${PipelineArtifactBucket.Arn}/*"
+              - !Sub "${PipelineArtifactBucket.Arn}"
+              - !Sub "arn:aws:s3:::${SourceCodeBucket}/*"
+              - !Sub "arn:aws:s3:::${SourceCodeBucket}"
+
+      - PolicyName: CodeCommitPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - codecommit:CancelUploadArchive
+              - codecommit:GetBranch
+              - codecommit:GetCommit
+              - codecommit:GetRepository
+              - codecommit:ListBranches
+              - codecommit:ListRepositories
+              - codecommit:PutRepository
+              - codecommit:GetUploadArchiveStatus
+              - codecommit:UploadArchive
+            Resource: !Sub "arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${AppName}"
+
+      - PolicyName: CodeBuildPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - codebuild:BatchGetBuilds
+              - codebuild:StartBuild
+              - codebuild:CreateReportGroup
+              - codebuild:CreateReport
+              - codebuild:UpdateReport
+              - codebuild:BatchPutTestCases
+              - codebuild:ListReportsForReportGroup
+            Resource: "*"
+
+      # UPDATED ECS DEPLOY POLICY - This is the main fix
+      - PolicyName: ECSDeployPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              # Core ECS Service Operations
+              - ecs:CreateService
+              - ecs:DeleteService
+              - ecs:DescribeServices
+              - ecs:UpdateService
+              - ecs:ListServices
+              
+              # Task Definition Operations
+              - ecs:DescribeTaskDefinition
+              - ecs:RegisterTaskDefinition
+              - ecs:DeregisterTaskDefinition
+              - ecs:ListTaskDefinitions
+              - ecs:ListTaskDefinitionFamilies
+              
+              # Task Operations
+              - ecs:DescribeTasks
+              - ecs:ListTasks
+              - ecs:RunTask
+              - ecs:StopTask
+              - ecs:StartTask
+              
+              # Cluster Operations
+              - ecs:DescribeClusters
+              - ecs:ListClusters
+              - ecs:ListContainerInstances
+              - ecs:DescribeContainerInstances
+              
+              # Capacity Provider Operations
+              - ecs:DescribeCapacityProviders
+              - ecs:PutClusterCapacityProviders
+              
+              # Service Discovery Operations
+              - ecs:ListAttributes
+              - ecs:PutAttributes
+              - ecs:DeleteAttributes
+              
+              # ECS Tags
+              - ecs:TagResource
+              - ecs:UntagResource
+              - ecs:ListTagsForResource
+            Resource: "*"
+            
+          - Effect: Allow
+            Action:
+              # IAM PassRole for ECS Tasks
+              - iam:PassRole
+            Resource: 
+              - !GetAtt ECSTaskRole.Arn
+              - !GetAtt ECSTaskExecutionRole.Arn
+            Condition:
+              StringEquals:
+                'iam:PassedToService': 
+                  - ecs-tasks.amazonaws.com
+                  
+          # Additional permissions for ECS deployment
+          - Effect: Allow
+            Action:
+              # Application Load Balancer
+              - elasticloadbalancing:DescribeTargetGroups
+              - elasticloadbalancing:DescribeListeners
+              - elasticloadbalancing:ModifyListener
+              - elasticloadbalancing:DescribeRules
+              - elasticloadbalancing:ModifyRule
+              - elasticloadbalancing:DescribeLoadBalancers
+              - elasticloadbalancing:DescribeTargetHealth
+              - elasticloadbalancing:RegisterTargets
+              - elasticloadbalancing:DeregisterTargets
+              
+              # Service Discovery
+              - servicediscovery:GetNamespace
+              - servicediscovery:GetService
+              - servicediscovery:GetInstance
+              - servicediscovery:ListNamespaces
+              - servicediscovery:ListServices
+              - servicediscovery:ListInstances
+              
+              # Auto Scaling
+              - application-autoscaling:DescribeScalableTargets
+              - application-autoscaling:DescribeScalingPolicies
+              - application-autoscaling:DescribeScheduledActions
+              - application-autoscaling:DescribeScalingActivities
+              
+              # CloudWatch Logs
+              - logs:CreateLogGroup
+              - logs:DescribeLogGroups
+              - logs:DescribeLogStreams
+              
+              # EC2 for VPC operations
+              - ec2:DescribeVpcs
+              - ec2:DescribeSubnets
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeNetworkInterfaces
+            Resource: "*"
+
+      - PolicyName: ECRPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:GetAuthorizationToken
+              - ecr:PutImage
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+              - ecr:DescribeRepositories
+              - ecr:DescribeImages
+              - ecr:ListImages
+            Resource: "*"
+
+      - PolicyName: CloudWatchLogsPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogGroups
+              - logs:DescribeLogStreams
+            Resource: 
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AppName}*"
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/fargate/${AppName}*"
+
+      - PolicyName: KMSPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+              - kms:DescribeKey
+            Resource: !GetAtt ApplicationKMSKey.Arn
+
+      # ADD THIS NEW POLICY for EventBridge
+      - PolicyName: EventBridgePolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - events:PutRule
+              - events:DeleteRule
+              - events:DescribeRule
+              - events:EnableRule
+              - events:DisableRule
+              - events:ListTargetsByRule
+              - events:PutTargets
+              - events:RemoveTargets
+            Resource: 
+              - !Sub "arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/codepipeline-${AppName}-event-rule"
+
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-codepipeline-role"
+        - Key: Purpose
+          Value: "Executes CI/CD pipeline operations"
+  
+  # Lambda Execution Role - IMPROVED
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Path: /
+      Policies:
+        - PolicyName: KMSAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt ApplicationKMSKey.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-lambda-execution-role"
+        - Key: Purpose
+          Value: "Executes cleanup Lambda functions"
+  
+  # S3 Bucket Cleanup Lambda Policy
+  S3BucketCleanupLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: S3BucketCleanupLambdaPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:ListBucket'
+              - 's3:GetBucketVersioning'
+              - 's3:ListBucketVersions'
+              - 's3:GetObject'
+              - 's3:GetObjectVersion'
+              - 's3:DeleteObject'
+              - 's3:DeleteObjectVersion'
+              - 's3:DeleteBucket'
+            Resource:
+              - !Sub "${PipelineArtifactBucket.Arn}/*"
+              - !Sub "${PipelineArtifactBucket.Arn}"
+      Roles:
+        - !Ref LambdaExecutionRole
+
+  # ECR Repository Cleanup Lambda Policy
+  ECRCleanupLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: ECRCleanupLambdaPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'ecr:ListImages'
+              - 'ecr:BatchDeleteImage'
+              - 'ecr:DescribeRepositories'
+            Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${AppName}'
+      Roles:
+        - !Ref LambdaExecutionRole
+
+  # S3 Bucket Policy - moved after role creation
+  PipelineArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn: CodePipelineServiceRole
+    Properties:
+      Bucket: !Ref PipelineArtifactBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: DenyInsecureConnections
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !Sub "arn:aws:s3:::${PipelineArtifactBucket}/*"
+              - !Sub "arn:aws:s3:::${PipelineArtifactBucket}"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+          - Sid: CodePipelineAccess
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetBucketVersioning
+              - s3:PutObject
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt CodePipelineServiceRole.Arn
+            Resource:
+              - !Sub "arn:aws:s3:::${PipelineArtifactBucket}"
+              - !Sub "arn:aws:s3:::${PipelineArtifactBucket}/*"
+
+  #################################################
+  # Log Groups - IMPROVED
+  #################################################
+  
+  CodeBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/codebuild/${AppName}"
+      RetentionInDays: 7
+      KmsKeyId: !GetAtt ApplicationKMSKey.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-codebuild-logs"
+        - Key: Purpose
+          Value: "Stores CodeBuild logs"
+      
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/fargate/${AppName}"
+      RetentionInDays: 7
+      KmsKeyId: !GetAtt ApplicationKMSKey.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-ecs-logs"
+        - Key: Purpose
+          Value: "Stores ECS container logs"
+
+  S3AccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/s3/${AppName}"
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt ApplicationKMSKey.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-s3-access-logs"
+        - Key: Purpose
+          Value: "Stores S3 access logs"
+
+  #################################################
+  # ECR Repository
+  #################################################
+  
+  ApplicationContainerRepository: 
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    Properties: 
+      RepositoryName: !Ref AppName
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: KMS
+        KmsKey: !Ref ApplicationKMSKey
+      RepositoryPolicyText: 
+        Version: "2012-10-17"
+        Statement: 
+        - Sid: AllowPushPull
+          Effect: Allow
+          Principal: 
+            AWS: !GetAtt CodePipelineServiceRole.Arn
+          Action: 
+          - "ecr:GetDownloadUrlForLayer"
+          - "ecr:BatchGetImage"
+          - "ecr:BatchCheckLayerAvailability"
+          - "ecr:PutImage"
+          - "ecr:InitiateLayerUpload"
+          - "ecr:UploadLayerPart"
+          - "ecr:CompleteLayerUpload"
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep only the last 5 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 5
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-container-registry"
+        - Key: Purpose
+          Value: "Stores application container images"
+
+  #################################################
+  # CI/CD Resources
+  #################################################
+  
+  # CodeCommit Repository
+  ApplicationSourceRepository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryDescription: !Sub "${AppName} Source Repository"
+      RepositoryName: !Ref AppName
+      Code:
+        BranchName: master
+        S3:
+          Bucket: !Ref SourceCodeBucket
+          Key: !Ref SourceCodeKey
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-source-repo"
+        - Key: Purpose
+          Value: "Stores application source code"
+
+  # CodeBuild Project
+  ApplicationBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: CodePipelineServiceRole
+    Properties:
+      Name: !Ref AppName
+      Description: !Sub "Build project for ${AppName}"
+      ServiceRole: !GetAtt CodePipelineServiceRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        PrivilegedMode: true
+        ImagePullCredentialsType: CODEBUILD
+        EnvironmentVariables: 
+        - Name: AWS_DEFAULT_REGION
+          Type: PLAINTEXT
+          Value: !Ref AWS::Region
+        - Name: AWS_ACCOUNT_ID
+          Type: PLAINTEXT
+          Value: !Ref AWS::AccountId
+        - Name: IMAGE_TAG
+          Type: PLAINTEXT
+          Value: "latest"
+        - Name: IMAGE_REPO_NAME
+          Type: PLAINTEXT
+          Value: !Ref AppName
+        - Name: CLUSTER_NAME
+          Type: PLAINTEXT
+          Value: CoffeeShop
+        - Name: SVC_NAME
+          Type: PLAINTEXT
+          Value: !Sub "${AppName}-svc"
+
+      Source:
+        Type: CODECOMMIT
+        Location: !Sub "https://git-codecommit.${AWS::Region}.amazonaws.com/v1/repos/${AppName}"
+        GitCloneDepth: 1
+      SourceVersion: refs/heads/master
+      TimeoutInMinutes: 10
+      LogsConfig: 
+        CloudWatchLogs: 
+          GroupName: !Ref CodeBuildLogGroup
+          Status: ENABLED
+          StreamName: build
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-build-project"
+        - Key: Purpose
+          Value: "Builds application artifacts"
+
+  # CodeDeploy Application
+  DeploymentApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Ref AppName
+      ComputePlatform: ECS
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-deployment-app"
+        - Key: Purpose
+          Value: "Manages application deployments"
+
+  #################################################
+  # ECS Resources
+  #################################################
+  
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: CoffeeShop
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Configuration:
+        ExecuteCommandConfiguration:
+          KmsKeyId: !Ref ApplicationKMSKey
+          LogConfiguration:
+            CloudWatchLogGroupName: !Ref ECSLogGroup
+          Logging: OVERRIDE
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-cluster"
+        - Key: Purpose
+          Value: "Hosts containerized application"
+
+  ApplicationTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities:
+        - "FARGATE"
+      NetworkMode: awsvpc
+      Family: !Ref AppName
+      Cpu: 256
+      Memory: 512
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Ref AppName
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${AppName}:latest"
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment: 
+            - Name: REGION
+              Value: !Ref AWS::Region
+            - Name: TABLENAME
+              Value: !Ref DynamoDBTableName
+            - Name: QUEUE_ONE_URL
+              Value: !Ref QueueOneUrl
+            - Name: QUEUE_TWO_URL
+              Value: !Ref QueueTwoUrl
+            - Name: PORT
+              Value: "8080"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options: 
+              "awslogs-group": !Ref ECSLogGroup
+              "awslogs-region": !Ref AWS::Region
+              "awslogs-stream-prefix": "coffee"
+          HealthCheck: 
+            Command: 
+            - "CMD-SHELL"
+            - "curl -f http://localhost:8080/ || exit 1"
+            Interval: 30
+            Retries: 3
+            Timeout: 10
+            StartPeriod: 60
+          Essential: true
+          ReadonlyRootFilesystem: false
+          LinuxParameters:
+            InitProcessEnabled: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-task-definition"
+        - Key: Purpose
+          Value: "Defines container configuration"
+
+  #################################################
+  # Service Discovery Resources
+  #################################################
+  
+  ServiceDiscoveryNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Sub "${AppName}.local"
+      Vpc: !Ref VPCId
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-discovery-namespace"
+        - Key: Purpose
+          Value: "Provides internal DNS for service discovery"
+
+  ServiceDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: !Ref AppName
+      DnsConfig:
+        NamespaceId: !Ref ServiceDiscoveryNamespace
+        DnsRecords:
+          - Type: A
+            TTL: 60
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-discovery-service"
+        - Key: Purpose
+          Value: "Registers service instances"
+
+  #################################################
+  # Load Balancer Resources
+  #################################################
+  
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${AppName}-alb"
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "30"
+        - Key: deletion_protection.enabled
+          Value: "false"
+        - Key: routing.http2.enabled
+          Value: "true"
+        - Key: access_logs.s3.enabled
+          Value: "false"
+        - Key: routing.http.drop_invalid_header_fields.enabled
+          Value: "true"
+      Subnets:
+        - !Ref PublicSubnetOne
+        - !Ref PublicSubnetTwo
+        - !Ref PublicSubnetThree
+      SecurityGroups: 
+        - !GetAtt LoadBalancerSecurityGroup.GroupId
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-alb"
+        - Key: Purpose
+          Value: "Routes traffic to application containers"
+
+  ApplicationTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${AppName}-tg"
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: "/"
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 3
+      Port: 8080
+      Protocol: HTTP
+      ProtocolVersion: HTTP1
+      TargetType: ip
+      UnhealthyThresholdCount: 5
+      VpcId: !Ref VPCId
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+        - Key: slow_start.duration_seconds
+          Value: '30'
+        - Key: stickiness.enabled
+          Value: 'false'
+
+  ALBHTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            ContentType: text/plain
+            MessageBody: "Access Denied"
+            StatusCode: 403
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Certificates: 
+        - CertificateArn: !Ref CertificateArn
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: "ELBSecurityPolicy-TLS-1-2-2017-01"
+
+  ALBCustomHeaderListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ApplicationTargetGroup
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_NAME}}']]
+            Values:
+              - !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_VALUE}}']]
+        - Field: path-pattern
+          Values:
+            - '/*'
+      ListenerArn: !Ref ALBHTTPSListener
+      Priority: 50
+
+  ALBListenerCertificate:
+    Type: AWS::ElasticLoadBalancingV2::ListenerCertificate
+    Properties: 
+      Certificates: 
+        - CertificateArn: !Ref CertificateArn
+      ListenerArn: !Ref ALBHTTPSListener
+
+  ALBHTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: redirect
+        RedirectConfig:
+          Protocol: "HTTPS"
+          Port: "443"
+          Host: "#{host}"
+          Path: "/#{path}"
+          Query: "#{query}"
+          StatusCode: "HTTP_301"
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  ApplicationService: 
+    Type: AWS::ECS::Service
+    DependsOn: ALBHTTPSListener
+    Properties:
+      ServiceName: !Sub "${AppName}-svc"
+      Cluster: !Ref ECSCluster
+      DesiredCount: !Ref MinCapacity
+      CapacityProviderStrategy: 
+      - Base: 1
+        CapacityProvider: FARGATE
+        Weight: 1
+      - CapacityProvider: FARGATE_SPOT
+        Weight: 4
+      HealthCheckGracePeriodSeconds: 60
+      EnableExecuteCommand: true
+      TaskDefinition: !Ref ApplicationTaskDefinition
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: 
+            - !GetAtt FargateSecurityGroup.GroupId
+          Subnets: 
+            - !Ref PrivateSubnetOne
+            - !Ref PrivateSubnetTwo
+            - !Ref PrivateSubnetThree
+      LoadBalancers:
+        - ContainerName: !Ref AppName
+          ContainerPort: 8080
+          TargetGroupArn: !Ref ApplicationTargetGroup
+      ServiceRegistries:
+        - RegistryArn: !GetAtt ServiceDiscoveryService.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-service"
+        - Key: Purpose
+          Value: "Manages application container instances"
+
+  # CodePipeline - moved after all dependencies are created
+  ApplicationDeploymentPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    DependsOn: 
+      - ApplicationBuildProject
+      - ECSCluster
+      - ApplicationService
+    Properties:
+      ArtifactStore:
+        Location: !Ref PipelineArtifactBucket
+        Type: S3
+        EncryptionKey:
+          Id: !Ref ApplicationKMSKey
+          Type: KMS
+      Name: !Sub "${AppName}-Pipeline"
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      Stages:
+      - Name: Source
+        Actions:
+        - ActionTypeId:
+            Category: Source
+            Owner: AWS
+            Provider: CodeCommit
+            Version: 1
+          Configuration:
+            BranchName: master
+            OutputArtifactFormat: CODE_ZIP
+            PollForSourceChanges: false
+            RepositoryName: !GetAtt ApplicationSourceRepository.Name
+          OutputArtifacts: 
+            - Name: SourceArtifact
+          Name: ApplicationSource
+          Region: !Ref AWS::Region
+          Namespace: SourceVariables
+          RunOrder: 1
+      - Name: Build
+        Actions:
+        - ActionTypeId:
+            Category: Build
+            Owner: AWS
+            Provider: CodeBuild
+            Version: 1
+          Configuration:
+            ProjectName: !Ref AppName
+          InputArtifacts:
+          - Name: SourceArtifact
+          Name: PackageExport
+          OutputArtifacts:
+          - Name: BuildArtifact
+          RunOrder: 1
+          Region: !Ref AWS::Region
+          Namespace: BuildVariables
+      - Name: Deploy
+        Actions:
+        - ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: ECS
+            Version: 1
+          Configuration:
+            ClusterName: !Ref ECSCluster
+            ServiceName: !GetAtt ApplicationService.Name
+            FileName: imagedefinitions.json
+          InputArtifacts:
+          - Name: BuildArtifact
+          Name: DeployArtifact
+          RunOrder: 1
+          Region: !Ref AWS::Region
+          Namespace: DeployVariables
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-pipeline"
+        - Key: Purpose
+          Value: "Orchestrates CI/CD process"
+
+
+#################################################
+# EventBridge Role for Pipeline Triggers
+#################################################
+
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: EventBridgeExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codepipeline:StartPipelineExecution
+                Resource: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ApplicationDeploymentPipeline}"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-eventbridge-role"
+        - Key: Purpose
+          Value: "Allows EventBridge to trigger CodePipeline"
+
+  # CloudWatch Events Rule for CodeCommit changes - moved after pipeline
+  SourceCodeChangeEventRule:
+    Type: AWS::Events::Rule
+    DependsOn: 
+      - ApplicationDeploymentPipeline
+      - EventBridgeRole
+    Properties:
+      Description: "Trigger pipeline on source code changes to master branch"
+      EventPattern:
+        source:
+          - "aws.codecommit"
+        detail-type:
+          - "CodeCommit Repository State Change"
+        resources:
+          - !GetAtt ApplicationSourceRepository.Arn
+        detail:
+          event:
+            - "referenceCreated"
+            - "referenceUpdated"
+          referenceType:
+            - "branch"
+          referenceName:
+            - "master"
+      Name: !Sub "codepipeline-${AppName}-event-rule"
+      State: ENABLED
+      Targets:
+        - Arn: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ApplicationDeploymentPipeline}"
+          Id: "CodePipelineTarget"
+          RoleArn: !GetAtt EventBridgeRole.Arn
+
+  #################################################
+  # DNS Resources
+  #################################################
+  
+  ApplicationDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub "${DomainName}."
+      Name: !Sub "lbcicd.${DomainName}"
+      Type: A
+      SetIdentifier: !Sub "${AppName}-alb"
+      Weight: 100
+      AliasTarget:
+        HostedZoneId: !GetAtt ApplicationLoadBalancer.CanonicalHostedZoneID
+        DNSName: !GetAtt ApplicationLoadBalancer.DNSName
+        EvaluateTargetHealth: true
+      Comment: "DNS record for application load balancer"
+
+  ApplicationHealthCheck:  
+    Type: AWS::Route53::HealthCheck
+    Properties: 
+      HealthCheckConfig: 
+        Port: 443
+        Type: HTTPS
+        ResourcePath: !Join ['',['/','cicd','/index.html']]
+        FullyQualifiedDomainName: !Sub 'lbcicd.${DomainName}'
+        RequestInterval: 30
+        FailureThreshold: 2
+      HealthCheckTags: 
+        - Key: Name
+          Value: !Sub "cicd-${AppName}-health"
+        - Key: Purpose
+          Value: "Monitors application availability"
+  
+  #################################################
+  # Auto Scaling Configuration
+  #################################################
+  
+  ApplicationAutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: !Ref MinCapacity
+      MaxCapacity: !Ref MaxCapacity
+      ResourceId: !Sub "service/${ECSCluster}/${ApplicationService.Name}"
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      RoleARN: !GetAtt ECSAutoScalingRole.Arn
+
+  # Target Tracking Scaling Policy for Request Count
+  RequestCountScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub "${AppName}-request-tracking-scaling"
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ApplicationAutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration: 
+        DisableScaleIn: false
+        PredefinedMetricSpecification: 
+          PredefinedMetricType: ALBRequestCountPerTarget
+          ResourceLabel: !Sub "${ApplicationLoadBalancer.LoadBalancerFullName}/${ApplicationTargetGroup.TargetGroupFullName}"
+        ScaleInCooldown: 120
+        ScaleOutCooldown: 60
+        TargetValue: 15
+
+  # Target Tracking Scaling Policy for CPU
+  CPUTrackingScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub "${AppName}-cpu-tracking-scaling"
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ApplicationAutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        DisableScaleIn: false
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+        TargetValue: 70
+
+  # Memory Tracking Scaling Policy
+  MemoryTrackingScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub "${AppName}-memory-tracking-scaling"
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ApplicationAutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        DisableScaleIn: false
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageMemoryUtilization
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+        TargetValue: 80
+
+  #################################################
+  # SNS Topic for Alerts - moved up to avoid dependencies
+  #################################################
+  
+  SNSTopicAlerts:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AppName}-alerts"
+      DisplayName: !Sub "${AppName} Application Alerts"
+      KmsMasterKeyId: !Ref ApplicationKMSKey
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-alerts-topic"
+        - Key: Purpose
+          Value: "Sends application alerts and notifications"
+
+  SNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref SNSTopicAlerts
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  #################################################
+  # CloudWatch Alarms - moved after SNS
+  #################################################
+  
+  HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-high-cpu"
+      AlarmDescription: "Alarm when CPU exceeds 80%"
+      MetricName: CPUUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: !Ref ApplicationService
+        - Name: ClusterName
+          Value: !Ref ECSCluster
+      AlarmActions:
+        - !Ref SNSTopicAlerts
+      TreatMissingData: notBreaching
+
+  HighMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-high-memory"
+      AlarmDescription: "Alarm when Memory exceeds 85%"
+      MetricName: MemoryUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: !Ref ApplicationService
+        - Name: ClusterName
+          Value: !Ref ECSCluster
+      AlarmActions:
+        - !Ref SNSTopicAlerts
+      TreatMissingData: notBreaching
+
+  HighResponseTimeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-high-response-time"
+      AlarmDescription: "Alarm when response time exceeds 2 seconds"
+      MetricName: TargetResponseTime
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 2
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+      AlarmActions:
+        - !Ref SNSTopicAlerts
+      TreatMissingData: notBreaching
+
+  UnhealthyHostsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-unhealthy-hosts"
+      AlarmDescription: "Alarm when there are unhealthy hosts"
+      MetricName: UnHealthyHostCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt ApplicationTargetGroup.TargetGroupFullName
+      AlarmActions:
+        - !Ref SNSTopicAlerts
+      TreatMissingData: notBreaching
+
+  HealthCheckFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-health-check-failure"
+      AlarmDescription: "Alarm when Route53 health check fails"
+      MetricName: HealthCheckStatus
+      Namespace: AWS/Route53
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: HealthCheckId
+          Value: !Ref ApplicationHealthCheck
+      AlarmActions:
+        - !Ref SNSTopicAlerts
+      TreatMissingData: breaching
+
+  PipelineFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    DependsOn: ApplicationDeploymentPipeline
+    Properties:
+      AlarmName: !Sub "${AppName}-pipeline-failure"
+      AlarmDescription: "Alarm when CodePipeline execution fails"
+      MetricName: PipelineExecutionFailure
+      Namespace: AWS/CodePipeline
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: PipelineName
+          Value: !Ref ApplicationDeploymentPipeline
+      AlarmActions:
+        - !Ref SNSTopicAlerts
+      TreatMissingData: notBreaching
+
+  #################################################
+  # CloudWatch Dashboard - moved to end to avoid dependencies
+  #################################################
+  
+  ApplicationDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    DependsOn: 
+      - ApplicationService
+      - ApplicationLoadBalancer
+      - ApplicationTargetGroup
+      - ApplicationDeploymentPipeline
+      - ApplicationHealthCheck
+      - ApplicationBuildProject
+    Properties:
+      DashboardName: !Sub "${AppName}-dashboard"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ECS", "CPUUtilization", "ServiceName", "${ApplicationService.Name}", "ClusterName", "${ECSCluster}", { "stat": "Average", "label": "CPU Average" } ],
+                  [ "...", { "stat": "Maximum", "label": "CPU Maximum" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ECS Service - CPU Utilization",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 100
+                  }
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "Scale Out Threshold",
+                      "value": 70,
+                      "fill": "above",
+                      "color": "#ff7f0e"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ECS", "MemoryUtilization", "ServiceName", "${ApplicationService.Name}", "ClusterName", "${ECSCluster}", { "stat": "Average", "label": "Memory Average" } ],
+                  [ "...", { "stat": "Maximum", "label": "Memory Maximum" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ECS Service - Memory Utilization",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 100
+                  }
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "Scale Out Threshold",
+                      "value": 80,
+                      "fill": "above",
+                      "color": "#d62728"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ECS", "RunningTaskCount", "ServiceName", "${ApplicationService.Name}", "ClusterName", "${ECSCluster}", { "stat": "Average", "label": "Running", "color": "#2ca02c" } ],
+                  [ ".", "DesiredCount", ".", ".", ".", ".", { "stat": "Average", "label": "Desired", "color": "#1f77b4" } ],
+                  [ ".", "PendingTaskCount", ".", ".", ".", ".", { "stat": "Average", "label": "Pending", "color": "#ff7f0e" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ECS Service - Task Counts",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8,
+              "y": 6,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ECS", "CPUReservation", "ClusterName", "${ECSCluster}", { "stat": "Average" } ],
+                  [ ".", "MemoryReservation", ".", ".", { "stat": "Average" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ECS Cluster - Resource Reservation",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 100
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16,
+              "y": 6,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "ECS/ContainerInsights", "TaskCount", "ServiceName", "${ApplicationService.Name}", "ClusterName", "${ECSCluster}", { "stat": "Average" } ]
+                ],
+                "view": "singleValue",
+                "region": "${AWS::Region}",
+                "title": "Current Task Count",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Sum", "label": "Total Requests" } ],
+                  [ ".", "HTTPCode_Target_2XX_Count", ".", ".", { "stat": "Sum", "label": "2XX Success", "color": "#2ca02c" } ],
+                  [ ".", "HTTPCode_Target_4XX_Count", ".", ".", { "stat": "Sum", "label": "4XX Client Error", "color": "#ff7f0e" } ],
+                  [ ".", "HTTPCode_Target_5XX_Count", ".", ".", { "stat": "Sum", "label": "5XX Server Error", "color": "#d62728" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ALB - Request Count by Status Code",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Average", "label": "Average" } ],
+                  [ "...", { "stat": "p50", "label": "p50" } ],
+                  [ "...", { "stat": "p90", "label": "p90" } ],
+                  [ "...", { "stat": "p99", "label": "p99" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ALB - Target Response Time",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "SLA Threshold",
+                      "value": 2,
+                      "fill": "above",
+                      "color": "#d62728"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 18,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", "${ApplicationTargetGroup.TargetGroupFullName}", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Average", "label": "Healthy", "color": "#2ca02c" } ],
+                  [ ".", "UnHealthyHostCount", ".", ".", ".", ".", { "stat": "Average", "label": "Unhealthy", "color": "#d62728" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Target Group - Host Health",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8,
+              "y": 18,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "ActiveConnectionCount", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Sum" } ],
+                  [ ".", "NewConnectionCount", ".", ".", { "stat": "Sum" } ],
+                  [ ".", "RejectedConnectionCount", ".", ".", { "stat": "Sum", "color": "#d62728" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ALB - Connection Metrics",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16,
+              "y": 18,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "ProcessedBytes", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Sum" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ALB - Processed Bytes",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 24,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/CodeBuild", "SucceededBuilds", "ProjectName", "${AppName}", { "stat": "Sum", "label": "Succeeded", "color": "#2ca02c" } ],
+                  [ ".", "FailedBuilds", ".", ".", { "stat": "Sum", "label": "Failed", "color": "#d62728" } ],
+                  [ ".", "Builds", ".", ".", { "stat": "Sum", "label": "Total Builds" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "CodeBuild - Build Results",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8,
+              "y": 24,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/CodeBuild", "Duration", "ProjectName", "${AppName}", { "stat": "Average", "label": "Average Duration" } ],
+                  [ "...", { "stat": "Maximum", "label": "Max Duration" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "CodeBuild - Build Duration",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16,
+              "y": 24,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/CodeBuild", "DownloadSourceDuration", "ProjectName", "${AppName}", { "stat": "Average" } ],
+                  [ ".", "SubmitBuildDuration", ".", ".", { "stat": "Average" } ],
+                  [ ".", "ProvisioningDuration", ".", ".", { "stat": "Average" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": true,
+                "region": "${AWS::Region}",
+                "title": "CodeBuild - Phase Durations",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 30,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/CodePipeline", "PipelineExecutionSuccess", "PipelineName", "${ApplicationDeploymentPipeline}", { "stat": "Sum", "label": "Success", "color": "#2ca02c" } ],
+                  [ ".", "PipelineExecutionFailure", ".", ".", { "stat": "Sum", "label": "Failure", "color": "#d62728" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "CodePipeline - Execution Results",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 30,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/CodePipeline", "ActionExecutionDuration", "PipelineName", "${ApplicationDeploymentPipeline}", { "stat": "Average" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "CodePipeline - Action Duration",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 36,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Route53", "HealthCheckStatus", "HealthCheckId", "${ApplicationHealthCheck}", { "stat": "Minimum", "label": "Health Status" } ],
+                  [ ".", "HealthCheckPercentHealthy", ".", ".", { "stat": "Average", "label": "Percent Healthy" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "us-east-1",
+                "title": "Route53 - Health Check Status",
+                "period": 60,
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 1
+                  }
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "Unhealthy",
+                      "value": 0.5,
+                      "fill": "below",
+                      "color": "#d62728"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 36,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Route53", "ConnectionTime", "HealthCheckId", "${ApplicationHealthCheck}", { "stat": "Average" } ],
+                  [ ".", "SSLHandshakeTime", ".", ".", { "stat": "Average" } ],
+                  [ ".", "TimeToFirstByte", ".", ".", { "stat": "Average" } ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "us-east-1",
+                "title": "Route53 - Health Check Timing",
+                "period": 60,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 42,
+              "width": 8,
+              "height": 4,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ECS", "CPUUtilization", "ServiceName", "${ApplicationService.Name}", "ClusterName", "${ECSCluster}", { "stat": "Average" } ]
+                ],
+                "view": "singleValue",
+                "region": "${AWS::Region}",
+                "title": "Current CPU Utilization",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8,
+              "y": 42,
+              "width": 8,
+              "height": 4,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ECS", "MemoryUtilization", "ServiceName", "${ApplicationService.Name}", "ClusterName", "${ECSCluster}", { "stat": "Average" } ]
+                ],
+                "view": "singleValue",
+                "region": "${AWS::Region}",
+                "title": "Current Memory Utilization",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16,
+              "y": 42,
+              "width": 8,
+              "height": 4,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${ApplicationLoadBalancer.LoadBalancerFullName}", { "stat": "Average" } ]
+                ],
+                "view": "singleValue",
+                "region": "${AWS::Region}",
+                "title": "Current Response Time (avg)",
+                "period": 300,
+                "setPeriodToTimeRange": true
+              }
+            }
+          ]
+        }
+
+  #################################################
+  # Cleanup Resources - moved to end
+  #################################################
+  
+  # S3 Bucket Cleanup Function
+  S3CleanupFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Description: "Function to empty and delete S3 buckets during stack deletion"
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Timeout: 300
+      Environment:
+        Variables:
+          KMS_KEY_ID: !Ref ApplicationKMSKey
+      Code:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: lambda/deletes3.zip
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-s3-cleanup-function"
+        - Key: Purpose
+          Value: "Empties S3 buckets before stack deletion"
+
+  S3CleanupLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${S3CleanupFunction}
+      RetentionInDays: 1
+      KmsKeyId: !GetAtt ApplicationKMSKey.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-s3-cleanup-logs"
+        - Key: Purpose
+          Value: "Stores S3 cleanup Lambda logs"
+
+  S3CleanupAction:
+    Type: Custom::S3Action
+    Properties:
+      ServiceToken: !GetAtt S3CleanupFunction.Arn
+      Buckets: 
+        - !Ref PipelineArtifactBucket
+
+  # Empty ECR Repo Function
+  ECRCleanupFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Description: "Function to empty ECR repository before deletion"
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Timeout: 300
+      Environment:
+        Variables:
+          KMS_KEY_ID: !Ref ApplicationKMSKey
+      Code:
+        S3Bucket: !Ref SourceCodeBucket
+        S3Key: lambda/emptyecr.zip
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-ecr-cleanup-function"
+        - Key: Purpose
+          Value: "Empties ECR repository before deletion"
+
+  ECRCleanupLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ECRCleanupFunction}
+      RetentionInDays: 1
+      KmsKeyId: !GetAtt ApplicationKMSKey.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "${AppName}-ecr-cleanup-logs"
+        - Key: Purpose
+          Value: "Stores ECR cleanup Lambda logs"
+
+  ECRCleanupAction:
+    Type: Custom::ECRAction
+    DependsOn: ApplicationContainerRepository
+    Properties:
+      ServiceToken: !GetAtt ECRCleanupFunction.Arn
+      ECR_REPOSITORY_NAME: !Ref ApplicationContainerRepository
+      ACCOUNT_ID: !Ref AWS::AccountId
+
+Outputs:
+  # Infrastructure Outputs
+  ApplicationLoadBalancerDNS:
+    Description: "Application Load Balancer DNS Name"
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+  ApplicationLoadBalancerArn:
+    Description: "Application Load Balancer ARN"
+    Value: !Ref ApplicationLoadBalancer
+
+  ApplicationLoadBalancerHostedZoneID:
+    Description: "Application Load Balancer Hosted Zone ID"
+    Value: !GetAtt ApplicationLoadBalancer.CanonicalHostedZoneID
+
+  ApplicationTargetGroupArn:
+    Description: "Application Target Group ARN"
+    Value: !Ref ApplicationTargetGroup
+
+  ALBSecurityGroupId:
+    Description: "ALB Security Group ID"
+    Value: !GetAtt LoadBalancerSecurityGroup.GroupId
+
+  ALBHTTPSListener:
+    Description: "ALB HTTPS Listener ARN"
+    Value: !Ref ALBHTTPSListener
+
+  # ECS Outputs
+  ECSClusterName:
+    Description: "ECS Cluster Name"
+    Value: !Ref ECSCluster
+
+  ECSClusterArn:
+    Description: "ECS Cluster ARN"
+    Value: !GetAtt ECSCluster.Arn
+
+  ECSServiceName:
+    Description: "ECS Service Name"
+    Value: !Ref ApplicationService
+
+  ECSServiceArn:
+    Description: "ECS Service ARN"
+    Value: !Ref ApplicationService
+
+  ECSTaskDefinitionArn:
+    Description: "ECS Task Definition ARN"
+    Value: !Ref ApplicationTaskDefinition
+
+  # Service Discovery Outputs
+  ServiceDiscoveryNamespaceId:
+    Description: "Service Discovery Namespace ID"
+    Value: !Ref ServiceDiscoveryNamespace
+
+  ServiceDiscoveryServiceId:
+    Description: "Service Discovery Service ID"
+    Value: !Ref ServiceDiscoveryService
+
+  ServiceDiscoveryURL:
+    Description: "Service Discovery URL (internal)"
+    Value: !Sub "${AppName}.${AppName}.local"
+
+  # CI/CD Outputs
+  CodeCommitRepositoryArn:
+    Description: "CodeCommit Repository ARN"
+    Value: !GetAtt ApplicationSourceRepository.Arn
+
+  CodeCommitRepositoryName:
+    Description: "CodeCommit Repository Name"
+    Value: !GetAtt ApplicationSourceRepository.Name
+
+  CodeCommitRepositoryCloneURL:
+    Description: "CodeCommit Repository Clone URL (HTTPS)"
+    Value: !GetAtt ApplicationSourceRepository.CloneUrlHttp
+
+  CodeBuildProjectName:
+    Description: "CodeBuild Project Name"
+    Value: !Ref ApplicationBuildProject
+
+  CodeBuildProjectArn:
+    Description: "CodeBuild Project ARN"
+    Value: !GetAtt ApplicationBuildProject.Arn
+
+  CodePipelineName:
+    Description: "CodePipeline Name"
+    Value: !Ref ApplicationDeploymentPipeline
+
+  CodePipelineArn:
+    Description: "CodePipeline ARN"
+    Value: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ApplicationDeploymentPipeline}"
+
+  ECRRepositoryName:
+    Description: "ECR Repository Name"
+    Value: !Ref ApplicationContainerRepository
+
+  ECRRepositoryURI:
+    Description: "ECR Repository URI"
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ApplicationContainerRepository}"
+
+  # S3 Outputs
+  PipelineArtifactBucketName:
+    Description: "Pipeline Artifact Bucket Name"
+    Value: !Ref PipelineArtifactBucket
+
+  PipelineArtifactBucketArn:
+    Description: "Pipeline Artifact Bucket ARN"
+    Value: !GetAtt PipelineArtifactBucket.Arn
+
+  # DNS and URL Outputs
+  ApplicationURL:
+    Description: "Application URL (HTTPS)"
+    Value: !Sub "https://lbcicd.${DomainName}"
+
+  ApplicationDNSRecordName:
+    Description: "Application DNS Record Name"
+    Value: !Sub "lbcicd.${DomainName}"
+
+  Route53HealthCheckId:
+    Description: "Route53 Health Check ID"
+    Value: !Ref ApplicationHealthCheck
+
+  # Security Outputs
+  KMSKeyId:
+    Description: "KMS Key ID for Encryption"
+    Value: !Ref ApplicationKMSKey
+
+  KMSKeyArn:
+    Description: "KMS Key ARN for Encryption"
+    Value: !GetAtt ApplicationKMSKey.Arn
+
+  # IAM Outputs
+  ECSTaskRoleArn:
+    Description: "ECS Task Role ARN"
+    Value: !GetAtt ECSTaskRole.Arn
+
+  ECSTaskExecutionRoleArn:
+    Description: "ECS Task Execution Role ARN"
+    Value: !GetAtt ECSTaskExecutionRole.Arn
+
+  CodePipelineServiceRoleArn:
+    Description: "CodePipeline Service Role ARN"
+    Value: !GetAtt CodePipelineServiceRole.Arn
+
+  # CloudWatch Outputs
+  CloudWatchDashboardName:
+    Description: "CloudWatch Dashboard Name"
+    Value: !Ref ApplicationDashboard
+
+  CloudWatchDashboardURL:
+    Description: "CloudWatch Dashboard URL"
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${ApplicationDashboard}"
+
+  ECSLogGroupName:
+    Description: "ECS Log Group Name"
+    Value: !Ref ECSLogGroup
+
+  ECSLogGroupArn:
+    Description: "ECS Log Group ARN"
+    Value: !GetAtt ECSLogGroup.Arn
+
+  CodeBuildLogGroupName:
+    Description: "CodeBuild Log Group Name"
+    Value: !Ref CodeBuildLogGroup
+
+  # SNS Outputs
+  SNSTopicArn:
+    Description: "SNS Topic ARN for Alerts"
+    Value: !Ref SNSTopicAlerts
+
+  SNSTopicName:
+    Description: "SNS Topic Name for Alerts"
+    Value: !GetAtt SNSTopicAlerts.TopicName
+
+  # Auto Scaling Outputs
+  AutoScalingTargetId:
+    Description: "Application Auto Scaling Target ID"
+    Value: !Ref ApplicationAutoScalingTarget
+
+  CPUScalingPolicyName:
+    Description: "CPU Scaling Policy Name"
+    Value: !Ref CPUTrackingScalingPolicy
+
+  MemoryScalingPolicyName:
+    Description: "Memory Scaling Policy Name"
+    Value: !Ref MemoryTrackingScalingPolicy
+
+  RequestCountScalingPolicyName:
+    Description: "Request Count Scaling Policy Name"
+    Value: !Ref RequestCountScalingPolicy
+
+  # Configuration Outputs
+  MinCapacity:
+    Description: "Minimum ECS Task Capacity"
+    Value: !Ref MinCapacity
+
+  MaxCapacity:
+    Description: "Maximum ECS Task Capacity"
+    Value: !Ref MaxCapacity
+
+  DynamoDBTableName:
+    Description: "DynamoDB Table Name"
+    Value: !Ref DynamoDBTableName
+
+  QueueOneURL:
+    Description: "SQS Queue One URL"
+    Value: !Ref QueueOneUrl
+
+  QueueTwoURL:
+    Description: "SQS Queue Two URL"
+    Value: !Ref QueueTwoUrl

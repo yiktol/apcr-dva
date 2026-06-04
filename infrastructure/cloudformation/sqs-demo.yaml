@@ -1,0 +1,626 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Amazon SQS Demo Application - Complete Infrastructure with ECS Fargate Deployment'
+
+Parameters:
+  # Application Configuration
+  AppName:
+    Type: String
+    Default: sqs-demo-app
+    Description: Application name
+
+  # Networking Configuration
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where resources will be created
+    
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of private subnet IDs for ECS tasks (comma-separated)
+
+  # Existing Infrastructure
+  ExistingECSCluster:
+    Type: String
+    Description: Name or ARN of the existing ECS cluster
+
+  ExistingALBArn:
+    Type: String
+    Description: ARN of the existing Application Load Balancer
+
+  ExistingALBSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group ID of the existing ALB
+
+  ALBHTTPSListener:
+    Type: String
+    Description: ARN of the ALB HTTPS listener
+
+  # Container Configuration
+  DockerImage:
+    Type: String
+    Description: Docker image URI from ECR (e.g., 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/aws/sqs-demo-app:latest)
+    
+  ContainerPort:
+    Type: Number
+    Default: 8501
+    Description: Port that the Streamlit container exposes
+
+  # ECS Configuration
+  DesiredCount:
+    Type: Number
+    Default: 1
+    Description: Number of tasks to run
+    MinValue: 1
+    MaxValue: 10
+    
+  TaskCpu:
+    Type: Number
+    Default: 512
+    AllowedValues: [256, 512, 1024, 2048, 4096]
+    Description: CPU units for the task (256 = 0.25 vCPU)
+    
+  TaskMemory:
+    Type: Number
+    Default: 1024
+    AllowedValues: [512, 1024, 2048, 4096, 8192]
+    Description: Memory in MB for the task
+
+  # Security Configuration
+  CloudFrontALBHandshakeSecretName:
+    Type: String
+    Description: Name of the CloudFront ALB handshake secrets
+
+  UserPoolArn:
+    Type: String
+    Description: ARN of the User pool
+
+  UserPoolClientId:
+    Type: String
+    Description: ID of Userpool client
+
+  UserPoolDomain:
+    Type: String
+    Description: Domain of Userpool
+
+  # Monitoring Configuration
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    Description: CloudWatch logs retention period in days
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+
+  HealthCheckPath:
+    Type: String
+    Default: /_stcore/health
+    Description: Health check path for ALB target group
+
+Resources:
+  # ============================================================================
+  # SQS DEMO RESOURCES
+  # ============================================================================
+  
+  # Demo SQS Queue (optional - app creates its own)
+  DemoQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AppName}-demo-queue"
+      VisibilityTimeout: 30
+      MessageRetentionPeriod: 345600
+      ReceiveMessageWaitTimeSeconds: 0
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+
+  # SNS Topic for Alarm Notifications
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AppName}-alarms"
+      DisplayName: SQS Demo Alarm Notifications
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+
+  # ============================================================================
+  # IAM ROLES AND POLICIES
+  # ============================================================================
+  
+  # ECS Task Execution Role
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ecsTaskExecutionRole-${AppName}-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ECRAndLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${AppName}*"
+
+  # IAM Role for the application (Task Role)
+  AppTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ecsTaskRole-${AppName}-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SQSDemoAppPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # SQS Permissions
+              - Effect: Allow
+                Action:
+                  - sqs:CreateQueue
+                  - sqs:DeleteQueue
+                  - sqs:GetQueueUrl
+                  - sqs:GetQueueAttributes
+                  - sqs:SetQueueAttributes
+                  - sqs:ListQueues
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:PurgeQueue
+                  - sqs:ChangeMessageVisibility
+                Resource: "*"
+              # SNS Permissions
+              - Effect: Allow
+                Action:
+                  - sns:CreateTopic
+                  - sns:DeleteTopic
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                  - sns:Publish
+                  - sns:ListTopics
+                  - sns:ListSubscriptionsByTopic
+                Resource: "*"
+              # CloudWatch Permissions
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:ListMetrics
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+              # Logs Permissions
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${AppName}*"
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+
+  # ============================================================================
+  # NETWORKING AND SECURITY GROUPS
+  # ============================================================================
+  
+  # Security Group for ECS Tasks
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${AppName}-ecs-task-sg"
+      GroupDescription: Security group for ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref ExistingALBSecurityGroupId
+          Description: Allow traffic from existing ALB
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${AppName}-ecs-sg'
+        - Key: Application
+          Value: !Ref AppName
+
+  # ============================================================================
+  # LOAD BALANCER TARGET GROUP AND LISTENER RULE
+  # ============================================================================
+  
+  # ALB Target Group
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${AppName}-tg'
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      HealthCheckProtocol: HTTP
+      Matcher:
+        HttpCode: 200-299
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+        - Key: stickiness.enabled
+          Value: 'false'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AppName}-tg'
+        - Key: Application
+          Value: !Ref AppName
+
+  # ALB Listener Rule with Cognito Authentication
+  ALBCustomHeaderListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: authenticate-cognito
+          AuthenticateCognitoConfig:
+            UserPoolArn: !Ref UserPoolArn
+            UserPoolClientId: !Ref UserPoolClientId
+            UserPoolDomain: !Ref UserPoolDomain
+            Scope: 'email openid profile'
+            SessionCookieName: AWSALBAuthSessionCookie
+            OnUnauthenticatedRequest: authenticate
+          Order: 1
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+          Order: 2
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_NAME}}']]
+            Values:
+              - !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_VALUE}}']]
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: 'x-cloudfront-path-pattern'
+            Values:
+              - '/sqs-demo/'
+        - Field: path-pattern
+          Values:
+            - '/*'
+      ListenerArn: !Ref ALBHTTPSListener
+      Priority: 3
+
+  # ============================================================================
+  # CONTAINER ORCHESTRATION
+  # ============================================================================
+  
+  # CloudWatch Log Group for ECS
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${AppName}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ECS Task Definition
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref AppName
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt AppTaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Sub '${AppName}-container'
+          Image: !Ref DockerImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Environment:
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+            - Name: DEMO_QUEUE_URL
+              Value: !Ref DemoQueue
+            - Name: ALARM_TOPIC_ARN
+              Value: !Ref AlarmTopic
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - !Sub "curl -f http://localhost:${ContainerPort}${HealthCheckPath} || exit 1"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+      Tags:
+        - Key: Name
+          Value: !Sub '${AppName}-task'
+        - Key: Application
+          Value: !Ref AppName
+
+  # ECS Service using existing cluster
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${AppName}-service"
+      Cluster: !Ref ExistingECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      EnableExecuteCommand: true
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets: !Ref PrivateSubnetIds
+      LoadBalancers:
+        - ContainerName: !Sub '${AppName}-container'
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      HealthCheckGracePeriodSeconds: 60
+      Tags:
+        - Key: Name
+          Value: !Sub '${AppName}-service'
+        - Key: Application
+          Value: !Ref AppName
+
+  # ============================================================================
+  # MONITORING AND LOGGING
+  # ============================================================================
+  
+  # CloudWatch Log Group for Application
+  ApplicationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/${AppName}/application"
+      RetentionInDays: 30
+
+  # CloudWatch Dashboard
+  SQSDemoDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${AppName}-dashboard"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", {"stat": "Average"}],
+                  [".", "ApproximateNumberOfMessagesNotVisible", {"stat": "Average"}],
+                  [".", "NumberOfMessagesSent", {"stat": "Sum"}],
+                  [".", "NumberOfMessagesReceived", {"stat": "Sum"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "SQS Queue Metrics",
+                "period": 60
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/ECS", "CPUUtilization", {"stat": "Average"}],
+                  [".", "MemoryUtilization", {"stat": "Average"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ECS Service Metrics",
+                "period": 60
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 6,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/ecs/${AppName}' | fields @timestamp, @message | sort @timestamp desc | limit 100",
+                "region": "${AWS::Region}",
+                "title": "Application Logs",
+                "view": "table"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  # ============================================================================
+  # APPLICATION OUTPUTS
+  # ============================================================================
+  
+  ECSServiceName:
+    Description: Name of the ECS Service
+    Value: !GetAtt ECSService.Name
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSServiceName'
+
+  ECSServiceArn:
+    Description: ARN of the ECS Service
+    Value: !Ref ECSService
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSServiceArn'
+
+  TaskDefinitionArn:
+    Description: ARN of the ECS Task Definition
+    Value: !Ref TaskDefinition
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskDefinitionArn'
+
+  TaskDefinitionFamily:
+    Description: Family name of the Task Definition
+    Value: !Ref AppName
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskDefinitionFamily'
+
+  # IAM Role Outputs
+  AppTaskRoleArn:
+    Description: ARN of the ECS Task Role
+    Value: !GetAtt AppTaskRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskRoleArn'
+
+  TaskExecutionRoleArn:
+    Description: ARN of the ECS Task Execution Role
+    Value: !GetAtt TaskExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskExecutionRoleArn'
+
+  # Networking Outputs
+  TargetGroupArn:
+    Description: ARN of the Target Group
+    Value: !Ref TargetGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-TargetGroupArn'
+
+  ECSTaskSecurityGroupId:
+    Description: ID of the ECS Task Security Group
+    Value: !Ref ECSSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSTaskSecurityGroupId'
+
+  # SQS Outputs
+  DemoQueueURL:
+    Description: Demo SQS Queue URL
+    Value: !Ref DemoQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-DemoQueueURL'
+
+  DemoQueueARN:
+    Description: Demo SQS Queue ARN
+    Value: !GetAtt DemoQueue.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DemoQueueARN'
+
+  AlarmTopicARN:
+    Description: SNS Topic ARN for Alarms
+    Value: !Ref AlarmTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-AlarmTopicARN'
+
+  # Monitoring Outputs
+  CloudWatchDashboard:
+    Description: CloudWatch Dashboard URL
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${AppName}-dashboard"
+    Export:
+      Name: !Sub '${AWS::StackName}-DashboardURL'
+
+  ECSLogGroupName:
+    Description: ECS CloudWatch Log Group Name
+    Value: !Ref ECSLogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSLogGroupName'
+
+  ECSLogGroupArn:
+    Description: ARN of the CloudWatch Log Group
+    Value: !GetAtt ECSLogGroup.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSLogGroupArn'
+
+  # Infrastructure Outputs
+  UsedECSCluster:
+    Description: ECS Cluster used for the deployment
+    Value: !Ref ExistingECSCluster
+    Export:
+      Name: !Sub '${AWS::StackName}-UsedECSCluster'
+
+  UsedALBArn:
+    Description: ALB ARN used for the deployment
+    Value: !Ref ExistingALBArn
+    Export:
+      Name: !Sub '${AWS::StackName}-UsedALBArn'
+
+  VpcId:
+    Description: VPC ID used for the deployment
+    Value: !Ref VpcId
+    Export:
+      Name: !Sub '${AWS::StackName}-VpcId'
+
+  PrivateSubnetIds:
+    Description: Private subnet IDs used for ECS tasks
+    Value: !Join [",", !Ref PrivateSubnetIds]
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnetIds'
+
+  # Container Configuration Outputs
+  ContainerImageURI:
+    Description: Container image URI used in the task definition
+    Value: !Ref DockerImage
+    Export:
+      Name: !Sub '${AWS::StackName}-ContainerImageURI'
+
+  DesiredTaskCount:
+    Description: Desired number of ECS tasks
+    Value: !Ref DesiredCount
+    Export:
+      Name: !Sub '${AWS::StackName}-DesiredTaskCount'
+
+  ContainerCpuAllocation:
+    Description: CPU allocation for containers
+    Value: !Ref TaskCpu
+    Export:
+      Name: !Sub '${AWS::StackName}-ContainerCpuAllocation'
+
+  ContainerMemoryAllocation:
+    Description: Memory allocation for containers in MB
+    Value: !Ref TaskMemory
+    Export:
+      Name: !Sub '${AWS::StackName}-ContainerMemoryAllocation'

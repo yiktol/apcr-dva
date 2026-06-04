@@ -1,0 +1,307 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: EC2 Instance and Application Load Balancer
+
+Mappings:
+  AWSRegionAMI:
+    ap-southeast-1:
+      AMI: ami-040e22bf2b29daa1b # Amazon Linux 2023
+    ap-southeast-3:
+      AMI: ami-02211663c33482a41  # Amazon Linux 2023
+    ap-southeast-4:
+      AMI: ami-047fdf6cd23593d89  # Amazon Linux 2023
+    ap-northeast-2:
+      AMI: ami-0fed57beabc57c324  # Amazon Linux 2023
+    ap-south-1:
+      AMI: ami-0c4a668b99e68bbde  # Amazon Linux 2023
+
+
+Parameters:
+  VpcId:
+    Type: String
+    Description: VPC ID from VPC stack
+
+  PrivateSubnetOneId:
+    Type: String
+    Description: Private Subnet One ID
+
+  PublicSubnetOneId:
+    Type: String
+    Description: Public Subnet One ID
+
+  PublicSubnetTwoId:
+    Type: String
+    Description: Public Subnet Two ID
+
+  RegionCertId:
+    Type: String
+    Description: Certificate ID for the region
+
+  RegionCloudFrontPrefix:
+    Type: String
+    Description: CloudFront prefix list for the region
+
+  EC2InstanceType:
+    Type: String
+    Description: EC2 instance type
+
+  RegionHostname:
+    Type: String
+    Description: Region hostname
+
+  Domain:
+    Type: String
+    Default: aws.yikyakyuk.com
+    Description: Domain name for the application
+
+  AlbName:
+    Type: String
+    Default: alb
+    Description: ALB Name for the application
+
+
+Resources:
+  # Security Groups
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allowed Public Access from the Internet on HTTP/HTTPS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourcePrefixListId: !Ref RegionCloudFrontPrefix
+      Tags:
+        - Key: Name
+          Value: !Sub alb-sg-${AWS::Region}
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allowed Public Access from the Internet on HTTP/HTTPS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub instance-sg-${AWS::Region}
+
+  # IAM Role for EC2
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref InstanceRole
+
+  # EC2 Instance
+  Instance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /tmp/configure.sh:
+              content: !Sub |
+                #!/bin/bash -xe
+                sudo usermod -a -G apache ec2-user
+                sudo chown -R ec2-user:apache /var/www
+                sudo chmod 2775 /var/www
+                find /var/www -type d -exec sudo chmod 2775 {} \;
+                find /var/www -type f -exec sudo chmod 0664 {} \;
+            /tmp/install.sh:
+              content: !Sub |
+                #!/bin/bash
+
+                # Install Apache
+                sudo dnf install -y httpd.x86_64 
+                sudo systemctl start httpd.service
+                sudo systemctl enable httpd.service
+
+                # Install git
+                sudo dnf install -y git.x86_64
+                sudo git clone https://github.com/yiktol/website.git
+                sudo cp -R  website/coffeeshop/* /var/www/html/
+
+                # Install Stress-Ng
+                sudo dnf install -y stress-ng.x86_64 
+
+                # Install MariaDB and PHP
+                sudo dnf install -y  mariadb105.x86_64 php8.2.x86_64 php8.2-mysqlnd.x86_64
+                sudo wget https://docs.aws.amazon.com/aws-sdk-php/v3/download/aws.zip
+                sudo unzip aws.zip  -d /var/www/html/
+
+                # Configure Web
+                sudo dnf install -y curl.x86_64 gettext.x86_64 --allowerasing
+
+                # Restart Apache Web Server
+                sudo systemctl restart httpd.service
+          services:
+            sysvinit:
+              httpd:
+                enabled: "true"
+                ensureRunning: "true"
+          commands:
+            1-install:
+              command: "bash /tmp/install.sh"
+            2-configure:
+              command: "bash /tmp/configure.sh"
+            3-finishUp:
+              command: !Sub "/opt/aws/bin/cfn-signal -e 0 --stack ${AWS::StackId} --resource Instance --region ${AWS::Region}"
+    Properties:
+      InstanceType: !Ref EC2InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId: !FindInMap [AWSRegionAMI, !Ref "AWS::Region", AMI]
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: false
+          DeviceIndex: "0"
+          GroupSet:
+            - !Ref InstanceSecurityGroup
+          SubnetId: !Ref PrivateSubnetOneId
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+
+          #Update
+          sudo dnf update -y
+
+          # Install cfn-bootstrap
+          sudo dnf install -y aws-cfn-bootstrap.noarch
+
+          /opt/aws/bin/cfn-init -v -s ${AWS::StackId} -r Instance --region ${AWS::Region}
+      Tags:
+        - Key: Name
+          Value: !Sub ec2-${AWS::Region}
+
+  # Load Balancer
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      Name: !Ref AlbName
+      Scheme: internet-facing
+      IpAddressType: dualstack
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "30"
+      Subnets:
+        - !Ref PublicSubnetOneId
+        - !Ref PublicSubnetTwoId
+      SecurityGroups: 
+        - !Ref LoadBalancerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub alb-${AWS::Region}
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: ec2-tg
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 3
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: !Ref VpcId
+      TargetType: instance
+      Targets:
+        - Id: !Ref Instance
+          Port: 80
+      Tags:
+        - Key: Name
+          Value: !Sub tg-${AWS::Region}
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+          ForwardConfig: 
+            TargetGroups:
+              - TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Certificates: 
+        - CertificateArn: !Sub 'arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/${RegionCertId}'
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: "ELBSecurityPolicy-2016-08"
+
+  ListenerCertificate:
+    Type: AWS::ElasticLoadBalancingV2::ListenerCertificate
+    Properties: 
+      Certificates: 
+        - CertificateArn: !Sub 'arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/${RegionCertId}'
+      ListenerArn: !Ref Listener
+
+  HTTPlistener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: "redirect"
+          RedirectConfig:
+            Protocol: "HTTPS"
+            Port: 443
+            Host: "#{host}"
+            Path: "/#{path}"
+            Query: "#{query}"
+            StatusCode: "HTTP_301"
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  LoadBalancerDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${Domain}.
+      Name: !Sub ${RegionHostname}.${Domain}
+      Type: A
+      AliasTarget:
+        HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
+        DNSName: !GetAtt LoadBalancer.DNSName
+        EvaluateTargetHealth: true
+
+Outputs:
+  LoadBalancerArn:
+    Description: Load Balancer ARN
+    Value: !Ref LoadBalancer
+
+  LoadBalancerDNSName:
+    Description: Load Balancer DNS Name
+    Value: !GetAtt LoadBalancer.DNSName
+
+  LoadBalancerCanonicalHostedZoneID:
+    Description: Load Balancer Canonical Hosted Zone ID
+    Value: !GetAtt LoadBalancer.CanonicalHostedZoneID
+
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref Instance
+
+  TargetGroupArn:
+    Description: Target Group ARN
+    Value: !Ref TargetGroup

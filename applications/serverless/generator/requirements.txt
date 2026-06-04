@@ -1,0 +1,3 @@
+barnum
+requests
+urllib3

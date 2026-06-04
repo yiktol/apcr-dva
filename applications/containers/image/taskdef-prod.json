@@ -1,0 +1,41 @@
+{
+  "family": "coffeeshop",
+  "networkMode": "awsvpc",
+  "cpu": 256,
+  "memory": "512",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "executionRoleArn": "arn:aws:iam::875692608981:role/ECSServiceRole",
+  "taskRoleArn": "arn:aws:iam::875692608981:role/ECSTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "coffeeshop",
+      "image": "875692608981.dkr.ecr.ap-southeast-1.amazonaws.com/coffeeshop:latest",
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/aws/fargate/coffeeshop",
+          "awslogs-region": "ap-southeast-1",
+          "awslogs-stream-prefix": "coffee"
+        }
+      },
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -f http://localhost:8080/ || exit 1"
+        ],
+        "interval": 30,
+        "retries": 2,
+        "timeout": 10
+      },
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "http"
+        }
+      ],
+      "essential": true
+    }
+  ]
+}

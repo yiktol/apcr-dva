@@ -1,0 +1,61 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Comprehensive Network Infrastructure with VPC, Multi-AZ Subnets, Security Groups, and Web Application Stack
+
+Parameters:
+  Bucket:
+    Type: String
+    Description: S3 Bucket for CloudFormation Template
+
+  Prefix:
+    Type: String
+    Description: Name to Prefix Resources
+
+  BucketRegion:
+    Type: String
+    Description: Region where S3 Bucket for CloudFormation Template exists
+
+  # Parameters for domain configuration
+  DomainName:
+    Type: String
+    Description: Base domain name for all coffee shop applications
+    Default: aws.yikyakyuk.com
+
+  # Stack deployment toggles
+  DeployVPCPeeringStack:
+    Type: String
+    Description: Deploy VPC Peering stack
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DeployGlobalAcceleratorStack:
+    Type: String
+    Description: Deploy Global Accelerator stack
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+Conditions:
+  DeployVPCPeering: !Equals [!Ref DeployVPCPeeringStack, 'true']
+  DeployGlobalAccelerator: !Equals [!Ref DeployGlobalAcceleratorStack, 'true']
+
+Resources:
+
+  VPCPeeringStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeployVPCPeering
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/vpc-peering.yaml
+
+
+  GlobalAcceleratorStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeployGlobalAccelerator
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/global_accelerator.yaml
+      Parameters:
+        SrcBucket: !Ref Bucket
+        Domain: !Ref DomainName
+        ElbName: 'web-app-alb'
+        DeployinSingapore: 'True'
+        DeployinSydney: 'True'
+        DeployinMumbai: 'True'

@@ -1,0 +1,299 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ElastiCache Serverless Demo Infrastructure'
+
+Parameters:
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where resources will be created
+  
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnet IDs for ECS service (use private subnets)
+  
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnet IDs for Load Balancer
+  
+  ECRRepository:
+    Type: String
+    Description: Name of ECR repository
+    Default: "elasticache-serverless-demo-app"
+
+  DomainName:
+    Type: String
+    Default: aws.yikyakyuk.com
+    Description: "Public Hosted Zone (must already exist in Route 53)"
+    
+  CloudFrontALBHandshakeSecretName:
+    Type: String
+    Default: "cloudfront/alb-handshake"
+    Description: "Name of the Secrets Manager secret for CloudFront-ALB handshake headers"
+  
+
+Resources:
+  # ElastiCache Serverless
+  ElastiCacheServerlessCache:
+    Type: AWS::ElastiCache::ServerlessCache
+    Properties:
+      ServerlessCacheName: "redis-cache"
+      Engine: redis
+      Description: "Serverless Redis cache for demo application"
+      SecurityGroupIds:
+        - !Ref ElastiCacheSecurityGroup
+      SubnetIds: !Ref SubnetIds
+
+  # Security Groups
+  ElastiCacheSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ElastiCache Serverless
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref ECSSecurityGroup
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ECS tasks
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourcePrefixListId: pl-31a34658
+
+  # ECS Cluster
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: "ecs-redis-cluster"
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+
+  # Application Load Balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: "elasticache-alb"
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Subnets: !Ref PublicSubnetIds
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: "elasticache-tg"
+      Port: 8501
+      Protocol: HTTP
+      VpcId: !Ref VPCId
+      TargetType: ip
+      HealthCheckPath: /_stcore/health
+      HealthCheckIntervalSeconds: 60
+      HealthCheckTimeoutSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig: 
+            ContentType: text/plain
+            MessageBody: "Access Denied"
+            StatusCode: 403
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  ALBCustomHeaderListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_NAME}}']]
+            Values:
+              - !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_VALUE}}']]
+      ListenerArn: !Ref ALBListener
+      Priority: 1
+
+  ApplicationDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub "${DomainName}."
+      Name: !Sub "lbredis.${DomainName}"
+      Type: A
+      SetIdentifier: elasticache-serverless-demo-alb
+      Weight: 100
+      AliasTarget:
+        HostedZoneId: !GetAtt ApplicationLoadBalancer.CanonicalHostedZoneID
+        DNSName: !GetAtt ApplicationLoadBalancer.DNSName
+        EvaluateTargetHealth: true
+      Comment: "DNS record for application load balancer"
+
+  # IAM Roles
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ElastiCacheAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticache:*
+                Resource: "*"
+
+  ECSExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  # CloudWatch Log Group
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${AWS::StackName}"
+      RetentionInDays: 7
+
+  # ECS Task Definition
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: "elasticache-task"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 512
+      Memory: 1024
+      ExecutionRoleArn: !GetAtt ECSExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: streamlit-app
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}"
+          PortMappings:
+            - ContainerPort: 8501
+              Protocol: tcp
+          Environment:
+            - Name: REDIS_ENDPOINT
+              Value: !GetAtt ElastiCacheServerlessCache.Endpoint.Address
+            - Name: REDIS_PORT
+              Value: "6379"
+            - Name: REDIS_SSL
+              Value: "true"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - "curl -f http://localhost:8501/_stcore/health || exit 1"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+
+  # ECS Service
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: "elasticache-service"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref ECSTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets: !Ref SubnetIds
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: streamlit-app
+          ContainerPort: 8501
+          TargetGroupArn: !Ref ALBTargetGroup
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      HealthCheckGracePeriodSeconds: 60
+
+Outputs:
+  LoadBalancerDNS:
+    Description: DNS name of the load balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: "elasticache-LoadBalancerDNS"
+
+  ECRRepositoryURI:
+    Description: ECR Repository URI
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}"
+    Export:
+      Name: "elasticache-ECRRepositoryURI"
+
+  ECSClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref ECSCluster
+    Export:
+      Name: "elasticache-ECSClusterName"
+
+  ECSServiceName:
+    Description: ECS Service Name
+    Value: !Ref ECSService
+    Export:
+      Name: "elasticache-ECSServiceName"
+
+  ECSTaskDefinitionArn:
+    Description: ECS Task Definition ARN
+    Value: !Ref ECSTaskDefinition
+    Export:
+      Name: "elasticache-ECSTaskDefinitionArn"
+
+  ElastiCacheEndpoint:
+    Description: ElastiCache Serverless Endpoint
+    Value: !GetAtt ElastiCacheServerlessCache.Endpoint.Address
+    Export:
+      Name: "elasticache-ElastiCacheEndpoint"

@@ -1,0 +1,401 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ECS Service for Serverless Microservice Inventory API Client using existing ECS Cluster and ALB - Singapore Region'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: ID of the existing VPC
+
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of private subnet IDs for ECS tasks (comma-separated)
+
+  ExistingECSCluster:
+    Type: String
+    Description: Name or ARN of the existing ECS cluster
+
+  ExistingALBArn:
+    Type: String
+    Description: ARN of the existing Application Load Balancer
+
+  ExistingALBSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group ID of the existing ALB
+
+  ECRRepositoryURI:
+    Type: String
+    Description: URI of the existing ECR repository
+    Default: 875692608981.dkr.ecr.ap-southeast-1.amazonaws.com/aws/serverless-microservice
+
+  ContainerCpu:
+    Type: Number
+    Default: 512
+    Description: CPU units for the container (256, 512, 1024, 2048, 4096)
+    AllowedValues:
+      - 256
+      - 512
+      - 1024
+      - 2048
+      - 4096
+
+  ContainerMemory:
+    Type: Number
+    Default: 1024
+    Description: Memory for the container in MB
+    AllowedValues:
+      - 512
+      - 1024
+      - 2048
+      - 4096
+      - 8192
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+    Description: Desired number of ECS tasks
+    MinValue: 1
+    MaxValue: 10
+
+  ApplicationName:
+    Type: String
+    Default: serverless-microservice
+    Description: Name of the application for resource naming
+
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    Description: CloudWatch logs retention period in days
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+
+  HealthCheckPath:
+    Type: String
+    Default: /_stcore/health
+    Description: Health check path for ALB target group
+
+  ContainerPort:
+    Type: Number
+    Default: 8501
+    Description: Port on which the container is listening
+
+  CloudFrontALBHandshakeSecretName:
+    Type: String
+    Description: Name of the CloudFront ALB handshake secrets
+
+  ALBHTTPSListener:
+    Type: String
+    Description: ARN of the ALB HTTPS Listener
+
+# ====================
+# Resources Section
+# ====================
+Resources:
+
+  # ====================
+  # IAM Roles
+  # ====================
+
+  # ECS Task Execution Role
+  ServerlessMicroserviceTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ecsTaskExecutionRole-${ApplicationName}-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ECRAndLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${ApplicationName}*"
+
+  # ECS Task Role (minimal - this app only makes outbound HTTP requests)
+  ServerlessMicroserviceTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ecsTaskRole-${ApplicationName}-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # CloudWatch Logs permissions
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                  - logs:DescribeLogGroups
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${ApplicationName}*"
+      Tags:
+        - Key: Application
+          Value: !Ref ApplicationName
+
+  # ====================
+  # Security Groups
+  # ====================
+
+  ECSTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ApplicationName}-ecs-task-sg"
+      GroupDescription: Security group for Serverless Microservice ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref ExistingALBSecurityGroupId
+          Description: Allow traffic from existing ALB
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic (needed for HTTP API calls)
+      Tags:
+        - Key: Name
+          Value: !Sub "${ApplicationName}-ecs-task-sg"
+        - Key: Application
+          Value: !Ref ApplicationName
+
+  # ====================
+  # Target Group for existing ALB
+  # ====================
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ApplicationName}-tg"
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: 200-299
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+        - Key: stickiness.enabled
+          Value: 'false'
+      Tags:
+        - Key: Name
+          Value: !Sub "${ApplicationName}-tg"
+        - Key: Application
+          Value: !Ref ApplicationName
+
+  # ====================
+  # ALB Listener Rule
+  # ====================
+
+  ALBCustomHeaderListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_NAME}}']]
+            Values:
+              - !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_VALUE}}']]
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: 'x-cloudfront-path-pattern'
+            Values:
+              - '/serverless-microservice/'
+        - Field: path-pattern
+          Values:
+            - '/*'
+      ListenerArn: !Ref ALBHTTPSListener
+      Priority: 6
+
+  # ====================
+  # CloudWatch Logs
+  # ====================
+
+  CloudWatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ApplicationName}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ====================
+  # ECS Task Definition
+  # ====================
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref ApplicationName
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref ContainerCpu
+      Memory: !Ref ContainerMemory
+      ExecutionRoleArn: !GetAtt ServerlessMicroserviceTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ServerlessMicroserviceTaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Sub "${ApplicationName}-container"
+          Image: !Ref ECRRepositoryURI
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CloudWatchLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - !Sub "curl -f http://localhost:${ContainerPort}${HealthCheckPath} || exit 1"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+      Tags:
+        - Key: Name
+          Value: !Sub "${ApplicationName}-task"
+        - Key: Application
+          Value: !Ref ApplicationName
+
+  # ====================
+  # ECS Service using existing cluster
+  # ====================
+
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${ApplicationName}-service"
+      Cluster: !Ref ExistingECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref ECSTaskSecurityGroup
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: !Sub "${ApplicationName}-container"
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ApplicationName}-service"
+        - Key: Application
+          Value: !Ref ApplicationName
+
+# ====================
+# Outputs Section
+# ====================
+Outputs:
+  ECSServiceName:
+    Description: Name of the ECS Service
+    Value: !GetAtt ECSService.Name
+
+  ECSServiceArn:
+    Description: ARN of the ECS Service
+    Value: !Ref ECSService
+
+  TaskDefinitionArn:
+    Description: ARN of the Task Definition
+    Value: !Ref TaskDefinition
+
+  TaskDefinitionFamily:
+    Description: Family name of the Task Definition
+    Value: !Ref ApplicationName
+
+  ServerlessMicroserviceTaskRoleArn:
+    Description: ARN of the ECS Task Role
+    Value: !GetAtt ServerlessMicroserviceTaskRole.Arn
+
+  ServerlessMicroserviceTaskExecutionRoleArn:
+    Description: ARN of the ECS Task Execution Role
+    Value: !GetAtt ServerlessMicroserviceTaskExecutionRole.Arn
+
+  TargetGroupArn:
+    Description: ARN of the Target Group
+    Value: !Ref TargetGroup
+
+  ECSTaskSecurityGroupId:
+    Description: ID of the ECS Task Security Group
+    Value: !Ref ECSTaskSecurityGroup
+
+  CloudWatchLogGroupName:
+    Description: Name of the CloudWatch Log Group
+    Value: !Ref CloudWatchLogGroup
+
+  CloudWatchLogGroupArn:
+    Description: ARN of the CloudWatch Log Group
+    Value: !GetAtt CloudWatchLogGroup.Arn
+
+  UsedECSCluster:
+    Description: ECS Cluster used for the deployment
+    Value: !Ref ExistingECSCluster
+
+  UsedALBArn:
+    Description: ALB ARN used for the deployment
+    Value: !Ref ExistingALBArn
+
+  VpcId:
+    Description: VPC ID used for the deployment
+    Value: !Ref VpcId
+
+  PrivateSubnetIds:
+    Description: Private subnet IDs used for ECS tasks
+    Value: !Join [",", !Ref PrivateSubnetIds]
+
+  ContainerImageURI:
+    Description: Container image URI used in the task definition
+    Value: !Ref ECRRepositoryURI

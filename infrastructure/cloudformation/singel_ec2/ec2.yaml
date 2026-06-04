@@ -1,0 +1,246 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Deploy EC2 instance to existing VPC'
+
+
+# =============================================================================
+# METADATA SECTION
+# Provides additional information about the template structure and usage
+# =============================================================================
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Instance Environment
+        Parameters:
+          - Environment
+      - Label:
+          default: 'EC2 Configuration'
+        Parameters:
+          - InstanceType
+          - InstanceName
+      - Label:
+          default: 'Network Configuration'
+        Parameters:
+          - VpcId
+          - SubnetId
+
+# =============================================================================
+# PARAMETERS SECTION
+# Input parameters for template customization
+# =============================================================================
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where the EC2 instance will be deployed
+    
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet ID where the EC2 instance will be launched
+    
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+    Description: EC2 instance type
+    
+  InstanceName:
+    Type: String
+    Default: EC2Instance
+    Description: Name tag for the EC2 instance
+
+  Environment:
+    Type: String
+    Default: "Development"
+    AllowedValues:
+      - "Development"
+      - "Production"
+    Description: "Environment type - affects resource configuration and monitoring"
+
+# =============================================================================
+# CONDITIONS SECTION
+# Conditional logic for resource creation and configuration
+# =============================================================================
+Conditions:
+  IsProduction: !Equals [!Ref Environment, "Production"]
+  IsDevelopment: !Equals [!Ref Environment, "Development"]
+
+# =============================================================================
+# MAPPINGS SECTION
+# Static lookup tables for region-specific and environment-specific values
+# =============================================================================
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-0c02fb55956c7d316  # Amazon Linux 2023
+      TimeZone: "America/New_York"
+    ap-southeast-1:
+      AMI: ami-0c802847a7dd848c0  # Amazon Linux 2023
+      TimeZone: "Asia/Singapore"
+
+  # Environment-specific configurations
+  EnvironmentMap:
+    Development:
+      InstanceTenancy: "default"
+      EbsOptimized: false
+      TerminationProtection: false
+    Production:
+      InstanceTenancy: "default"
+      EbsOptimized: true
+      TerminationProtection: true
+
+
+# =============================================================================
+# RESOURCES SECTION
+# AWS resources organized by functional groups
+# =============================================================================
+Resources:
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EC2 instance
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: Name
+          Value: !Sub '${InstanceName}-SecurityGroup'
+
+  InstanceRole:
+    Type: "AWS::IAM::Role"
+    Description: Role for web server EC2 instances with permissions for SSM
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: CustomPermissions
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:Get*
+                  - iam:CreateUser
+                Resource: "*"
+      
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Description: Instance profile that attaches the Role to EC2 instances
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref InstanceRole
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      Purpose: "Primary compute resource for the application"
+      ConfigurationNotes:
+        - "Uses latest Amazon Linux 2023 AMI"
+        - "Configured with SSM for secure management"
+        - "Monitoring level varies by environment"
+      AWS::CloudFormation::Init:
+        config:
+          packages:
+            yum:
+              htop: []
+              git: []
+          files:
+            "/etc/cfn/cfn-hup.conf":
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=1
+              mode: "000400"
+              owner: "root"
+              group: "root"
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: "true"
+                ensureRunning: "true"
+                files:
+                  - "/etc/cfn/cfn-hup.conf"
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref SubnetId
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      EbsOptimized: !FindInMap [EnvironmentMap, !Ref Environment, EbsOptimized]
+      DisableApiTermination: !FindInMap [EnvironmentMap, !Ref Environment, TerminationProtection]
+      UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            
+            # Install CloudFormation helper scripts
+            yum install -y aws-cfn-bootstrap
+            
+            # Install and start SSM agent
+            yum install -y amazon-ssm-agent
+            systemctl enable amazon-ssm-agent
+            systemctl start amazon-ssm-agent
+            
+            
+            # Run CloudFormation init
+            /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2Instance --region ${AWS::Region}
+            
+            # Signal completion
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2Instance --region ${AWS::Region}
+      Tags:
+        - Key: Name
+          Value: !Ref InstanceName
+
+  # CPU Utilization Alarm (Production only)
+  CPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: IsProduction
+    Metadata:
+      Purpose: "Monitors CPU utilization for production instances"
+    Properties:
+      AlarmName: !Sub "${InstanceName}-${Environment}-HighCPU"
+      AlarmDescription: !Sub "High CPU utilization alarm for ${InstanceName}"
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref EC2Instance
+      TreatMissingData: notBreaching
+
+
+# =============================================================================
+# OUTPUTS SECTION
+# Return values for stack integration and operational reference
+# =============================================================================
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+      
+  InstancePrivateIP:
+    Description: Private IP address of the EC2 instance
+    Value: !GetAtt EC2Instance.PrivateIp
+
+  SecurityGroupId:
+    Description: Security Group ID
+    Value: !Ref EC2SecurityGroup
+      
+  SSMSessionCommand:
+    Description: "AWS CLI command to start SSM session with the instance"
+    Value: !Sub "aws ssm start-session --target ${EC2Instance}"

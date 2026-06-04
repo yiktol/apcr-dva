@@ -1,0 +1,8 @@
+boto3
+Flask==1.1.4
+Flask-Cors==3.0.8
+werkzeug<1.0
+urllib3
+requests
+jinja2
+markupsafe==2.0.1

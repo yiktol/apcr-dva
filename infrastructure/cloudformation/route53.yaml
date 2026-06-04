@@ -1,0 +1,289 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+   Route 53 failover, weighted, latency, and geolocation routing configurations.
+
+Parameters:
+  PublicDomainName:
+    Description: Domain name for the public hosted zone
+    Type: String
+  
+  LbHostname:
+    Description: Hostname prefix for the regional load balancer
+    Type: String
+    Default: coffeeshop
+   
+  LoadBalancerDNSName:
+    Description: DNS Name of the Application Load Balancer
+    Type: String
+  
+  LoadBalancerHostedZoneId:
+    Description: Hosted Zone ID of the Application Load Balancer
+    Type: String
+
+  Regioncode:
+    Type: String
+    Description: Two letter Region code for the regional endpoint
+
+
+Conditions:
+  IsSingaporeRegion: !Equals [!Ref AWS::Region, ap-southeast-1]
+  IsNotSingaporeRegion: !Not [!Equals [!Ref AWS::Region, ap-southeast-1]]
+  IsSydneyRegion: !Equals [!Ref AWS::Region, ap-southeast-2]
+  IsMalaysiaRegion: !Equals [!Ref AWS::Region, ap-southeast-5]
+  IsThailandRegion: !Equals [!Ref AWS::Region, ap-southeast-7]
+  IsMumbaiRegion: !Equals [!Ref AWS::Region, ap-south-1]
+
+Resources:
+  #============================================================
+  # ROUTE 53 RESOURCES
+  #============================================================
+  
+  RegionalHealthCheck:  
+    Type: AWS::Route53::HealthCheck
+    Properties: 
+      HealthCheckConfig: 
+        Port: 443
+        Type: HTTPS
+        ResourcePath: !Join ['/', ['', !Ref Regioncode, 'index.html']]
+        FullyQualifiedDomainName: !Sub '${LbHostname}.${PublicDomainName}'
+        RequestInterval: 10
+        FailureThreshold: 1
+      HealthCheckTags: 
+        - Key: Name
+          Value: !Sub app-health-${AWS::Region}
+        - Key: Purpose
+          Value: RegionalFailover
+
+  # Coffee Domain - PRIMARY (Singapore)
+  CoffeePrimaryRecord:
+    Condition: IsSingaporeRegion
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${PublicDomainName}.
+      Name: !Sub coffee.${PublicDomainName}
+      Type: A
+      SetIdentifier: !Sub coffee-alb-${AWS::Region}
+      Failover: PRIMARY
+      HealthCheckId: !Ref RegionalHealthCheck
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerHostedZoneId
+        DNSName: !Ref LoadBalancerDNSName
+        EvaluateTargetHealth: true    
+
+  # Coffee Domain - SECONDARY (Mumbai)
+  CoffeeSecondaryRecord:
+    Condition: IsMumbaiRegion
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${PublicDomainName}.
+      Name: !Sub coffee.${PublicDomainName}
+      Type: A
+      SetIdentifier: !Sub coffee-alb-${AWS::Region}
+      Failover: SECONDARY
+      HealthCheckId: !Ref RegionalHealthCheck
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerHostedZoneId
+        DNSName: !Ref LoadBalancerDNSName
+        EvaluateTargetHealth: true    
+
+  # Failover Domain - SECONDARY (Singapore)
+  FailoverSecondaryRecord:
+    Condition: IsSingaporeRegion
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${PublicDomainName}.
+      Name: !Sub failover.${PublicDomainName}
+      Type: A
+      SetIdentifier: !Sub alb-${AWS::Region}
+      Failover: SECONDARY
+      HealthCheckId: !Ref RegionalHealthCheck
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerHostedZoneId
+        DNSName: !Ref LoadBalancerDNSName
+        EvaluateTargetHealth: true    
+
+  # Failover Domain - PRIMARY (Mumbai)
+  FailoverPrimaryRecord:
+    Condition: IsMumbaiRegion
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${PublicDomainName}.
+      Name: !Sub failover.${PublicDomainName}
+      Type: A
+      SetIdentifier: !Sub alb-${AWS::Region}
+      Failover: PRIMARY
+      HealthCheckId: !Ref RegionalHealthCheck
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerHostedZoneId
+        DNSName: !Ref LoadBalancerDNSName
+        EvaluateTargetHealth: true    
+
+  # Weighted Route - Singapore (25%)
+  WeightedSingaporeRecord:
+    Condition: IsSingaporeRegion
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${PublicDomainName}.
+      Name: !Sub weighted.${PublicDomainName}
+      Type: A
+      SetIdentifier: !Sub weighted-${AWS::Region}
+      Weight: 25
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerHostedZoneId
+        DNSName: !Ref LoadBalancerDNSName
+        EvaluateTargetHealth: true    
+
+  # Weighted Route - Non-Singapore (100%)
+  WeightedNonSingaporeRecord:
+    Condition: IsNotSingaporeRegion
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${PublicDomainName}.
+      Name: !Sub weighted.${PublicDomainName}
+      Type: A
+      SetIdentifier: !Sub weighted-${AWS::Region}
+      Weight: 100
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerHostedZoneId
+        DNSName: !Ref LoadBalancerDNSName
+        EvaluateTargetHealth: true    
+
+  # Latency Based Route - Singapore
+  LatencySingaporeRecord:
+    Condition: IsSingaporeRegion
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${PublicDomainName}.
+      Name: !Sub latency.${PublicDomainName}
+      Type: A
+      SetIdentifier: !Sub latency-${AWS::Region}
+      Region: !Ref AWS::Region
+      HealthCheckId: !Ref RegionalHealthCheck
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerHostedZoneId
+        DNSName: !Ref LoadBalancerDNSName
+        EvaluateTargetHealth: true    
+
+  # Latency Based Route - Non-Singapore
+  LatencyNonSingaporeRecord:
+    Condition: IsNotSingaporeRegion
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${PublicDomainName}.
+      Name: !Sub latency.${PublicDomainName}
+      Type: A
+      SetIdentifier: !Sub latency-${AWS::Region}
+      Region: !Ref AWS::Region
+      HealthCheckId: !Ref RegionalHealthCheck
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerHostedZoneId
+        DNSName: !Ref LoadBalancerDNSName
+        EvaluateTargetHealth: true    
+
+  # Geolocation Route - Asia (Singapore)
+  GeolocationDefaultRecord:
+    Condition: IsSingaporeRegion
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${PublicDomainName}.
+      Name: !Sub geolocation.${PublicDomainName}
+      Type: A
+      SetIdentifier: !Sub geolocation-${AWS::Region}
+      GeoLocation: 
+        ContinentCode: AS
+      HealthCheckId: !Ref RegionalHealthCheck
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerHostedZoneId
+        DNSName: !Ref LoadBalancerDNSName
+        EvaluateTargetHealth: true    
+
+  # Geolocation Route - Oceania (Sydney)
+  GeolocationOceaniaRecord:
+    Condition: IsSydneyRegion
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${PublicDomainName}.
+      Name: !Sub geolocation.${PublicDomainName}
+      Type: A
+      SetIdentifier: !Sub geolocation-${AWS::Region}
+      GeoLocation: 
+        ContinentCode: OC
+      HealthCheckId: !Ref RegionalHealthCheck
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerHostedZoneId
+        DNSName: !Ref LoadBalancerDNSName
+        EvaluateTargetHealth: true    
+
+  # Geolocation Route - India (Mumbai)
+  GeolocationIndiaRecord:
+    Condition: IsMumbaiRegion
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${PublicDomainName}.
+      Name: !Sub geolocation.${PublicDomainName}
+      Type: A
+      SetIdentifier: !Sub geolocation-${AWS::Region}
+      GeoLocation: 
+        CountryCode: IN
+      HealthCheckId: !Ref RegionalHealthCheck
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerHostedZoneId
+        DNSName: !Ref LoadBalancerDNSName
+        EvaluateTargetHealth: true    
+
+  # Region-specific Load Balancer DNS
+  RegionalLoadBalancerRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Comment: DNS name for region specific ALB
+      HostedZoneName: !Sub ${PublicDomainName}.
+      Name: !Sub ${LbHostname}.${PublicDomainName}
+      Type: A
+      AliasTarget:
+        HostedZoneId: !Ref LoadBalancerHostedZoneId
+        DNSName: !Ref LoadBalancerDNSName
+        EvaluateTargetHealth: true
+
+Outputs:
+  RegionalHealthCheckId:
+    Description: Health Check ID for the regional endpoint
+    Value: !Ref RegionalHealthCheck
+
+  # CoffeeDomainEndpoint:
+  #   Condition: !Or [IsSingaporeRegion, IsMumbaiRegion]
+  #   Description: Coffee domain endpoint with failover routing
+  #   Value: !Sub coffee.${PublicDomainName}
+
+  # FailoverDomainEndpoint:
+  #   Condition: !Or [IsSingaporeRegion, IsMumbaiRegion]
+  #   Description: Failover domain endpoint
+  #   Value: !Sub failover.${PublicDomainName}
+
+  WeightedDomainEndpoint:
+    Description: Weighted routing domain endpoint
+    Value: !Sub weighted.${PublicDomainName}
+
+  LatencyDomainEndpoint:
+    Description: Latency-based routing domain endpoint
+    Value: !Sub latency.${PublicDomainName}
+
+  # GeolocationDomainEndpoint:
+  #   Condition: !Or [IsSingaporeRegion, IsMumbaiRegion, IsSydneyRegion]
+  #   Description: Geolocation-based routing domain endpoint
+  #   Value: !Sub geolocation.${PublicDomainName}
+
+  RegionalLoadBalancerEndpoint:
+    Description: Regional load balancer endpoint
+    Value: !Sub ${LbHostname}.${PublicDomainName}
+
+  DeployedRegion:
+    Description: AWS Region where this stack is deployed
+    Value: !Ref AWS::Region
+
+  RegionCode:
+    Description: Region code for the deployed region
+    Value: !Ref Regioncode
+
+  HealthCheckEndpoint:
+    Description: Health check endpoint URL
+    Value: !Join ['/',[!Sub 'https://${LbHostname}.${PublicDomainName}', !Ref Regioncode, 'index.html']]

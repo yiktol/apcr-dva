@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS Cognito configuration with multiple social identity providers
+
+Parameters:
+  CognitoUserEmail:
+    Type: String
+
+  CloudfrontDomainName:
+    Type: String
+    Default: demo.aws.yikyakyuk.com
+
+  UserPoolName:
+    Type: String
+    Default: saa-user-pool
+
+
+Resources:
+  UserPool:
+    Type: 'AWS::Cognito::UserPool'
+    Properties:
+      UserPoolName: !Ref UserPoolName
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true  # Changed to false to allow users to sign up
+      AutoVerifiedAttributes:
+      - email
+      UsernameAttributes:
+      - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 6
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 10
+
+  # Define Cognito User Pool Domain
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: apcr-saa-auth
+      UserPoolId: !Ref UserPool
+      ManagedLoginVersion: "2"
+
+  UserPoolClient:
+    Type: 'AWS::Cognito::UserPoolClient'
+    Properties:
+      RefreshTokenValidity: 30
+      IdTokenValidity: 30
+      AccessTokenValidity: 30
+      TokenValidityUnits: 
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+        - aws.cognito.signin.user.admin
+      CallbackURLs:
+        - !Sub https://${CloudfrontDomainName}/stress-tool/
+        - !Sub https://${CloudfrontDomainName}/sales-generator/
+        - !Sub https://${CloudfrontDomainName}/serverless-microservice/
+        - !Sub https://${CloudfrontDomainName}/oauth2/idpresponse
+      LogoutURLs:
+        - !Sub https://${CloudfrontDomainName}/stress-tool/
+        - !Sub https://${CloudfrontDomainName}/sales-generator/
+        - !Sub https://${CloudfrontDomainName}/serverless-microservice/
+      SupportedIdentityProviders:
+        - COGNITO
+      GenerateSecret: true
+      UserPoolId: !Ref UserPool
+
+  # Managed Login Branding Style
+  ManagedLoginBranding:
+    Type: AWS::Cognito::ManagedLoginBranding
+    DependsOn: UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientId: !Ref UserPoolClient
+      UseCognitoProvidedValues: true
+
+  # create admin user 
+  UserPoolUser:
+    Type: 'AWS::Cognito::UserPoolUser'
+    Properties:
+      UserPoolId: !Ref UserPool
+      Username: !Ref CognitoUserEmail
+      DesiredDeliveryMediums:
+        - EMAIL
+      UserAttributes:
+        - Name: email
+          Value: !Ref CognitoUserEmail
+        - Name: email_verified
+          Value: "true"
+
+  # Secrets Manager Resource to store Cognito info
+  CognitoSecrets:
+    Type: AWS::SecretsManager::Secret
+    DependsOn: UserPoolClient
+    Properties:
+      Name: apcr/saa/secrets
+      Description: "Amazon Cognito configuration information"
+      SecretString: !Sub |
+        {
+          "COGNITO_USER_POOL_ID": "${UserPool}",
+          "COGNITO_APP_CLIENT_ID": "${UserPoolClient}",
+          "COGNITO_APP_CLIENT_SECRET": "${UserPoolClient.ClientSecret}",
+          "COGNITO_DOMAIN": "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com",
+          "COGNITO_REDIRECT_URI_1": "https://${CloudfrontDomainName}/stress-tool/",
+          "COGNITO_REDIRECT_URI_2": "https://${CloudfrontDomainName}/sales-generator/",
+          "AWS_REGION": "${AWS::Region}",
+          "AWS_ACCOUNT_ID": "${AWS::AccountId}"
+        }
+      Tags:
+        - Key: Application
+          Value: Auth
+
+
+
+Outputs:
+  UserPoolArn:
+    Value: !GetAtt UserPool.Arn
+    Description: ARN of the User pool
+
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+    Description: ID of Userpool client
+
+  UserPoolDomain:
+    Value: !Ref UserPoolDomain
+    Description: Domain of Userpool
+
+  ManagedLoginBrandingId:
+    Value: !GetAtt ManagedLoginBranding.ManagedLoginBrandingId
+    Description: ID of the Managed Login Branding Style
+

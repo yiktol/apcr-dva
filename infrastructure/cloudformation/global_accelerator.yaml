@@ -1,0 +1,246 @@
+# Optimized CloudFormation Template
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Global Accelerator and Route53 Configuration for Multi-Region Applications"
+
+Parameters:
+  SrcBucket:
+    Type: String
+    Description: "S3 bucket containing Lambda function code"
+    Default: yikyakyuk-ap-southeast-1-875692608981
+  
+  Domain:
+    Type: String
+    Description: "Public Hosted Zone domain name"
+  
+  ElbName:
+    Type: String
+    Description: "Name of the Application Load Balancer to accelerate"
+    Default: web-app-alb
+  
+  DeployinSingapore:
+    Type: String
+    Description: "Whether to deploy resources in the Singapore region"
+    Default: 'True'
+    AllowedValues: ['True', 'False']
+  
+  DeployinSydney:
+    Type: String
+    Description: "Whether to deploy resources in the Sydney region"
+    Default: 'False'
+    AllowedValues: ['True', 'False']
+  
+  DeployinMalaysia:
+    Type: String
+    Description: "Whether to deploy resources in the Malaysia region"
+    Default: 'False'
+    AllowedValues: ['True', 'False']
+  
+  DeployinThailand:
+    Type: String
+    Description: "Whether to deploy resources in the Thailand region"
+    Default: 'False'
+    AllowedValues: ['True', 'False']
+
+  DeployinMumbai:
+    Type: String
+    Description: "Whether to deploy resources in the Mumbai region"
+    Default: 'False'
+    AllowedValues: ['True', 'False']
+
+Conditions:
+  Singapore: !Equals [!Ref DeployinSingapore, 'True']
+  Sydney: !Equals [!Ref DeployinSydney, 'True']
+  Malaysia: !Equals [!Ref DeployinMalaysia, 'True']
+  Thailand: !Equals [!Ref DeployinThailand, 'True']
+  Mumbai: !Equals [!Ref DeployinMumbai, 'True']
+
+Resources:
+  #==================================================
+  # GLOBAL ACCELERATOR RESOURCES
+  #==================================================
+  WebAppGlobalAccelerator:
+    Type: AWS::GlobalAccelerator::Accelerator
+    Properties:
+      Name: CoffeeWebGlobalAccelerator
+      Enabled: true
+
+  WebAppAcceleratorListener:
+    Type: AWS::GlobalAccelerator::Listener
+    Properties:
+      AcceleratorArn: !Ref WebAppGlobalAccelerator
+      Protocol: TCP
+      PortRanges:
+        - FromPort: 80
+          ToPort: 80  
+        - FromPort: 443
+          ToPort: 443
+
+  SingaporeEndpointGroup:
+    Condition: Singapore
+    Type: AWS::GlobalAccelerator::EndpointGroup
+    Properties:
+      ListenerArn: !Ref WebAppAcceleratorListener
+      EndpointGroupRegion: ap-southeast-1
+      TrafficDialPercentage: 100
+      EndpointConfigurations:
+        - EndpointId: !GetAtt SingaporeElbFinder.ELBARN
+          ClientIPPreservationEnabled: true
+          Weight: 100
+
+  SydneyEndpointGroup:
+    Condition: Sydney
+    Type: AWS::GlobalAccelerator::EndpointGroup
+    Properties:
+      ListenerArn: !Ref WebAppAcceleratorListener
+      EndpointGroupRegion: ap-southeast-2
+      TrafficDialPercentage: 100
+      EndpointConfigurations:
+        - EndpointId: !GetAtt SydneyElbFinder.ELBARN
+          ClientIPPreservationEnabled: true
+          Weight: 100
+
+  MumbaiEndpointGroup:
+    Condition: Mumbai
+    Type: AWS::GlobalAccelerator::EndpointGroup
+    Properties:
+      ListenerArn: !Ref WebAppAcceleratorListener
+      EndpointGroupRegion: ap-south-1
+      TrafficDialPercentage: 100
+      EndpointConfigurations:
+        - EndpointId: !GetAtt MumbaiElbFinder.ELBARN
+          ClientIPPreservationEnabled: true
+          Weight: 100
+          
+  MalaysiaEndpointGroup:
+    Condition: Malaysia
+    Type: AWS::GlobalAccelerator::EndpointGroup
+    Properties:
+      ListenerArn: !Ref WebAppAcceleratorListener
+      EndpointGroupRegion: ap-southeast-5
+      TrafficDialPercentage: 100
+      EndpointConfigurations:
+        - EndpointId: !GetAtt MalaysiaElbFinder.ELBARN
+          ClientIPPreservationEnabled: true
+          Weight: 100
+
+  ThailandEndpointGroup:
+    Condition: Thailand
+    Type: AWS::GlobalAccelerator::EndpointGroup
+    Properties:
+      ListenerArn: !Ref WebAppAcceleratorListener
+      EndpointGroupRegion: ap-southeast-4
+      TrafficDialPercentage: 100
+      EndpointConfigurations:
+        - EndpointId: !GetAtt ThailandElbFinder.ELBARN
+          ClientIPPreservationEnabled: true
+          Weight: 100
+
+  #==================================================
+  # DNS RESOURCES
+  #==================================================
+  GlobalAcceleratorDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${Domain}.
+      Name: !Sub global.${Domain}
+      Type: A
+      SetIdentifier: global
+      Weight: 100
+      AliasTarget:
+        HostedZoneId: Z2BJ6XQ5FK7U4H  # Fixed HostedZoneId for Global Accelerator
+        DNSName: !GetAtt WebAppGlobalAccelerator.DnsName
+        EvaluateTargetHealth: true
+
+  #==================================================
+  # IAM RESOURCES
+  #==================================================
+  ElbFinderLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: ELBLambdaFunctionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'elasticloadbalancing:DescribeLoadBalancers'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: 'arn:aws:logs:*:*:*'
+
+  #==================================================
+  # LAMBDA RESOURCES
+  #==================================================
+  ElbFinderLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ElbFinderFunction}
+      RetentionInDays: 1
+
+  ElbFinderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: "Lambda function to retrieve load balancer information across regions"
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt ElbFinderLambdaRole.Arn
+      Runtime: python3.12
+      Timeout: 300
+      Code:
+        S3Bucket: !Ref SrcBucket
+        S3Key: lambda/getelbinfo.zip
+
+  #==================================================
+  # CUSTOM RESOURCES
+  #==================================================
+  SingaporeElbFinder:
+    Condition: Singapore
+    Type: Custom::SingaporeElbFinder
+    Properties:
+      ServiceToken: !GetAtt ElbFinderFunction.Arn
+      REGION: ap-southeast-1
+      ELB_NAME: !Ref ElbName
+
+  SydneyElbFinder:
+    Condition: Sydney
+    Type: Custom::SydneyElbFinder
+    Properties:
+      ServiceToken: !GetAtt ElbFinderFunction.Arn
+      REGION: ap-southeast-2
+      ELB_NAME: !Ref ElbName
+
+  MumbaiElbFinder:
+    Condition: Mumbai
+    Type: Custom::MumbaiElbFinder
+    Properties:
+      ServiceToken: !GetAtt ElbFinderFunction.Arn
+      REGION: ap-south-1
+      ELB_NAME: !Ref ElbName
+      
+  MalaysiaElbFinder:
+    Condition: Malaysia
+    Type: Custom::MalaysiaElbFinder
+    Properties:
+      ServiceToken: !GetAtt ElbFinderFunction.Arn
+      REGION: ap-southeast-5
+      ELB_NAME: !Ref ElbName
+      
+  ThailandElbFinder:
+    Condition: Thailand
+    Type: Custom::ThailandElbFinder
+    Properties:
+      ServiceToken: !GetAtt ElbFinderFunction.Arn
+      REGION: ap-southeast-4
+      ELB_NAME: !Ref ElbName

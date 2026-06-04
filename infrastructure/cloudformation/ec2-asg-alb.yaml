@@ -1,0 +1,954 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  Multi-region, load balanced and Auto Scaled web site
+
+Parameters:
+  # Existing Parameters
+  WebServerInstanceType:
+    Description: EC2 instance type for the web servers
+    Type: String
+    Default: t3.micro
+
+  PublicDomainName:
+    Description: Domain name for the public hosted zone
+    Type: String
+
+  HttpdAccessLogGroupName:
+    Description: CloudWatch log group name for Apache HTTP access logs
+    Type: String
+
+  SshEventLogGroupName:
+    Description: CloudWatch log group name for SSH event logs from /var/log/secure
+    Type: String
+
+  SystemMessagesLogGroupName:
+    Description: CloudWatch log group name for system messages
+    Type: String
+
+  CloudFrontALBSecretName:
+    Type: String
+    Description: Name of the secret containing headers for CloudFront-ALB origin verification
+
+  # Network Parameters
+  VPCId:
+    Description: VPC ID for the infrastructure
+    Type: String
+
+  PublicSubnetOne:
+    Description: Public subnet in first availability zone
+    Type: String
+
+  PublicSubnetTwo:
+    Description: Public subnet in second availability zone
+    Type: String
+
+  PublicSubnetThree:
+    Description: Public subnet in third availability zone
+    Type: String
+
+  PrivateSubnetOne:
+    Description: Private subnet in first availability zone
+    Type: String
+
+  PrivateSubnetTwo:
+    Description: Private subnet in second availability zone
+    Type: String
+
+  PrivateSubnetThree:
+    Description: Private subnet in third availability zone
+    Type: String
+
+  # New Parameters to replace FindInMap references
+  CertificateId:
+    Description: ACM Certificate ID for the region
+    Type: String
+
+  AmiId:
+    Description: Latest Amazon Linux 2023 AMI from SSM Parameter Store
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+  LbHostname:
+    Description: Load balancer hostname for the region
+    Type: String
+
+  # Missing Parameters Added
+  CloudFrontPrefixListId:
+    Description: CloudFront prefix list ID for the region
+    Type: String
+
+Resources:
+  #============================================================
+  # IAM RESOURCES
+  #============================================================
+  
+  WebServerInstanceRole:
+    Type: "AWS::IAM::Role"
+    Description: Role for web server EC2 instances with permissions for SSM, CloudWatch and other AWS services
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonSSMDirectoryServiceAccess
+        - arn:aws:iam::aws:policy/CloudWatchAgentAdminPolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
+        - arn:aws:iam::aws:policy/CloudWatchReadOnlyAccess
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      Policies:
+        - PolicyName: WebServerCustomPermissions
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rds:DescribeDBClusterEndpoints
+                  - ssm:DescribeParameters
+                  - ssm:GetParameter
+                Resource: "*"
+              - Effect: Allow
+                Action: "ssm:CreateAssociation"
+                Resource: "*"
+              - Sid: SSMPermissionsForTagAccess
+                Effect: Allow
+                Action: 
+                  - ec2:DescribeInstances
+                  - ssm:ListTagsForResource
+                Resource: "*"
+              - Sid: SecretManagerAccess
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: "*"
+              - Sid: RDSEndpointAccess
+                Effect: Allow
+                Action:
+                  - rds:DescribeDBClusterEndpoints
+                Resource: "*"
+
+  WebServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Description: Instance profile that attaches the WebServerRole to EC2 instances
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref WebServerInstanceRole
+
+  LogCleanupFunctionRole:
+    Type: AWS::IAM::Role
+    Description: Role for the Lambda function that cleans up CloudWatch log groups during stack deletion
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+
+  #====================================================================
+  # SECURITY GROUPS
+  #====================================================================
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Description: Security group for Application Load Balancer - allows HTTPS from CloudFront
+    Properties:
+      GroupName: ALBSecGroup
+      GroupDescription: Access to the public facing load balancer
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - SourcePrefixListId: !Ref CloudFrontPrefixListId
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+      Tags:
+        - Key: Name
+          Value: "ALB-Security-Group"
+
+  InstanceSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Description: Security group for EC2 instances - allows SSH from VPC and HTTP from ALB
+    Properties:
+      GroupName: InstanceSecurityGroup
+      GroupDescription: Enable SSH access and HTTP from the load balancer only
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: "80"
+          ToPort: "80"
+          SourceSecurityGroupId: !GetAtt LoadBalancerSecurityGroup.GroupId
+        # ICMP between regions
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.1.0.0/16
+          Description: "ICMP from Singapore VPC"
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.2.0.0/16
+          Description: "ICMP from Sydney VPC"
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.5.0.0/16
+          Description: "ICMP from Malaysia VPC"
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.7.0.0/16
+          Description: "ICMP from Thailand VPC"
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.11.0.0/16
+          Description: "ICMP from Mumbai VPC"
+      VpcId: !Ref VPCId
+      Tags:
+        - Key: Name
+          Value: "EC2-Security-Group"
+
+  #============================================================
+  # LOAD BALANCER RESOURCES
+  #============================================================
+  
+  WebAppLoadBalancer:
+    Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    Description: "Application Load Balancer that distributes traffic to the web servers"
+    Properties:
+      Name: web-app-alb
+      Scheme: internet-facing
+      IpAddressType: dualstack
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: "30"
+      Subnets:
+        - !Ref PublicSubnetOne
+        - !Ref PublicSubnetTwo
+        - !Ref PublicSubnetThree
+      SecurityGroups: 
+        - !Ref LoadBalancerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: WebAppLoadBalancer
+        - Key: Purpose
+          Value: WebTrafficDistribution
+
+  HttpsListener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Description: "HTTPS listener for the web application load balancer"
+    Properties:
+      DefaultActions:
+      - Type: fixed-response
+        FixedResponseConfig: 
+          ContentType: text/html
+          MessageBody: "Resource Not Found"
+          StatusCode: 404
+      LoadBalancerArn: !Ref WebAppLoadBalancer
+      Certificates: 
+        - CertificateArn: !Sub 'arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/${CertificateId}'
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: "ELBSecurityPolicy-2016-08"
+
+  HttpToHttpsRedirectListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Description: "HTTP listener that redirects all traffic to HTTPS for security"
+    Properties:
+      DefaultActions:
+      - Type: "redirect"
+        RedirectConfig:
+          Protocol: "HTTPS"
+          Port: 443
+          Host: "#{host}"
+          Path: "/#{path}"
+          Query: "#{query}"
+          StatusCode: "HTTP_301"
+      LoadBalancerArn: !Ref WebAppLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  CloudFrontALBVerificationRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Description: "Listener rule that verifies requests contain the proper CloudFront origin headers"
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref WebServerTargetGroup
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBSecretName, ':SecretString:HEADER_NAME}}']]
+            Values:
+              - !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBSecretName, ':SecretString:HEADER_VALUE}}']]
+      ListenerArn: !Ref HttpsListener
+      Priority: 1
+
+  RegionalCertificateAttachment:
+    Type: AWS::ElasticLoadBalancingV2::ListenerCertificate
+    Description: "Additional region-specific certificate for the HTTPS listener"
+    Properties: 
+      Certificates: 
+        - CertificateArn: !Sub 'arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/${CertificateId}'
+      ListenerArn: !Ref HttpsListener
+
+  WebServerTargetGroup:
+    Type: "AWS::ElasticLoadBalancingV2::TargetGroup"
+    Description: "Target group for the web servers in the Auto Scaling Group"
+    Properties:
+      Name: web-server-tg
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 3
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: !Ref VPCId
+      Tags:
+        - Key: Name
+          Value: WebServerTargetGroup
+        - Key: Purpose
+          Value: WebServerHealthCheck
+
+  #============================================================
+  # AUTO SCALING GROUP RESOURCES
+  #============================================================
+  
+  WebServerAutoScalingGroup:
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        MinInstancesInService: 2
+        MinSuccessfulInstancesPercent: 100
+        PauseTime: PT0M30S
+        WaitOnResourceSignals: false
+    DependsOn: LogGroupCleanupTrigger
+    Type: "AWS::AutoScaling::AutoScalingGroup"
+    Description: "Auto Scaling Group that manages the web server instances across multiple Availability Zones"
+    Properties:
+      AutoScalingGroupName: WebServerGroup
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnetOne
+        - !Ref PrivateSubnetTwo
+        - !Ref PrivateSubnetThree
+      MinSize: 2
+      MaxSize: 4
+      TargetGroupARNs:
+        - !Ref WebServerTargetGroup
+      MixedInstancesPolicy:
+        LaunchTemplate:
+          LaunchTemplateSpecification:
+            LaunchTemplateId: !Ref WebServerLaunchTemplate
+            Version: !GetAtt WebServerLaunchTemplate.LatestVersionNumber
+          Overrides:   
+          - InstanceType: t3a.micro
+          - InstanceType: t3.micro
+          - InstanceType: t3a.small
+          - InstanceType: t3.small
+        InstancesDistribution:
+          OnDemandBaseCapacity: 0
+          OnDemandPercentageAboveBaseCapacity: 0
+          SpotAllocationStrategy: capacity-optimized-prioritized
+      Tags:
+        - Key: Name
+          Value: WebServer
+          PropagateAtLaunch: true
+        - Key: Application
+          Value: CoffeeShop
+          PropagateAtLaunch: true
+
+  ScaleOutPolicy:
+    Type: "AWS::AutoScaling::ScalingPolicy"
+    Description: "Policy to add an instance when CPU utilization is high"
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref WebServerAutoScalingGroup
+      Cooldown: 60
+      ScalingAdjustment: 1
+
+  ScaleInPolicy:
+    Type: "AWS::AutoScaling::ScalingPolicy"
+    Description: "Policy to remove an instance when CPU utilization is low"
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref WebServerAutoScalingGroup
+      Cooldown: 60
+      ScalingAdjustment: -1
+
+  LowCpuUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Description: "Alarm that triggers when CPU utilization is low to scale in the Auto Scaling Group"
+    Properties:
+      AlarmName: scale-in-alarm
+      ActionsEnabled: true
+      OKActions: []
+      InsufficientDataActions: []
+      AlarmDescription: Scale-down if CPU <= 40% for 2 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 120
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 40
+      AlarmActions:
+        - !Ref ScaleInPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref WebServerAutoScalingGroup
+      ComparisonOperator: LessThanThreshold  
+
+  HighCpuUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Description: "Alarm that triggers when CPU utilization is high to scale out the Auto Scaling Group"
+    Properties:
+      AlarmName: scale-out-alarm
+      ActionsEnabled: true
+      OKActions: []
+      InsufficientDataActions: []
+      AlarmDescription: Scale-up if CPU => 60% for 2 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 120
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 60
+      AlarmActions:
+        - !Ref ScaleOutPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref WebServerAutoScalingGroup
+      ComparisonOperator: GreaterThanThreshold
+
+  #============================================================
+  # EC2 LAUNCH TEMPLATE
+  #============================================================
+  InstancePlacementGroup:
+      Type: AWS::EC2::PlacementGroup
+      Properties:
+        GroupName: webserver-asg-pg
+        Strategy: spread  # cluster | spread | partition
+        SpreadLevel: rack # host | rack
+
+  WebServerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Description: "Launch template that defines how to create web server instances"
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          commands:
+            0-deploy-website:
+              command: "git clone https://github.com/yiktol/website.git /tmp/website && cp -Rf /tmp/website/coffeeshop/* /var/www/html/"
+              description: "Clone and deploy website content"
+            1-install-aws-sdk-php:
+              command: "wget -q https://docs.aws.amazon.com/aws-sdk-php/v3/download/aws.zip -O /tmp/aws.zip && unzip -qo /tmp/aws.zip -d /var/www/html/"
+              description: "Install AWS SDK for PHP"
+            2-configure-cloudwatch:
+              command: !Sub "/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c ssm:${CloudWatchAgentConfig}"
+              description: "Configure CloudWatch agent"
+            3-signal:
+              command: !Sub "/opt/aws/bin/cfn-signal -e 0 --stack ${AWS::StackId} --resource WebServerAutoScalingGroup --region ${AWS::Region}"
+              description: "Signal CloudFormation that instance setup is complete"
+          services:
+            systemd:
+              httpd:
+                enabled: 'true'
+                ensureRunning: 'true'
+    Properties:
+      LaunchTemplateName: WebServerLaunchTemplate
+      LaunchTemplateData:
+        IamInstanceProfile: 
+          Arn: !GetAtt WebServerInstanceProfile.Arn
+        UserData: 
+          Fn::Base64: 
+            !Sub |
+              #!/bin/bash -xe
+              dnf update -y
+              dnf install -y httpd git stress-ng mariadb105 php8.2 php8.2-mysqlnd aws-cfn-bootstrap curl gettext unzip wget amazon-cloudwatch-agent --allowerasing
+              /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource WebServerLaunchTemplate --region ${AWS::Region}
+        DisableApiTermination: false
+        ImageId: !Ref AmiId
+        InstanceType: !Ref WebServerInstanceType
+        Placement:
+          GroupName: !Ref InstancePlacementGroup
+        SecurityGroupIds:
+          - !Ref InstanceSecurityGroup
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: WebServer-AutoScaled
+              - Key: Application
+                Value: CoffeeShopWebsite
+
+  #============================================================
+  # MONITORING & LOGGING RESOURCES
+  #============================================================
+  
+  ApplicationDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    DependsOn: 
+    - LowCpuUtilizationAlarm
+    - HighCpuUtilizationAlarm
+    Description: "Dashboard for monitoring the web application and infrastructure"
+    Properties: 
+      DashboardName: !Sub ELB-ASG-${AWS::Region}
+      DashboardBody: 
+        !Sub |
+          {
+              "widgets": [
+                  {
+                      "height": 5,
+                      "width": 6,
+                      "y": 0,
+                      "x": 0,
+                      "type": "metric",
+                      "properties": {
+                          "metrics": [
+                              [
+                                  "AWS/ApplicationELB",
+                                  "HealthyHostCount",
+                                  "TargetGroup",
+                                  "${WebServerTargetGroup.TargetGroupFullName}",
+                                  "LoadBalancer",
+                                  "${WebAppLoadBalancer.LoadBalancerFullName}",
+                                  {
+                                      "region": "${AWS::Region}", 
+                                      "label": "Healthy Host Count"
+                                  }
+                              ]
+                          ],
+                          "view": "singleValue",
+                          "stacked": false,
+                          "region": "${AWS::Region}",
+                          "stat": "Maximum",
+                          "period": 30,
+                          "title": "Healthy Servers",
+                          "liveData": true,
+                          "sparkline": true
+                      }
+                  },
+                  {
+                      "height": 8,
+                      "width": 17,
+                      "y": 8,
+                      "x": 0,
+                      "type": "metric",
+                      "properties": {
+                          "metrics": [
+                              [
+                                  "AWS/EC2",
+                                  "CPUUtilization",
+                                  "AutoScalingGroupName",
+                                  "${WebServerAutoScalingGroup}",
+                                  {
+                                      "visible": false,
+                                      "region": "${AWS::Region}"
+                                  }
+                              ],
+                              [
+                                  "...",
+                                  {
+                                      "region": "${AWS::Region}",
+                                      "label": "CPU Utilization"
+                                  }
+                              ]
+                          ],
+                          "view": "timeSeries",
+                          "stacked": false,
+                          "region": "${AWS::Region}",
+                          "stat": "Average",
+                          "period": 30,
+                          "title": "Average CPU Utilization",
+                          "liveData": true
+                      }
+                  },
+                  {
+                      "height": 3,
+                      "width": 6,
+                      "y": 5,
+                      "x": 0,
+                      "type": "alarm",
+                      "properties": {
+                          "title": "Alarms",
+                          "alarms": [
+                              "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:scale-in-alarm",
+                              "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:scale-out-alarm"
+                          ]
+                      }
+                  },
+                  {
+                      "type": "metric",
+                      "x": 6,
+                      "y": 0,
+                      "width": 11,
+                      "height": 8,
+                      "properties": {
+                          "metrics": [
+                              [
+                                  "AWS/EC2",
+                                  "CPUUtilization",
+                                  "AutoScalingGroupName",
+                                  "${WebServerAutoScalingGroup}",
+                                  {
+                                      "region": "${AWS::Region}",
+                                      "label": "Average CPU Utilization"
+                                  }
+                              ]
+                          ],
+                          "view": "gauge",
+                          "region": "${AWS::Region}",
+                          "stat": "Average",
+                          "period": 30,
+                          "yAxis": {
+                              "left": {
+                                  "min": 0,
+                                  "max": 100
+                              }
+                          },
+                          "liveData": true,
+                          "singleValueFullPrecision": false,
+                          "title": "Average CPU Utilization"
+                      }
+                  }
+              ]
+          }
+
+  SystemMessagesLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Description: "Log group for system messages from /var/log/messages"
+    Properties:
+      LogGroupName: !Ref SystemMessagesLogGroupName
+      RetentionInDays: 1
+      Tags:
+        - Key: Name
+          Value: SystemMessagesLogGroup
+        - Key: Purpose
+          Value: SystemLogging
+
+  HttpdAccessLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Description: "Log group for Apache HTTP access logs"
+    Properties:
+      LogGroupName: !Ref HttpdAccessLogGroupName
+      RetentionInDays: 1
+      Tags:
+        - Key: Name
+          Value: HttpdAccessLogGroup
+        - Key: Purpose
+          Value: WebServerLogging
+
+  SshEventLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Description: "Log group for SSH events from /var/log/secure"
+    Properties:
+      LogGroupName: !Ref SshEventLogGroupName
+      RetentionInDays: 1
+      Tags:
+        - Key: Name
+          Value: SshEventLogGroup
+        - Key: Purpose
+          Value: SecurityLogging
+
+  CloudWatchAgentConfig:
+    Type: AWS::SSM::Parameter
+    Description: "SSM parameter containing CloudWatch agent configuration"
+    Properties:
+      Description: CloudWatch agent configuration file for web servers
+      Name: cw-config-file-httpd
+      Type: String
+      Value: |
+        {
+          "agent": {
+              "metrics_collection_interval": 60,
+              "run_as_user": "root"
+          },
+          "logs": {
+              "logs_collected": {
+                  "files": {
+                      "collect_list": [{
+                              "file_path": "/var/log/messages",
+                              "log_group_name": "/aws/cwagent/messages",
+                              "log_stream_name": "{instance_id}"
+                          }, {
+                              "file_path": "/var/log/httpd/access_log",
+                              "log_group_name": "/aws/cwagent/httpd_access_log",
+                              "log_stream_name": "{instance_id}"
+                          }, {
+                              "file_path": "/var/log/secure",
+                              "log_group_name": "/aws/cwagent/sshevents",
+                              "log_stream_name": "{instance_id}"
+                          }
+                      ]
+                  }
+              }
+          },
+          "metrics": {
+              "append_dimensions": {
+                  "AutoScalingGroupName": "${aws:AutoScalingGroupName}",
+                  "ImageId": "${aws:ImageId}",
+                  "InstanceId": "${aws:InstanceId}",
+                  "InstanceType": "${aws:InstanceType}"
+              },
+              "metrics_collected": {
+                  "disk": {
+                      "measurement": [
+                          "used_percent"
+                      ],
+                      "metrics_collection_interval": 60,
+                      "resources": [
+                          "*"
+                      ]
+                  },
+                  "mem": {
+                      "measurement": [
+                          "mem_used_percent"
+                      ],
+                      "metrics_collection_interval": 60
+                  },
+                  "statsd": {
+                      "metrics_aggregation_interval": 60,
+                      "metrics_collection_interval": 10,
+                      "service_address": ":8125"
+                  }
+              }
+          }
+        }
+
+  #============================================================
+  # CLEANUP RESOURCES
+  #============================================================
+  
+  LogGroupCleanupFunction:
+    Type: AWS::Lambda::Function
+    Description: "Lambda function that cleans up CloudWatch log groups during stack deletion"
+    Properties:
+      Role: !GetAtt LogCleanupFunctionRole.Arn
+      Timeout: 120
+      Runtime: python3.13
+      Handler: index.handler
+      FunctionName: LogGroupCleanup
+      Description: Cleans up CloudWatch log groups during stack deletion to prevent orphaned resources
+      Code:
+        ZipFile: |
+          import boto3, logging, os
+          import cfnresponse
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          client = boto3.client('logs')
+
+          def delete_log_group(log_group_name):
+              """Delete a CloudWatch log group by name."""
+              try:
+                  response = client.delete_log_group(
+                      logGroupName=log_group_name
+                  )
+                  logger.info(f"Successfully deleted log group: {log_group_name}")
+                  logger.info(f"Response: {response}")
+                  return True
+              except Exception as e:
+                  logger.error(f"Error deleting log group {log_group_name}: {str(e)}")
+                  return False
+
+          def check_log_group(log_group_name):
+              """Check if a CloudWatch log group exists."""
+              try:
+                  response = client.describe_log_groups(
+                      logGroupNamePrefix=log_group_name
+                  )
+                  return len(response['logGroups']) > 0
+              except Exception as e:
+                  logger.error(f"Error checking log group {log_group_name}: {str(e)}")
+                  return False
+
+          def handler(event, context):
+              """Main Lambda handler function."""
+              responseData = {}
+              logger.info(f"Received event: {event}")
+              
+              try:
+                  log_groups = event['ResourceProperties']['LOG_GROUPS']
+                  
+                  if event['RequestType'] == 'Delete':
+                      for log_group in log_groups:
+                          if check_log_group(log_group):
+                              logger.info(f"Deleting log group: {log_group}")
+                              delete_log_group(log_group)
+                          else:
+                              logger.info(f"Log group {log_group} does not exist, skipping")
+                      
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                  
+                  # For Create and Update events, just acknowledge receipt
+                  elif event['RequestType'] in ['Create', 'Update']:
+                      logger.info(f"Request type: {event['RequestType']}, no action needed")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                      
+              except Exception as e:
+                  logger.error(f"Exception: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, responseData)
+      Tags:
+        - Key: Name
+          Value: LogCleanupFunction
+        - Key: Purpose
+          Value: ResourceCleanup
+
+  LogGroupCleanupTrigger:
+    Type: Custom::LogGroupCleanup
+    Description: "Custom resource that triggers log group cleanup during stack deletion"
+    Properties:
+      ServiceToken: !GetAtt LogGroupCleanupFunction.Arn
+      LOG_GROUPS: 
+        - !Ref HttpdAccessLogGroupName
+        - !Ref SystemMessagesLogGroupName
+        - !Ref SshEventLogGroupName
+        - !Join ['',['/aws/lambda/', !Ref LogGroupCleanupFunction]]
+
+Outputs:
+  # Load Balancer Outputs
+  LoadBalancerDNSName:
+    Description: DNS name of the Application Load Balancer
+    Value: !GetAtt WebAppLoadBalancer.DNSName
+
+  LoadBalancerHostedZoneID:
+    Description: Hosted Zone ID of the Application Load Balancer
+    Value: !GetAtt WebAppLoadBalancer.CanonicalHostedZoneID
+
+  LoadBalancerArn:
+    Description: ARN of the Application Load Balancer
+    Value: !Ref WebAppLoadBalancer
+
+  LoadBalancerFullName:
+    Description: Full name of the Application Load Balancer
+    Value: !GetAtt WebAppLoadBalancer.LoadBalancerFullName
+
+  # Target Group Outputs
+  TargetGroupArn:
+    Description: ARN of the Web Server Target Group
+    Value: !Ref WebServerTargetGroup
+
+  TargetGroupFullName:
+    Description: Full name of the Web Server Target Group
+    Value: !GetAtt WebServerTargetGroup.TargetGroupFullName
+
+  # Auto Scaling Group Outputs
+  AutoScalingGroupName:
+    Description: Name of the Auto Scaling Group
+    Value: !Ref WebServerAutoScalingGroup
+
+  AutoScalingGroupArn:
+    Description: ARN of the Auto Scaling Group
+    Value: !Ref WebServerAutoScalingGroup
+
+  # Security Group Outputs
+  LoadBalancerSecurityGroupId:
+    Description: ID of the Load Balancer Security Group
+    Value: !Ref LoadBalancerSecurityGroup
+
+  InstanceSecurityGroupId:
+    Description: ID of the Instance Security Group
+    Value: !Ref InstanceSecurityGroup
+    Export:
+      Name: InstanceSecurityGroup
+
+  # Launch Template Outputs
+  LaunchTemplateId:
+    Description: ID of the Web Server Launch Template
+    Value: !Ref WebServerLaunchTemplate
+
+  LaunchTemplateVersion:
+    Description: Latest version of the Web Server Launch Template
+    Value: !GetAtt WebServerLaunchTemplate.LatestVersionNumber
+
+  # IAM Outputs
+  WebServerInstanceRoleArn:
+    Description: ARN of the Web Server Instance Role
+    Value: !GetAtt WebServerInstanceRole.Arn
+
+  WebServerInstanceProfileArn:
+    Description: ARN of the Web Server Instance Profile
+    Value: !GetAtt WebServerInstanceProfile.Arn
+
+  # Listener Outputs
+  HttpsListenerArn:
+    Description: ARN of the HTTPS Listener
+    Value: !Ref HttpsListener
+
+  HttpToHttpsRedirectListenerArn:
+    Description: ARN of the HTTP to HTTPS Redirect Listener
+    Value: !Ref HttpToHttpsRedirectListener
+
+  # CloudWatch Outputs
+  ApplicationDashboardUrl:
+    Description: URL of the CloudWatch Dashboard
+    Value: !Sub "https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=ELB-ASG-${AWS::Region}"
+
+  SystemMessagesLogGroupName:
+    Description: Name of the System Messages Log Group
+    Value: !Ref SystemMessagesLogGroup
+
+  HttpdAccessLogGroupName:
+    Description: Name of the HTTPD Access Log Group
+    Value: !Ref HttpdAccessLogGroup
+
+  SshEventLogGroupName:
+    Description: Name of the SSH Event Log Group
+    Value: !Ref SshEventLogGroup
+
+  # Scaling Policy Outputs
+  ScaleOutPolicyArn:
+    Description: ARN of the Scale Out Policy
+    Value: !Ref ScaleOutPolicy
+
+  ScaleInPolicyArn:
+    Description: ARN of the Scale In Policy
+    Value: !Ref ScaleInPolicy
+
+  # CloudWatch Alarm Outputs
+  HighCpuAlarmName:
+    Description: Name of the High CPU Utilization Alarm
+    Value: !Ref HighCpuUtilizationAlarm
+
+  LowCpuAlarmName:
+    Description: Name of the Low CPU Utilization Alarm
+    Value: !Ref LowCpuUtilizationAlarm
+
+  # SSM Parameter Outputs
+  CloudWatchAgentConfigParameter:
+    Description: Name of the CloudWatch Agent Configuration SSM Parameter
+    Value: !Ref CloudWatchAgentConfig
+
+  # Placement Group Output
+  PlacementGroupName:
+    Description: Name of the Instance Placement Group
+    Value: !Ref InstancePlacementGroup
+
+  # Lambda Function Outputs
+  LogCleanupFunctionArn:
+    Description: ARN of the Log Cleanup Lambda Function
+    Value: !GetAtt LogGroupCleanupFunction.Arn
+
+  # Regional Information
+  DeployedRegion:
+    Description: AWS Region where the stack is deployed
+    Value: !Ref AWS::Region
+
+  StackId:
+    Description: CloudFormation Stack ID
+    Value: !Ref AWS::StackId
+
+  StackName:
+    Description: CloudFormation Stack Name
+    Value: !Ref AWS::StackName

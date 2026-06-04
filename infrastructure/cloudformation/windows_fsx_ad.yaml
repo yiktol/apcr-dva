@@ -1,0 +1,418 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Deploy EC2 Windows 2022, FSx for Windows, and AWS Managed Microsoft AD'
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where resources will be deployed
+    
+  SubnetId1:
+    Type: AWS::EC2::Subnet::Id
+    Description: First subnet ID for AD (should be in different AZ from SubnetId2)
+    
+  SubnetId2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Second subnet ID for AD (should be in different AZ from SubnetId1)
+    
+  EC2SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet ID for EC2 instance (can be public subnet)
+    
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair for Windows instance
+    
+  DomainName:
+    Type: String
+    Default: corp.local
+    Description: Domain name for AWS Managed Microsoft AD
+    
+  DomainNetBiosName:
+    Type: String
+    Default: CORP
+    Description: NetBIOS name for the domain
+    
+  AdminPassword:
+    Type: String
+    NoEcho: true
+    Description: Password for domain administrator (minimum 8 characters)
+    MinLength: 8
+    
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues:
+      - t3.medium
+      - t3.large
+      - m5.large
+      - m5.xlarge
+    Description: EC2 instance type
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      Windows2022: ami-0c02fb55956c7d316
+    us-west-2:
+      Windows2022: ami-0c2d3e23cc19c6d8a
+    ap-southeast-1:
+      Windows2022: ami-035c53d5ace226b4c
+    # Add more regions as needed
+
+Resources:
+  # Security Group for EC2 Instance (without FSx reference initially)
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Windows EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 10.0.0.0/8
+          Description: DNS TCP
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 10.0.0.0/8
+          Description: DNS UDP
+        - IpProtocol: tcp
+          FromPort: 88
+          ToPort: 88
+          CidrIp: 10.0.0.0/8
+          Description: Kerberos TCP
+        - IpProtocol: udp
+          FromPort: 88
+          ToPort: 88
+          CidrIp: 10.0.0.0/8
+          Description: Kerberos UDP
+        - IpProtocol: tcp
+          FromPort: 389
+          ToPort: 389
+          CidrIp: 10.0.0.0/8
+          Description: LDAP TCP
+        - IpProtocol: udp
+          FromPort: 389
+          ToPort: 389
+          CidrIp: 10.0.0.0/8
+          Description: LDAP UDP
+        - IpProtocol: tcp
+          FromPort: 445
+          ToPort: 445
+          CidrIp: 10.0.0.0/8
+          Description: SMB access for file shares
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: EC2-Windows-SG
+
+  # Security Group for FSx (without EC2 reference initially)
+  FSxSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for FSx Windows File Server
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 445
+          ToPort: 445
+          CidrIp: 10.0.0.0/8
+          Description: SMB access from VPC
+        - IpProtocol: tcp
+          FromPort: 5985
+          ToPort: 5985
+          CidrIp: 10.0.0.0/8
+          Description: WinRM HTTP
+        - IpProtocol: tcp
+          FromPort: 5986
+          ToPort: 5986
+          CidrIp: 10.0.0.0/8
+          Description: WinRM HTTPS
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 10.0.0.0/8
+          Description: DNS TCP
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 10.0.0.0/8
+          Description: DNS UDP
+        - IpProtocol: tcp
+          FromPort: 88
+          ToPort: 88
+          CidrIp: 10.0.0.0/8
+          Description: Kerberos TCP
+        - IpProtocol: udp
+          FromPort: 88
+          ToPort: 88
+          CidrIp: 10.0.0.0/8
+          Description: Kerberos UDP
+        - IpProtocol: tcp
+          FromPort: 389
+          ToPort: 389
+          CidrIp: 10.0.0.0/8
+          Description: LDAP TCP
+        - IpProtocol: udp
+          FromPort: 389
+          ToPort: 389
+          CidrIp: 10.0.0.0/8
+          Description: LDAP UDP
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: FSx-Windows-SG
+
+  # Optional: Add specific ingress rules after security groups are created
+  EC2ToFSxIngressRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref FSxSecurityGroup
+      IpProtocol: tcp
+      FromPort: 445
+      ToPort: 445
+      SourceSecurityGroupId: !Ref EC2SecurityGroup
+      Description: SMB access from EC2 instance
+
+  FSxToEC2IngressRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EC2SecurityGroup
+      IpProtocol: tcp
+      FromPort: 445
+      ToPort: 445
+      SourceSecurityGroupId: !Ref FSxSecurityGroup
+      Description: SMB access from FSx
+
+  # Updated IAM Role for EC2 Instance
+  EC2IAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonSSMDirectoryServiceAccess
+      Policies:
+        - PolicyName: DomainJoinPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:UpdateInstanceInformation
+                  - ssm:SendCommand
+                  - ssm:ListCommandInvocations
+                  - ssm:DescribeInstanceInformation
+                  - ssm:GetCommandInvocation
+                  - ds:CreateComputer
+                  - ds:DescribeDirectories
+                Resource: '*'
+        - PolicyName: FSxAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - fsx:DescribeFileSystems
+                  - fsx:DescribeBackups
+                Resource: '*'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2IAMRole
+
+  # AWS Managed Microsoft AD
+  ManagedAD:
+    Type: AWS::DirectoryService::MicrosoftAD
+    Properties:
+      Name: !Ref DomainName
+      ShortName: !Ref DomainNetBiosName
+      Password: !Ref AdminPassword
+      VpcSettings:
+        VpcId: !Ref VpcId
+        SubnetIds:
+          - !Ref SubnetId1
+          - !Ref SubnetId2
+      Edition: Standard
+
+  # FSx for Windows File Server
+  FSxFileSystem:
+    Type: AWS::FSx::FileSystem
+    DependsOn: ManagedAD
+    Properties:
+      FileSystemType: WINDOWS
+      StorageCapacity: 32
+      StorageType: SSD
+      SubnetIds:
+        - !Ref SubnetId1
+      SecurityGroupIds:
+        - !Ref FSxSecurityGroup
+      WindowsConfiguration:
+        ActiveDirectoryId: !Ref ManagedAD
+        ThroughputCapacity: 8
+        DeploymentType: SINGLE_AZ_2
+        AutomaticBackupRetentionDays: 7
+        CopyTagsToBackups: true
+        DailyAutomaticBackupStartTime: "05:00"
+      Tags:
+        - Key: Name
+          Value: FSx-Windows-FileSystem
+
+  # SSM Document for Domain Join
+  ADJoinDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Content:
+        schemaVersion: "1.2"
+        description: Join instances to an AWS Directory Service domain.
+        parameters:
+          directoryId:
+            type: String
+            description: "(Required) The ID of the AWS Directory Service directory."
+          directoryName:
+            type: String
+            description: "(Required) The name of the directory. For example, test.example.com"
+          dnsIpAddresses:
+            type: StringList
+            default: []
+            description:
+              "(Optional) The IP addresses of the DNS servers in the directory.
+              Required when DHCP is not configured."
+            allowedPattern: "((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
+        runtimeConfig:
+          aws:domainJoin:
+            properties:
+              directoryId: "{{ directoryId }}"
+              directoryName: "{{ directoryName }}"
+              dnsIpAddresses: "{{ dnsIpAddresses }}"
+      Name: !Sub "${AWS::StackName}-JoinDomainDocument"
+      DocumentType: "Command"
+
+
+  # Updated EC2 Instance with SSM Association
+  WindowsEC2Instance:
+    Type: AWS::EC2::Instance
+    DependsOn: 
+      - ManagedAD
+      - ADJoinDocument
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', Windows2022]
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SsmAssociations:
+        - DocumentName: !Ref ADJoinDocument
+          AssociationParameters:
+            - Key: directoryId
+              Value:
+                - !Ref ManagedAD
+            - Key: directoryName
+              Value:
+                - !Ref DomainName
+            - Key: dnsIpAddresses
+              Value: !GetAtt ManagedAD.DnsIpAddresses
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: "true"
+          DeviceIndex: "0"
+          GroupSet:
+            - !Ref EC2SecurityGroup
+          SubnetId: !Ref EC2SubnetId
+      UserData:
+        Fn::Base64: !Sub |
+          <powershell>
+          # Install RSAT tools
+          Install-WindowsFeature -Name RSAT-AD-Tools, RSAT-DNS-Server -IncludeAllSubFeature
+          
+          # Add Shared Folder GUI Tool to Desktop
+          $TargetFile = "C:\Windows\System32\fsmgmt.msc"
+          $ShortcutFile = "$env:Public\Desktop\Shared Folders GUI Tool.lnk"
+          $WScriptShell = New-Object -ComObject WScript.Shell
+          $Shortcut = $WScriptShell.CreateShortcut($ShortcutFile)
+          $Shortcut.TargetPath = $TargetFile
+          $Shortcut.Save()
+          
+          # Wait for FSx to be available and add shortcut
+          Start-Sleep -Seconds 300
+          $FSxTargetFile = "\\${FSxFileSystem.DNSName}\share"
+          $FSxShortcutFile = "$env:Public\Desktop\FSx File Share.lnk"
+          $FSxShortcut = $WScriptShell.CreateShortcut($FSxShortcutFile)
+          $FSxShortcut.TargetPath = $FSxTargetFile
+          $FSxShortcut.Save()
+          
+          # Signal completion
+          cfn-signal.exe -e $LASTEXITCODE --stack ${AWS::StackName} --resource WindowsEC2Instance --region ${AWS::Region}
+          </powershell>
+      Tags:
+        - Key: Name
+          Value: Windows-2022-Domain-Member
+    # CreationPolicy:
+    #   ResourceSignal:
+    #     Count: 1
+    #     Timeout: PT15M
+
+Outputs:
+  ManagedADId:
+    Description: AWS Managed Microsoft AD Directory ID
+    Value: !Ref ManagedAD
+  
+  ManagedADDnsIpAddresses:
+    Description: DNS IP addresses for the Managed AD
+    Value: !Join 
+      - ","
+      - !GetAtt ManagedAD.DnsIpAddresses
+  
+  FSxFileSystemId:
+    Description: FSx File System ID
+    Value: !Ref FSxFileSystem
+  
+  FSxDNSName:
+    Description: FSx DNS Name
+    Value: !GetAtt FSxFileSystem.DNSName
+
+  
+  EC2InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref WindowsEC2Instance
+  
+  EC2PublicIP:
+    Description: EC2 Public IP Address
+    Value: !GetAtt WindowsEC2Instance.PublicIp
+  
+  DomainName:
+    Description: Domain Name
+    Value: !Ref DomainName
+  
+  DomainNetBiosName:
+    Description: Domain NetBIOS Name
+    Value: !Ref DomainNetBiosName
+  
+  RDPConnection:
+    Description: RDP Connection String
+    Value: !Sub "mstsc /v:${WindowsEC2Instance.PublicIp}:3389"
+
+  SSMAssociationStatus:
+    Description: Check SSM Association status in AWS Console
+    Value: !Sub "https://console.aws.amazon.com/systems-manager/associations?region=${AWS::Region}"
+  
+  FSxFileSharePath:
+    Description: FSx File Share UNC Path
+    Value: !Sub "\\\\${FSxFileSystem.DNSName}\\share"
+  
+  ConnectToFSx:
+    Description: Command to map FSx drive from domain-joined machine
+    Value: !Sub "net use Z: \\\\${FSxFileSystem.DNSName}\\share /persistent:yes"

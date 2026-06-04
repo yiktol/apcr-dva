@@ -1,0 +1,58 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Storage Stack
+
+Parameters:
+  Bucket:
+    Type: String
+    Description: S3 Bucket for CloudFormation Template
+
+  Prefix:
+    Type: String
+    Description: Name to Prefix Resources
+
+  BucketRegion:
+    Type: String
+    Description: Region where S3 Bucket for CloudFormation Template exists
+
+  # Parameters for domain configuration
+  DomainName:
+    Type: String
+    Description: Base domain name for all coffee shop applications
+    Default: aws.yikyakyuk.com
+
+  KeyPairName:
+    Type: String
+    Description: Name of the EC2 Key Pair that can be used to access EC2 instances
+    Default: APAC-SG_keypair
+
+
+Conditions:
+  IsSingaporeRegion: !Equals [!Ref AWS::Region, ap-southeast-1]
+  IsNotSingaporeRegion: !Not [!Equals [!Ref AWS::Region, ap-southeast-1]]
+
+
+Resources:
+
+  WindowsStack:
+    Condition: IsSingaporeRegion
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/windows_fsx_ad.yaml
+      Parameters:
+        VpcId: !ImportValue VpcId
+        SubnetId1: !ImportValue PrivateSubnetOne
+        SubnetId2: !ImportValue PrivateSubnetTwo
+        EC2SubnetId: !ImportValue PublicSubnetOne
+        KeyPairName: !Ref KeyPairName
+        AdminPassword: 'SecurePassword123!'
+
+  EFSStack:
+    Condition: IsSingaporeRegion
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/efs.yaml
+      Parameters:    
+        VpcId: !ImportValue VpcId
+        SubnetId: !ImportValue PrivateSubnetOne
+        KeyPairName: !Ref KeyPairName

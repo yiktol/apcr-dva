@@ -1,0 +1,65 @@
+version: 0.2
+
+env:
+  variables:
+    DOCKER_BUILDKIT: 1
+  exported-variables:
+    - IMAGE_TAG
+    - REPOSITORY_URI
+
+phases:
+  pre_build:
+    commands:
+      - echo "Build started on $(date)"
+      - echo "Logging in to Amazon ECR..."
+      - aws --version
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - REPOSITORY_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:-latest}
+      - echo "Repository URI - $REPOSITORY_URI"
+      - echo "Image tag - $IMAGE_TAG"
+    finally:
+      - echo "Pre-build phase completed"
+
+  build:
+    commands:
+      - echo "Building Docker image..."
+      - |
+        docker build \
+          --cache-from $REPOSITORY_URI:latest \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          -t $REPOSITORY_URI:latest \
+          -t $REPOSITORY_URI:$IMAGE_TAG \
+          .
+    finally:
+      - echo "Build phase completed"
+
+  post_build:
+    commands:
+      - echo "Build completed on $(date)"
+      - echo "Pushing Docker images..."
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - echo Updating ECS service...
+      - aws ecs update-service --cluster $CLUSTER_NAME --service $SVC_NAME --desired-count 3 --force-new-deployment
+      - echo "Writing image definitions file..."
+      - printf '[{"name":"coffeeshop","imageUri":"%s"}]' $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+      - echo "Contents of imagedefinitions.json:"
+      - cat imagedefinitions.json
+    finally:
+      - echo "Post-build phase completed"
+    on-failure: ABORT
+
+artifacts:
+  files:
+    - imagedefinitions.json
+    - '**/*'
+  name: coffeeshop-artifacts-$(date +%Y-%m-%d_%H-%M-%S)
+
+reports:
+  docker-build-report:
+    files:
+      - '**/*'
+    base-directory: '/tmp'
+    discard-paths: yes

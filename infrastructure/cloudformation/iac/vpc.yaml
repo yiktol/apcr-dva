@@ -1,0 +1,278 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: VPC Infrastructure for Multi Regional Deployment
+
+Parameters:
+  Domain:
+    Type: String
+    Default: aws.yikyakyuk.com
+    Description: Domain name for the application
+
+Mappings:
+  RegionMap:
+    ap-southeast-1:
+      hostname: singapore
+      cidr: 10.11.0.0/16
+      ec2type: t3.micro
+      certId: 8186a3c2-b2cb-4c40-9210-86f79070d7ba
+      cfprefix: pl-31a34658
+    ap-southeast-4:
+      hostname: melbourne
+      cidr: 10.12.0.0/16
+      ec2type: t3.micro
+      certId: 92599b09-3e7b-4982-b23e-50e72cfe25b2
+      cfprefix: pl-0fb7e7cfe038ae0e9
+    ap-southeast-3:
+      hostname: jakarta
+      cidr: 10.13.0.0/16
+      ec2type: t3.micro
+      certId: f7c2b883-17fd-4db0-8b7d-17f1a1b3c555
+      cfprefix: pl-bca247d5
+    ap-northeast-2:
+      hostname: seoul
+      cidr: 10.14.0.0/16
+      ec2type: t3.micro
+      certId: 46d73de5-0a91-4df9-b3a6-dab6a9395241
+      cfprefix: pl-22a6434b
+    ap-south-1:
+      hostname: mumbai
+      cidr: 10.15.0.0/16
+      ec2type: t3.micro
+      certId: 3449b65c-da4d-4b93-83aa-492933c35cc3
+      cfprefix: pl-9aa247f3
+
+Resources:
+  # VPC
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap [RegionMap, !Ref AWS::Region, cidr]
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub vpc-${AWS::Region}
+
+  VpcCidrBlockIpv6:
+    Type: AWS::EC2::VPCCidrBlock
+    Properties:
+      VpcId: !Ref Vpc
+      AmazonProvidedIpv6CidrBlock: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub igw-${AWS::Region}
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref Vpc
+
+  PublicSubnetOne:
+    Type: AWS::EC2::Subnet
+    DependsOn: VpcCidrBlockIpv6
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref AWS::Region
+      CidrBlock: !Select [1, !Cidr [!GetAtt Vpc.CidrBlock, 20, 8]]
+      MapPublicIpOnLaunch: true
+      AssignIpv6AddressOnCreation: true
+      Ipv6CidrBlock:
+        !Select [1, !Cidr [!Select [0, !GetAtt Vpc.Ipv6CidrBlocks], 15, 64]]
+      PrivateDnsNameOptionsOnLaunch:
+        HostnameType: resource-name
+        EnableResourceNameDnsARecord: true
+        EnableResourceNameDnsAAAARecord: true
+      Tags:
+        - Key: Name
+          Value: !Sub public-subnet-1-${AWS::Region}
+
+  PublicSubnetTwo:
+    Type: AWS::EC2::Subnet
+    DependsOn: VpcCidrBlockIpv6
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select
+        - 1
+        - Fn::GetAZs: !Ref AWS::Region
+      CidrBlock: !Select [2, !Cidr [!GetAtt Vpc.CidrBlock, 20, 8]]
+      MapPublicIpOnLaunch: true
+      AssignIpv6AddressOnCreation: true
+      Ipv6CidrBlock: !Select [2, !Cidr [!Select [0, !GetAtt Vpc.Ipv6CidrBlocks], 15, 64]]
+      PrivateDnsNameOptionsOnLaunch:
+        HostnameType: resource-name
+        EnableResourceNameDnsARecord: true
+        EnableResourceNameDnsAAAARecord: true
+      Tags:
+        - Key: Name
+          Value: !Sub public-subnet-2-${AWS::Region}
+
+  PrivateSubnetOne:
+    Type: AWS::EC2::Subnet
+    DependsOn: VpcCidrBlockIpv6
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref AWS::Region
+      CidrBlock: !Select [11, !Cidr [!GetAtt Vpc.CidrBlock, 20, 8]]
+      MapPublicIpOnLaunch: false
+      AssignIpv6AddressOnCreation: true
+      Ipv6CidrBlock: !Select [11, !Cidr [!Select [0, !GetAtt Vpc.Ipv6CidrBlocks], 15, 64]]
+      PrivateDnsNameOptionsOnLaunch:
+        HostnameType: resource-name
+        EnableResourceNameDnsARecord: true
+        EnableResourceNameDnsAAAARecord: true
+      Tags:
+        - Key: Name
+          Value: !Sub private-subnet-1-${AWS::Region}
+
+  PrivateSubnetTwo:
+    Type: AWS::EC2::Subnet
+    DependsOn: VpcCidrBlockIpv6
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select
+        - 1
+        - Fn::GetAZs: !Ref AWS::Region
+      CidrBlock: !Select [12, !Cidr [!GetAtt Vpc.CidrBlock, 20, 8]]
+      MapPublicIpOnLaunch: false
+      AssignIpv6AddressOnCreation: true
+      Ipv6CidrBlock: !Select [12, !Cidr [!Select [0, !GetAtt Vpc.Ipv6CidrBlocks], 15, 64]]
+      PrivateDnsNameOptionsOnLaunch:
+        HostnameType: resource-name
+        EnableResourceNameDnsARecord: true
+        EnableResourceNameDnsAAAARecord: true
+      Tags:
+        - Key: Name
+          Value: !Sub private-subnet-2-${AWS::Region}
+
+  # NAT Gateway
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub eip-${AWS::Region}
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt ElasticIP.AllocationId
+      SubnetId: !Ref PublicSubnetOne
+      Tags:
+        - Key: Name
+          Value: !Sub nat-${AWS::Region}
+
+  EgressOnlyInternetGateway:
+    Type: AWS::EC2::EgressOnlyInternetGateway
+    Properties: 
+      VpcId: !Ref Vpc
+
+  # Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub public-rt-${AWS::Region}
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicRouteTableAssociationOne:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetOne
+
+  PublicRouteTableAssociationTwo:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetTwo
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub private-rt-${AWS::Region}
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  IPv6PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationIpv6CidrBlock: ::/0
+      RouteTableId: !Ref PrivateRouteTable
+      EgressOnlyInternetGatewayId: !Ref EgressOnlyInternetGateway
+
+  PrivateRouteTableAssociationOne:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetOne
+
+  PrivateRouteTableAssociationTwo:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetTwo
+
+Outputs:
+  VpcId:
+    Description: VPC ID
+    Value: !Ref Vpc
+
+  PublicSubnetOneId:
+    Description: Public Subnet One ID
+    Value: !Ref PublicSubnetOne
+
+  PublicSubnetTwoId:
+    Description: Public Subnet Two ID
+    Value: !Ref PublicSubnetTwo
+
+  PrivateSubnetOneId:
+    Description: Private Subnet One ID
+    Value: !Ref PrivateSubnetOne
+
+  PrivateSubnetTwoId:
+    Description: Private Subnet Two ID
+    Value: !Ref PrivateSubnetTwo
+
+  RegionHostname:
+    Description: Region hostname from mapping
+    Value: !FindInMap [RegionMap, !Ref AWS::Region, hostname]
+
+  RegionCertId:
+    Description: Certificate ID for the region
+    Value: !FindInMap [RegionMap, !Ref AWS::Region, certId]
+
+  RegionCloudFrontPrefix:
+    Description: CloudFront prefix list for the region
+    Value: !FindInMap [RegionMap, !Ref AWS::Region, cfprefix]
+
+  EC2InstanceType:
+    Description: EC2 instance type for the region
+    Value: !FindInMap [RegionMap, !Ref AWS::Region, ec2type]

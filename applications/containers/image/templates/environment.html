@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Environment Configuration</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <style>
+        .env-card {
+            transition: transform 0.3s;
+        }
+        .env-card:hover {
+            transform: translateY(-5px);
+        }
+        .env-value {
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="https://cicd.aws.yikyakyuk.com/">
+                <i class="bi bi-cup-hot-fill me-2"></i>Coffee Shop
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link" href="https://cicd.aws.yikyakyuk.com/"><i class="bi bi-house-door me-1"></i>Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="order"><i class="bi bi-cart me-1"></i>Orders</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="healthcheck"><i class="bi bi-heart-pulse me-1"></i>Health Check</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="dashboard"><i class="bi bi-speedometer2 me-1"></i>Dashboard</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="environment"><i class="bi bi-gear-fill me-1"></i>Environment</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <h1 class="mb-4">
+            <i class="bi bi-gear-fill text-primary me-2"></i>
+            Environment Configuration
+        </h1>
+        
+        <div class="row">
+            <div class="col-md-12 mb-4">
+                <div class="card env-card shadow-sm">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0"><i class="bi bi-cloud me-2"></i>AWS Configuration</h5>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-hover">
+                            <tr>
+                                <th width="20%"><i class="bi bi-globe me-2"></i>Region</th>
+                                <td class="env-value">{{ env_info.Region }}</td>
+                            </tr>
+                            <tr>
+                                <th><i class="bi bi-table me-2"></i>DynamoDB Table</th>
+                                <td class="env-value">{{ env_info.TableName }}</td>
+                            </tr>
+                            <tr>
+                                <th><i class="bi bi-inbox me-2"></i>Queue One URL</th>
+                                <td class="env-value">{{ env_info.QueueOneURL }}</td>
+                            </tr>
+                            <tr>
+                                <th><i class="bi bi-inbox-fill me-2"></i>Queue Two URL</th>
+                                <td class="env-value">{{ env_info.QueueTwoURL }}</td>
+                            </tr>
+                            <tr>
+                                <th><i class="bi bi-hdd-network me-2"></i>Application Port</th>
+                                <td class="env-value">{{ env_info.Port }}</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="mt-4">
+            <a href="healthcheck" class="btn btn-primary">
+                <i class="bi bi-heart-pulse me-2"></i>View Container Health
+            </a>
+        </div>
+    </div>
+
+    <footer class="bg-light text-center text-muted py-3 mt-5">
+        <div class="container">
+            <p class="mb-0">© 2023 Coffee Shop Management System</p>
+        </div>
+    </footer>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

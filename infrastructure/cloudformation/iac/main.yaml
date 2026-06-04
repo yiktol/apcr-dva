@@ -1,0 +1,161 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Main Stack - Multi Regional EC2 Instance Deployment using Cloudformation StackSet
+
+Conditions:
+  RegionalResources: !Not [!Equals [!Ref AWS::Region, us-east-1]]
+  GlobalResources: !Equals [!Ref AWS::Region, us-east-1]
+
+Parameters:
+  Domain:
+    Type: String
+    Default: aws.yikyakyuk.com
+    Description: Domain name for the application
+
+  AlbName:
+    Type: String
+    Default: multi-region-alb
+    Description: ALB Name for the application
+
+  Regions: 
+    Type: CommaDelimitedList
+    Default: "ap-southeast-3, ap-southeast-4, ap-south-1, ap-northeast-2"
+    Description: Comma separated list of regions to deploy to
+
+  VpcTemplateUrl:
+    Type: String
+    Description: S3 URL for the VPC template
+    Default: "https://yikyakyuk-ap-southeast-1-875692608981.s3.ap-southeast-1.amazonaws.com/infrastructure/cloudformation/iac/vpc.yaml"
+
+  InstanceAlbTemplateUrl:
+    Type: String
+    Description: S3 URL for the Instance and ALB template
+    Default: "https://yikyakyuk-ap-southeast-1-875692608981.s3.ap-southeast-1.amazonaws.com/infrastructure/cloudformation/iac/instance.yaml"
+
+  AcceleratorTemplateUrl:
+    Type: String
+    Description: S3 URL for the Accelerator template
+    Default: "https://yikyakyuk-ap-southeast-1-875692608981.s3.ap-southeast-1.amazonaws.com/infrastructure/cloudformation/iac/accelerator.yaml"
+
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: "Application Configuration"
+        Parameters:
+          - Domain
+          - AlbName
+      - Label:
+          default: "Regional Configuration"
+        Parameters:
+          - Regions
+      - Label:
+          default: "Template URLs"
+        Parameters:
+          - VpcTemplateUrl
+          - InstanceAlbTemplateUrl
+          - AcceleratorTemplateUrl
+
+Resources:
+  # VPC Stack
+  VpcStack:
+    Condition: RegionalResources
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Ref VpcTemplateUrl
+      Parameters:
+        Domain: !Ref Domain
+      Tags:
+        - Key: Name
+          Value: !Sub vpc-stack-${AWS::Region}
+
+  # Instance and ALB Stack
+  InstanceAlbStack:
+    Condition: RegionalResources
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VpcStack
+    Properties:
+      TemplateURL: !Ref InstanceAlbTemplateUrl
+      Parameters:
+        VpcId: !GetAtt VpcStack.Outputs.VpcId
+        PrivateSubnetOneId: !GetAtt VpcStack.Outputs.PrivateSubnetOneId
+        PublicSubnetOneId: !GetAtt VpcStack.Outputs.PublicSubnetOneId
+        PublicSubnetTwoId: !GetAtt VpcStack.Outputs.PublicSubnetTwoId
+        RegionCertId: !GetAtt VpcStack.Outputs.RegionCertId
+        RegionCloudFrontPrefix: !GetAtt VpcStack.Outputs.RegionCloudFrontPrefix
+        EC2InstanceType: !GetAtt VpcStack.Outputs.EC2InstanceType
+        RegionHostname: !GetAtt VpcStack.Outputs.RegionHostname
+        Domain: !Ref Domain
+        AlbName: !Ref AlbName
+      Tags:
+        - Key: Name
+          Value: !Sub instance-alb-stack-${AWS::Region}
+
+  # Global Accelerator Stack (only in us-east-1)
+  AcceleratorStack:
+    Condition: GlobalResources
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Ref AcceleratorTemplateUrl
+      Parameters:
+        Domain: !Ref Domain
+        AlbName: !Ref AlbName
+        Regions: !Join [", ", !Ref Regions]
+      Tags:
+        - Key: Name
+          Value: global-accelerator-stack
+
+Outputs:
+  # Regional Outputs
+  VpcId:
+    Condition: RegionalResources
+    Description: VPC ID from VPC Stack
+    Value: !GetAtt VpcStack.Outputs.VpcId
+
+  LoadBalancerArn:
+    Condition: RegionalResources
+    Description: Load Balancer ARN from Instance ALB Stack
+    Value: !GetAtt InstanceAlbStack.Outputs.LoadBalancerArn
+
+  LoadBalancerDNSName:
+    Condition: RegionalResources
+    Description: Load Balancer DNS Name from Instance ALB Stack
+    Value: !GetAtt InstanceAlbStack.Outputs.LoadBalancerDNSName
+
+  InstanceId:
+    Condition: RegionalResources
+    Description: EC2 Instance ID from Instance ALB Stack
+    Value: !GetAtt InstanceAlbStack.Outputs.InstanceId
+
+  RegionEndpoint:
+    Condition: RegionalResources
+    Description: Regional endpoint URL
+    Value: !Sub 
+      - "https://${RegionHostname}.${Domain}"
+      - RegionHostname: !GetAtt VpcStack.Outputs.RegionHostname
+
+  # Global Outputs
+  GlobalAcceleratorArn:
+    Condition: GlobalResources
+    Description: Global Accelerator ARN from Accelerator Stack
+    Value: !GetAtt AcceleratorStack.Outputs.GlobalAcceleratorArn
+
+  GlobalAcceleratorDnsName:
+    Condition: GlobalResources
+    Description: Global Accelerator DNS Name from Accelerator Stack
+    Value: !GetAtt AcceleratorStack.Outputs.GlobalAcceleratorDnsName
+
+  GlobalAcceleratorUrl:
+    Condition: GlobalResources
+    Description: Global Accelerator HTTP URL from Accelerator Stack
+    Value: !GetAtt AcceleratorStack.Outputs.GlobalAcceleratorUrl
+
+  GlobalAcceleratorHttpsUrl:
+    Condition: GlobalResources
+    Description: Global Accelerator HTTPS URL from Accelerator Stack
+    Value: !GetAtt AcceleratorStack.Outputs.GlobalAcceleratorHttpsUrl
+
+  GlobalEndpoint:
+    Condition: GlobalResources
+    Description: Global accelerator endpoint URL
+    Value: !Sub "https://accelerator.${Domain}"

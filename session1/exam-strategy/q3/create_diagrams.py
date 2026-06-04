@@ -1,7 +1,5 @@
-"""Regenerate enhanced diagrams for Session 1 Q3."""
+"""Regenerate comprehensive diagrams for Session 1 Q3."""
 import sys
-sys.path.insert(0, "/Users/erictole/demo/apcr-dva")
-from generate_diagrams_v2 import generate_diagrams_for_question_v2
-
-generate_diagrams_for_question_v2(1, 3)
-print("Done!")
+sys.path.insert(0, "/home/ubuntu/apcr-dva")
+from generate_diagrams_s1 import q3_diagrams
+q3_diagrams()

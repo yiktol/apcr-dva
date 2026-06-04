@@ -1,0 +1,412 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EC2 instance with EBS volume and DLM cross-region snapshot policy using multi-region KMS encryption on existing VPC'
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t3.micro, t3.small, t3.medium]
+    Description: EC2 instance type
+  
+  VolumeSize:
+    Type: Number
+    Default: 20
+    MinValue: 8
+    MaxValue: 100
+    Description: Size of the EBS volume in GB
+  
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: ID of the existing VPC where the EC2 instance will be deployed
+  
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the existing subnet where the EC2 instance will be deployed
+  
+  TargetRegion:
+    Type: String
+    Default: us-east-1
+    AllowedValues: 
+      - us-east-1
+      - us-west-2
+      - eu-west-1
+      - eu-central-1
+      - ap-southeast-1
+      - ap-northeast-1
+    Description: Target region for cross-region snapshot copies
+
+
+Resources:
+  # Multi-Region KMS Key for encryption
+  MultiRegionKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Multi-region KMS key for EBS snapshot encryption
+      MultiRegion: true
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Allow DLM Service
+            Effect: Allow
+            Principal:
+              Service: dlm.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+              - kms:CreateGrant
+              - kms:DescribeKey
+            Resource: '*'
+          - Sid: Allow EC2 Service
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+              - kms:CreateGrant
+              - kms:DescribeKey
+            Resource: '*'
+          - Sid: Allow Cross Account Access
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+              - kms:CreateGrant
+              - kms:DescribeKey
+              - kms:ReplicateKey
+            Resource: '*'
+      Tags:
+        - Key: Name
+          Value: MultiRegion-EBS-Snapshot-Key
+
+  # KMS Key Alias
+  KMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/ebs-snapshot-multiregion-key
+      TargetKeyId: !Ref MultiRegionKMSKey
+
+  # Security Group
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: 'DLM-DLM-Demo-SG'
+      GroupDescription: Security group for DLM demo EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: 'DLM-SecurityGroup'
+
+  # IAM Role for EC2 Instance
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: 'DLM-EC2-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: 'DLM-EC2-Instance-Role'
+
+  # Instance Profile
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+
+  # IAM Role for DLM
+  DLMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: 'DLM-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: dlm.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole
+        - arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRoleForAMIManagement
+      Policies:
+        - PolicyName: DLMCrossRegionKMSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                  - kms:CreateGrant
+                  - kms:DescribeKey
+                  - kms:ReplicateKey
+                Resource: 
+                  - !GetAtt MultiRegionKMSKey.Arn
+                  - !Sub 
+                    - 'arn:aws:kms:us-east-1:${AWS::AccountId}:key/${KeyId}'
+                    - KeyId: !Ref MultiRegionKMSKey
+      Tags:
+        - Key: Name
+          Value: 'DLM-Service-Role'
+
+  # EC2 Instance
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}'
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      SubnetId: !Ref SubnetId
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref VolumeSize
+            VolumeType: gp3
+            Encrypted: true
+            KmsKeyId: !Ref MultiRegionKMSKey
+            DeleteOnTermination: false
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y amazon-ssm-agent
+          systemctl enable amazon-ssm-agent
+          systemctl start amazon-ssm-agent
+      Tags:
+        - Key: Name
+          Value: DLM-Demo-Instance
+        - Key: backup
+          Value: 'true'
+
+  # Additional EBS Volume
+  DataVolume:
+    Type: AWS::EC2::Volume
+    Properties:
+      Size: !Ref VolumeSize
+      VolumeType: gp3
+      AvailabilityZone: !GetAtt EC2Instance.AvailabilityZone
+      Encrypted: true
+      KmsKeyId: !Ref MultiRegionKMSKey
+      Tags:
+        - Key: Name
+          Value: DLM-Demo-DataVolume
+        - Key: backup
+          Value: 'true'
+
+  # Attach additional volume to instance
+  VolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      InstanceId: !Ref EC2Instance
+      VolumeId: !Ref DataVolume
+      Device: /dev/sdf
+
+  # Lambda function to create KMS replica in us-east-1
+  KMSReplicaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: 'DLM-KMS-Replica-Function'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt KMSReplicaRole.Arn
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import cfnresponse
+
+          def lambda_handler(event, context):
+              try:
+                  target_region=event['ResourceProperties']['TargetRegion']
+                  primary_region=event['ResourceProperties']['PrimaryRegion']
+                  
+                  if event['RequestType'] == 'Create':
+                      kms_client = boto3.client('kms', region_name=primary_region)
+                      
+                      try: 
+                        # Create replica key in target_region
+                        response = kms_client.replicate_key(
+                            KeyId=event['ResourceProperties']['KeyId'],
+                            ReplicaRegion=target_region,
+                            Description='Replica of multi-region key for DLM cross-region snapshots'
+                        )
+                        
+                        replica_key_id = response['ReplicaKeyMetadata']['KeyId']
+                        replica_key_arn = response['ReplicaKeyMetadata']['Arn']
+                      
+                      except Exception as e:
+                          print(f"Error: {str(e)}")
+                          cfnresponse.send(event, context, cfnresponse.FAILED, {})
+
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                          'ReplicaKeyId': replica_key_id,
+                          'ReplicaKeyArn': replica_key_arn
+                      })
+                  
+                  elif event['RequestType'] == 'Delete':
+                      # Clean up replica key
+                      kms_client = boto3.client('kms', region_name=target_region)
+                      try:
+                          kms_client.schedule_key_deletion(
+                              KeyId=event['ResourceProperties']['KeyId'],
+                              PendingWindowInDays=7
+                          )
+                      except:
+                          pass  # Key might already be deleted
+                      
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  
+                  else:
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                      
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {})
+
+  # IAM Role for Lambda function
+  KMSReplicaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: KMSReplicaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:ReplicateKey
+                  - kms:DescribeKey
+                  - kms:ScheduleKeyDeletion
+                  - kms:CreateAlias
+                  - kms:DeleteAlias
+                  - kms:CreateKey
+                Resource: '*'
+
+  # Custom resource to create KMS replica
+  KMSReplica:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt KMSReplicaFunction.Arn
+      KeyId: !Ref MultiRegionKMSKey
+      TargetRegion: !Ref TargetRegion
+      PrimaryRegion: !Ref AWS::Region
+
+  # Data Lifecycle Manager Policy
+  LifecyclePolicy:
+    Type: AWS::DLM::LifecyclePolicy
+    DependsOn: KMSReplica
+    Properties:
+      Description: Cross-region EBS snapshot lifecycle policy with KMS encryption
+      State: ENABLED
+      ExecutionRoleArn: !GetAtt DLMRole.Arn
+      PolicyDetails:
+        ResourceTypes:
+          - VOLUME
+        TargetTags:
+          - Key: backup
+            Value: 'true'
+        Schedules:
+          - Name: Daily Snapshots with Cross-Region Copy
+            TagsToAdd:
+              - Key: type
+                Value: DailySnapshot
+              - Key: SnapshotCreatedBy
+                Value: DLM-Policy
+            CreateRule:
+              Interval: 24
+              IntervalUnit: HOURS
+              Times:
+                - '03:00'
+            RetainRule:
+              Count: 7
+            CopyTags: true
+            CrossRegionCopyRules:
+              - TargetRegion: !Ref TargetRegion
+                Encrypted: true
+                CmkArn: !GetAtt KMSReplica.ReplicaKeyArn
+                RetainRule:
+                  Interval: 14
+                  IntervalUnit: DAYS
+                CopyTags: true
+      Tags:
+        - Key: Name
+          Value: Cross-Region-Snapshot-Policy
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+  
+  InstancePrivateIP:
+    Description: Private IP address of the EC2 instance
+    Value: !GetAtt EC2Instance.PrivateIp
+  
+  DataVolumeId:
+    Description: Additional EBS Volume ID attached to the instance
+    Value: !Ref DataVolume
+  
+  KMSKeyId:
+    Description: Multi-region KMS Key ID for encryption
+    Value: !Ref MultiRegionKMSKey
+  
+  KMSKeyArn:
+    Description: Multi-region KMS Key ARN
+    Value: !GetAtt MultiRegionKMSKey.Arn
+  
+  KMSReplicaKeyId:
+    Description: KMS Replica Key ID in us-east-1
+    Value: !GetAtt KMSReplica.ReplicaKeyId
+  
+  KMSReplicaKeyArn:
+    Description: KMS Replica Key ARN in us-east-1
+    Value: !GetAtt KMSReplica.ReplicaKeyArn
+  
+  KMSKeyAlias:
+    Description: KMS Key Alias
+    Value: !Ref KMSKeyAlias
+  
+  LifecyclePolicyId:
+    Description: DLM Lifecycle Policy ID
+    Value: !Ref LifecyclePolicy
+  
+  DLMRoleArn:
+    Description: DLM Service Role ARN
+    Value: !GetAtt DLMRole.Arn
+  
+  SecurityGroupId:
+    Description: Security Group ID
+    Value: !Ref EC2SecurityGroup

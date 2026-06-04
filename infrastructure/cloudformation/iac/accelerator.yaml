@@ -1,0 +1,217 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: AWS Global Accelerator for Multi Regional Deployment
+
+Parameters:
+  Domain:
+    Type: String
+    Default: aws.yikyakyuk.com
+    Description: Domain name for the application
+
+  AlbName:
+    Type: String
+    Default: alb
+    Description: ALB Name for the application
+
+  Regions: 
+    Type: CommaDelimitedList
+    Default: "ap-southeast-3, ap-southeast-4, ap-south-1, ap-northeast-2"
+    Description: Comma separated list of regions to deploy to
+
+Resources:
+  # Lambda Role for Custom Resources
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LambdaExecutionRole
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Sid: AccessPolicy
+                Effect: Allow
+                Action:
+                  - "elasticloadbalancing:DescribeLoadBalancers"
+                Resource: "*"
+
+  # Custom Resource Lambda Function
+  GetElbInfo:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: python3.11
+      Timeout: 120
+      Code:
+        ZipFile: !Sub |
+          import boto3, logging, os
+          import cfnresponse
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def handler(event, context):
+              responseData = {}
+              logger.info("event: {}".format(event))
+              region = event['ResourceProperties']['REGION']
+              try:
+                  if event['RequestType'] == 'Create':
+                      responseData['ELBARN'] = getelbdata(event, context, region,'Arn')
+                      responseData['ELBDNS'] = getelbdata(event, context, region,'Dns')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+
+                  if event['RequestType'] in ['Update','Delete']:
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS,responseData)
+                      
+              except Exception as e:
+                  logger.info("Exception: {}".format(e))
+                  cfnresponse.send(event, context, cfnresponse.FAILED,responseData)
+
+          def getelbdata(event, context, regionname, data):
+              elbname = event['ResourceProperties']['ELB_NAME']
+              client = boto3.client('elbv2', region_name=regionname)    
+              response = client.describe_load_balancers(Names=[elbname])
+              elb = response['LoadBalancers'][0]
+              if data == 'Arn':
+                  return elb['LoadBalancerArn']
+              elif data == 'Dns':
+                  return elb['DNSName']
+
+  # Custom Resources to get ELB ARNs
+  GetEniIdsAction0:
+    Type: Custom::GetEniIdsAction0
+    Properties:
+      ServiceToken: !GetAtt GetElbInfo.Arn
+      REGION: !Select [0, !Ref Regions]
+      ELB_NAME: !Ref AlbName
+
+  GetEniIdsAction1:
+    Type: Custom::GetEniIdsAction1
+    Properties:
+      ServiceToken: !GetAtt GetElbInfo.Arn
+      REGION: !Select [1, !Ref Regions]
+      ELB_NAME: !Ref AlbName
+
+  GetEniIdsAction2:
+    Type: Custom::GetEniIdsAction2
+    Properties:
+      ServiceToken: !GetAtt GetElbInfo.Arn
+      REGION: !Select [2, !Ref Regions]
+      ELB_NAME: !Ref AlbName
+
+  GetEniIdsAction3:
+    Type: Custom::GetEniIdsAction3
+    Properties:
+      ServiceToken: !GetAtt GetElbInfo.Arn
+      REGION: !Select [3, !Ref Regions]
+      ELB_NAME: !Ref AlbName
+
+  # Global Accelerator
+  GlobalAccelerator:
+    Type: AWS::GlobalAccelerator::Accelerator
+    Properties:
+      Name: GlobalAccelerator
+      Enabled: true
+      Tags:
+        - Key: Name
+          Value: GlobalAccelerator
+
+  GlobalAcceleratorListener:
+    Type: AWS::GlobalAccelerator::Listener
+    Properties:
+      AcceleratorArn: !Ref GlobalAccelerator
+      Protocol: TCP
+      PortRanges:
+        - FromPort: 80
+          ToPort: 80
+        - FromPort: 443
+          ToPort: 443
+
+  GlobalAcceleratorEndpointGroup0:
+    Type: AWS::GlobalAccelerator::EndpointGroup
+    Properties:
+      ListenerArn: !Ref GlobalAcceleratorListener
+      EndpointGroupRegion: !Select [0, !Ref Regions]
+      TrafficDialPercentage: 100
+      EndpointConfigurations:
+        - EndpointId: !GetAtt GetEniIdsAction0.ELBARN
+          ClientIPPreservationEnabled: true
+          Weight: 100
+
+  GlobalAcceleratorEndpointGroup1:
+    Type: AWS::GlobalAccelerator::EndpointGroup
+    Properties:
+      ListenerArn: !Ref GlobalAcceleratorListener
+      EndpointGroupRegion: !Select [1, !Ref Regions]
+      TrafficDialPercentage: 100
+      EndpointConfigurations:
+        - EndpointId: !GetAtt GetEniIdsAction1.ELBARN
+          ClientIPPreservationEnabled: true
+          Weight: 100
+
+  GlobalAcceleratorEndpointGroup2:
+    Type: AWS::GlobalAccelerator::EndpointGroup
+    Properties:
+      ListenerArn: !Ref GlobalAcceleratorListener
+      EndpointGroupRegion: !Select [2, !Ref Regions]
+      TrafficDialPercentage: 100
+      EndpointConfigurations:
+        - EndpointId: !GetAtt GetEniIdsAction2.ELBARN
+          ClientIPPreservationEnabled: true
+          Weight: 100
+
+  GlobalAcceleratorEndpointGroup3:
+    Type: AWS::GlobalAccelerator::EndpointGroup
+    Properties:
+      ListenerArn: !Ref GlobalAcceleratorListener
+      EndpointGroupRegion: !Select [3, !Ref Regions]
+      TrafficDialPercentage: 100
+      EndpointConfigurations:
+        - EndpointId: !GetAtt GetEniIdsAction3.ELBARN
+          ClientIPPreservationEnabled: true
+          Weight: 100
+
+  # DNS Record for Global Accelerator
+  GlobalDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub ${Domain}.
+      Name: !Sub accelerator.${Domain}
+      Type: A
+      SetIdentifier: multiregion
+      Weight: 100
+      AliasTarget:
+        HostedZoneId: Z2BJ6XQ5FK7U4H  # Fixed for Global Accelerator
+        DNSName: !GetAtt GlobalAccelerator.DnsName
+        EvaluateTargetHealth: true
+
+Outputs:
+  GlobalAcceleratorArn:
+    Description: Global Accelerator ARN
+    Value: !Ref GlobalAccelerator
+
+  GlobalAcceleratorDnsName:
+    Description: The Domain Name System (DNS) name that Global Accelerator creates that points to an accelerator's static IPv4 addresses
+    Value: !GetAtt GlobalAccelerator.DnsName
+
+  GlobalAcceleratorListenerArn:
+    Description: Global Accelerator Listener ARN
+    Value: !Ref GlobalAcceleratorListener
+
+  GlobalAcceleratorUrl:
+    Description: Global Accelerator HTTP URL
+    Value: !Sub "http://${GlobalAccelerator.DnsName}"
+
+  GlobalAcceleratorHttpsUrl:
+    Description: Global Accelerator HTTPS URL
+    Value: !Sub "https://${GlobalAccelerator.DnsName}"

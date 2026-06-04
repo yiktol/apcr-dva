@@ -1,0 +1,554 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Comprehensive Network Infrastructure with VPC, Multi-AZ Subnets, Security Groups, and Web Application Stack
+
+Parameters:
+  Bucket:
+    Type: String
+    Description: S3 Bucket for CloudFormation Template
+
+  Prefix:
+    Type: String
+    Description: Name to Prefix Resources
+
+  BucketRegion:
+    Type: String
+    Description: Region where S3 Bucket for CloudFormation Template exists
+
+  # Parameters for domain configuration
+  DomainName:
+    Type: String
+    Description: Base domain name for all coffee shop applications
+    Default: aws.yikyakyuk.com
+
+  WebApplicationFirewallACLArn:
+    Type: String
+    Description: ARN of the WAF Web ACL to protect CloudFront distribution
+    Default: arn:aws:wafv2:us-east-1:875692608981:global/webacl/TrainingWebACL/c1a632aa-32f6-49fe-b2cd-63927eb3131e
+  
+  CertificateId:
+    Type: String
+    Description: ACM certificate ID for SSL/TLS termination at CloudFront
+    Default: 417df345-28ea-4c39-8e5d-d985abb59908   
+
+  # Stack deployment toggles
+  DeployEC2Stack:
+    Type: String
+    Description: Deploy EC2 Auto Scaling Group and ALB stack
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DeployRoute53Stack:
+    Type: String
+    Description: Deploy Route53 DNS records (requires EC2 stack)
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DeployCognitoStack:
+    Type: String
+    Description: Deploy Cognito user pool (Singapore only)
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DeployAuroraStack:
+    Type: String
+    Description: Deploy Aurora Serverless database (Singapore only, requires EC2 stack)
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DeployServerlessStack:
+    Type: String
+    Description: Deploy serverless API stack (Singapore only)
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DeployContainerStack:
+    Type: String
+    Description: Deploy ECS container stack (Singapore only, requires Serverless stack)
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DeployStressToolStack:
+    Type: String
+    Description: Deploy stress testing tool (Singapore only, requires Container and Cognito stacks)
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DeploySalesGeneratorStack:
+    Type: String
+    Description: Deploy sales generator (Singapore only, requires Container and Cognito stacks)
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DeployElastiCacheStack:
+    Type: String
+    Description: Deploy ElastiCache stack (Singapore only)
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+  DeployFISExperimentStack:
+    Type: String
+    Description: Deploy FIS experiment stack (Singapore only, requires Container and Cognito stacks)
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+  DeployKMSAppStack:
+    Type: String
+    Description: Deploy KMS application stack (Singapore only)
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DeploySQSDemoStack:
+    Type: String
+    Description: Deploy SQS demo stack (Singapore only, requires Container and Cognito stacks)
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+  DeploySNSDemoStack:
+    Type: String
+    Description: Deploy SNS demo stack (Singapore only, requires Container and Cognito stacks)
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+  DeployDLMStack:
+    Type: String
+    Description: Deploy DLM lifecycle stack (Singapore only)
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+  DeployGlobalDdbMonitorStack:
+    Type: String
+    Description: Deploy DynamoDB Global Table Monitor (Singapore only, requires Container and Cognito stacks)
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+  DeployServerlessMicroserviceStack:
+    Type: String
+    Description: Deploy Serverless Microservice Inventory API Client (Singapore only, requires Container and Cognito stacks)
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DeploySecurityStack:
+    Type: String
+    Description: Deploy security stack (VPC Flow Logs, AWS Config, CloudTrail)
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+Mappings:
+  RegionMap:
+    ap-southeast-1: #Singapore
+      cidr: 10.1.0.0/16
+      asn: 65000
+      cfprefixlist: pl-31a34658
+      certId: 8186a3c2-b2cb-4c40-9210-86f79070d7ba
+      lbhostname: lbsg
+      regioncode: sg
+    ap-southeast-2: #Sydney
+      cidr: 10.2.0.0/16
+      asn: 65002
+      cfprefixlist: pl-b8a742d1
+      certId: 1859753d-9f45-48df-b6df-ec1d1eb65021
+      lbhostname: lbau
+      regioncode: au
+    ap-southeast-5: #Malaysia
+      cidr: 10.5.0.0/16
+      asn: 65005
+      cfprefixlist: pl-09076f83e90b139d0
+      certId: 70d26cc6-4611-4b25-ae5f-eafd5e1acd02
+      lbhostname: lbmy
+      regioncode: my
+    ap-southeast-7: #Thailand
+      cidr: 10.7.0.0/16
+      asn: 65007
+      cfprefixlist: pl-0857de2e2b1c7f2a2
+      certId: c1a0ae34-ddb4-4bb4-8ee6-a8fa3ab866ef
+      lbhostname: lbth
+      regioncode: th
+    ap-south-1: #Mumbai
+      cidr: 10.11.0.0/16
+      asn: 65011
+      cfprefixlist: pl-9aa247f3
+      certId: 0af6e3d7-97a0-485e-b094-dbe5bc8a8746
+      lbhostname: lbin
+      regioncode: in
+
+Conditions:
+  IsSingaporeRegion: !Equals [!Ref AWS::Region, ap-southeast-1]
+
+  # EC2 + Route53 (any region)
+  DeployEC2: !Equals [!Ref DeployEC2Stack, 'true']
+  DeployRoute53: !And
+    - !Equals [!Ref DeployRoute53Stack, 'true']
+    - !Condition DeployEC2
+
+  # Singapore-only stacks with dependency chains
+  DeployCognito: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeployCognitoStack, 'true']
+
+  DeployAurora: !And
+    # - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeployAuroraStack, 'true']
+    - !Condition DeployEC2
+
+  DeployServerless: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeployServerlessStack, 'true']
+
+  DeployContainers: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeployContainerStack, 'true']
+    - !Condition DeployServerless
+
+  DeployStressTool: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeployStressToolStack, 'true']
+    - !Condition DeployContainers
+    - !Condition DeployCognito
+
+  DeploySalesGenerator: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeploySalesGeneratorStack, 'true']
+    - !Condition DeployContainers
+    - !Condition DeployCognito
+
+  DeployElastiCache: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeployElastiCacheStack, 'true']
+
+  DeployFISExperiment: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeployFISExperimentStack, 'true']
+    - !Condition DeployContainers
+    - !Condition DeployCognito
+
+  DeployKMSApp: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeployKMSAppStack, 'true']
+
+  DeploySQSDemo: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeploySQSDemoStack, 'true']
+    - !Condition DeployContainers
+    - !Condition DeployCognito
+
+  DeploySNSDemo: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeploySNSDemoStack, 'true']
+    - !Condition DeployContainers
+    - !Condition DeployCognito
+
+  DeployDLM: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeployDLMStack, 'true']
+
+  DeployGlobalDdbMonitor: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeployGlobalDdbMonitorStack, 'true']
+    - !Condition DeployContainers
+    - !Condition DeployCognito
+
+  DeployServerlessMicroservice: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeployServerlessMicroserviceStack, 'true']
+    - !Condition DeployContainers
+
+  DeploySecurity: !And
+    - !Condition IsSingaporeRegion
+    - !Equals [!Ref DeploySecurityStack, 'true']
+
+
+Resources:
+
+  CognitoStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeployCognito
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/cognito.yaml
+      Parameters:
+        CognitoUserEmail: erictole@amazon.com  
+        CloudfrontDomainName: demo.aws.yikyakyuk.com
+        UserPoolName: saa-user-pool
+
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/vpc.yaml
+      Parameters:
+        VpcCidrBlock: !FindInMap [RegionMap, !Ref AWS::Region, cidr]
+
+  InstanceStack:
+    DependsOn: VPCStack  
+    Type: AWS::CloudFormation::Stack
+    Condition: DeployEC2
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/ec2-asg-alb.yaml
+      Parameters:
+        # Network Parameters from VPC Stack
+        VPCId: !GetAtt VPCStack.Outputs.VpcId
+        PublicSubnetOne: !GetAtt VPCStack.Outputs.PublicSubnetOne
+        PublicSubnetTwo: !GetAtt VPCStack.Outputs.PublicSubnetTwo
+        PublicSubnetThree: !GetAtt VPCStack.Outputs.PublicSubnetThree
+        PrivateSubnetOne: !GetAtt VPCStack.Outputs.PrivateSubnetOne
+        PrivateSubnetTwo: !GetAtt VPCStack.Outputs.PrivateSubnetTwo
+        PrivateSubnetThree: !GetAtt VPCStack.Outputs.PrivateSubnetThree
+        
+        # EC2 Region-specific parameters from mappings
+        CertificateId: !FindInMap [RegionMap, !Ref AWS::Region, certId]
+        LbHostname: !FindInMap [RegionMap, !Ref AWS::Region, lbhostname]
+        CloudFrontPrefixListId: !FindInMap [RegionMap, !Ref AWS::Region, cfprefixlist]
+        
+        # Application Parameters (customize as needed)
+        WebServerInstanceType: t3.micro
+        PublicDomainName: !Ref DomainName
+        HttpdAccessLogGroupName: /aws/cwagent/httpd_access_log
+        SshEventLogGroupName: /aws/cwagent/sshevents
+        SystemMessagesLogGroupName: /aws/cwagent/messages
+        CloudFrontALBSecretName: cloudfront/alb-handshake
+
+  Route53Stack:
+    DependsOn: InstanceStack
+    Type: AWS::CloudFormation::Stack
+    Condition: DeployRoute53
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/route53.yaml
+      Parameters:
+        PublicDomainName: !Ref DomainName
+        LbHostname: !FindInMap [RegionMap, !Ref AWS::Region, lbhostname]
+        LoadBalancerDNSName: !GetAtt InstanceStack.Outputs.LoadBalancerDNSName
+        LoadBalancerHostedZoneId: !GetAtt InstanceStack.Outputs.LoadBalancerHostedZoneID
+        Regioncode: !FindInMap [RegionMap, !Ref AWS::Region, regioncode]
+
+  ElastiCacheStack:
+    Condition: DeployElastiCache
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/elasticache.yaml
+      Parameters:
+        VPCId: !GetAtt VPCStack.Outputs.VpcId
+        SubnetIds: !Join [",",[!GetAtt VPCStack.Outputs.PrivateSubnetOne,!GetAtt VPCStack.Outputs.PrivateSubnetTwo]]
+        PublicSubnetIds: !Join [",",[!GetAtt VPCStack.Outputs.PublicSubnetOne,!GetAtt VPCStack.Outputs.PublicSubnetTwo]]
+        DomainName: !Ref DomainName
+        CloudFrontALBHandshakeSecretName: cloudfront/alb-handshake
+
+  AuroraStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeployAurora
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/db-serverless.yaml
+      Parameters:
+        LaunchDbReader: 'FALSE'
+        DbName: orderdb
+        DbUsername: dbadmin
+        Vpc: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnetOne: !GetAtt VPCStack.Outputs.PrivateSubnetOne
+        PrivateSubnetTwo: !GetAtt VPCStack.Outputs.PrivateSubnetTwo
+        PrivateSubnetThree: !GetAtt VPCStack.Outputs.PrivateSubnetThree
+        InstanceSecurityGroupId: !GetAtt InstanceStack.Outputs.InstanceSecurityGroupId
+
+  ServerlessStack:
+    Condition: DeployServerless
+    Type: AWS::CloudFormation::Stack
+    UpdateReplacePolicy: Retain
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/serverless.yaml
+      Parameters:
+        ApiCertificateArn: !Join ['',[!Sub 'arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/', !FindInMap [RegionMap, !Ref AWS::Region, certId]]]
+        DomainName: !Ref DomainName
+        ApiAuthSecretName: "cloudfront/api-gw-handshake"
+
+  ContainerStack:
+    Condition: DeployContainers
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/containers.yaml
+      Parameters: 
+        DomainName: !Ref DomainName
+        CloudFrontALBHandshakeSecretName: cloudfront/alb-handshake
+        CertificateArn: !Join ['',[!Sub 'arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/', !FindInMap [RegionMap, !Ref AWS::Region, certId]]]
+        # Network Parameters from VPC Stack
+        VPCId: !GetAtt VPCStack.Outputs.VpcId
+        PublicSubnetOne: !GetAtt VPCStack.Outputs.PublicSubnetOne
+        PublicSubnetTwo: !GetAtt VPCStack.Outputs.PublicSubnetTwo
+        PublicSubnetThree: !GetAtt VPCStack.Outputs.PublicSubnetThree
+        PrivateSubnetOne: !GetAtt VPCStack.Outputs.PrivateSubnetOne
+        PrivateSubnetTwo: !GetAtt VPCStack.Outputs.PrivateSubnetTwo
+        PrivateSubnetThree: !GetAtt VPCStack.Outputs.PrivateSubnetThree
+        DynamoDBTableName: !GetAtt ServerlessStack.Outputs.CoffeeOrdersTableName
+        QueueOneUrl: !GetAtt ServerlessStack.Outputs.OrderProcessingQueueURL
+        QueueTwoUrl: !GetAtt ServerlessStack.Outputs.OrderDeliveryQueueURL
+        CloudFrontPrefixListId: !FindInMap [RegionMap, !Ref AWS::Region, cfprefixlist]
+
+
+  StressToolStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeployStressTool
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/stress_tool.yaml
+      Parameters:
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnetIds: !Join [",",[!GetAtt VPCStack.Outputs.PrivateSubnetOne,!GetAtt VPCStack.Outputs.PrivateSubnetTwo]]
+        ExistingECSCluster: !GetAtt ContainerStack.Outputs.ECSClusterName
+        ExistingALBArn: !GetAtt ContainerStack.Outputs.ApplicationLoadBalancerArn
+        ExistingALBSecurityGroupId: !GetAtt ContainerStack.Outputs.ALBSecurityGroupId
+        CloudFrontALBHandshakeSecretName: cloudfront/alb-handshake
+        SSLCertificateArn: !Join ['',[!Sub 'arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/', !FindInMap [RegionMap, !Ref AWS::Region, certId]]]
+        ALBHTTPSListener: !GetAtt ContainerStack.Outputs.ALBHTTPSListener
+        UserPoolArn: !GetAtt CognitoStack.Outputs.UserPoolArn
+        UserPoolClientId: !GetAtt CognitoStack.Outputs.UserPoolClientId
+        UserPoolDomain: !GetAtt CognitoStack.Outputs.UserPoolDomain
+
+  SalesGeneratorStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeploySalesGenerator
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/sales_generator.yaml
+      Parameters:
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnetIds: !Join [",",[!GetAtt VPCStack.Outputs.PrivateSubnetOne,!GetAtt VPCStack.Outputs.PrivateSubnetTwo]]
+        ExistingECSCluster: !GetAtt ContainerStack.Outputs.ECSClusterName
+        ExistingALBArn: !GetAtt ContainerStack.Outputs.ApplicationLoadBalancerArn
+        ExistingALBSecurityGroupId: !GetAtt ContainerStack.Outputs.ALBSecurityGroupId
+        CloudFrontALBHandshakeSecretName: cloudfront/alb-handshake
+        SSLCertificateArn: !Join ['',[!Sub 'arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/', !FindInMap [RegionMap, !Ref AWS::Region, certId]]]
+        ALBHTTPSListener: !GetAtt ContainerStack.Outputs.ALBHTTPSListener
+        UserPoolArn: !GetAtt CognitoStack.Outputs.UserPoolArn
+        UserPoolClientId: !GetAtt CognitoStack.Outputs.UserPoolClientId
+        UserPoolDomain: !GetAtt CognitoStack.Outputs.UserPoolDomain
+
+  FISExperimentStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeployFISExperiment
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/fis_experiment.yaml
+      Parameters:
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnetIds: !Join [",",[!GetAtt VPCStack.Outputs.PrivateSubnetOne,!GetAtt VPCStack.Outputs.PrivateSubnetTwo]]
+        ExistingECSCluster: !GetAtt ContainerStack.Outputs.ECSClusterName
+        ExistingALBArn: !GetAtt ContainerStack.Outputs.ApplicationLoadBalancerArn
+        ExistingALBSecurityGroupId: !GetAtt ContainerStack.Outputs.ALBSecurityGroupId
+        CloudFrontALBHandshakeSecretName: cloudfront/alb-handshake
+        SSLCertificateArn: !Join ['',[!Sub 'arn:aws:acm:${AWS::Region}:${AWS::AccountId}:certificate/', !FindInMap [RegionMap, !Ref AWS::Region, certId]]]
+        ALBHTTPSListener: !GetAtt ContainerStack.Outputs.ALBHTTPSListener
+        UserPoolArn: !GetAtt CognitoStack.Outputs.UserPoolArn
+        UserPoolClientId: !GetAtt CognitoStack.Outputs.UserPoolClientId
+        UserPoolDomain: !GetAtt CognitoStack.Outputs.UserPoolDomain
+
+  KMSAppStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeployKMSApp
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/kms-app.yaml
+      Parameters:
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnetIds: !Join [",",[!GetAtt VPCStack.Outputs.PrivateSubnetOne,!GetAtt VPCStack.Outputs.PrivateSubnetTwo]]
+        PublicSubnetIds: !Join [",",[!GetAtt VPCStack.Outputs.PublicSubnetOne,!GetAtt VPCStack.Outputs.PublicSubnetTwo]]
+        DomainName: !Ref DomainName
+        CloudFrontALBHandshakeSecretName: cloudfront/alb-handshake
+
+  SQSDemoStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeploySQSDemo
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/sqs-demo.yaml
+      Parameters:
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnetIds: !Join [",",[!GetAtt VPCStack.Outputs.PrivateSubnetOne,!GetAtt VPCStack.Outputs.PrivateSubnetTwo]]
+        ExistingECSCluster: !GetAtt ContainerStack.Outputs.ECSClusterName
+        ExistingALBArn: !GetAtt ContainerStack.Outputs.ApplicationLoadBalancerArn
+        ExistingALBSecurityGroupId: !GetAtt ContainerStack.Outputs.ALBSecurityGroupId
+        ALBHTTPSListener: !GetAtt ContainerStack.Outputs.ALBHTTPSListener
+        DockerImage: 875692608981.dkr.ecr.ap-southeast-1.amazonaws.com/aws/sqs-demo-app:latest
+        CloudFrontALBHandshakeSecretName: cloudfront/alb-handshake
+        UserPoolArn: !GetAtt CognitoStack.Outputs.UserPoolArn
+        UserPoolClientId: !GetAtt CognitoStack.Outputs.UserPoolClientId
+        UserPoolDomain: !GetAtt CognitoStack.Outputs.UserPoolDomain
+
+  SNSDemoStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeploySNSDemo
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/sns.yaml
+      Parameters:
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnetIds: !Join [",",[!GetAtt VPCStack.Outputs.PrivateSubnetOne,!GetAtt VPCStack.Outputs.PrivateSubnetTwo]]
+        ExistingECSCluster: !GetAtt ContainerStack.Outputs.ECSClusterName
+        ExistingALBArn: !GetAtt ContainerStack.Outputs.ApplicationLoadBalancerArn
+        ExistingALBSecurityGroupId: !GetAtt ContainerStack.Outputs.ALBSecurityGroupId
+        ALBHTTPSListener: !GetAtt ContainerStack.Outputs.ALBHTTPSListener
+        DockerImage: 875692608981.dkr.ecr.ap-southeast-1.amazonaws.com/aws/sns-lambda-slack-demo:latest
+        CloudFrontALBHandshakeSecretName: cloudfront/alb-handshake
+        UserPoolArn: !GetAtt CognitoStack.Outputs.UserPoolArn
+        UserPoolClientId: !GetAtt CognitoStack.Outputs.UserPoolClientId
+        UserPoolDomain: !GetAtt CognitoStack.Outputs.UserPoolDomain
+        SlackWebhookParameter: /apcr/slack/coffee-alerts/webhook
+
+  DLMStack:
+    Condition: DeployDLM
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/dlm.yaml
+      Parameters:
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        SubnetId: !GetAtt VPCStack.Outputs.PrivateSubnetOne
+        TargetRegion: 'us-east-1'
+
+  GlobalDdbMonitorStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeployGlobalDdbMonitor
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/global_ddb_monitor.yaml
+      Parameters:
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnetIds: !Join [",",[!GetAtt VPCStack.Outputs.PrivateSubnetOne,!GetAtt VPCStack.Outputs.PrivateSubnetTwo]]
+        ExistingECSCluster: !GetAtt ContainerStack.Outputs.ECSClusterName
+        ExistingALBArn: !GetAtt ContainerStack.Outputs.ApplicationLoadBalancerArn
+        ExistingALBSecurityGroupId: !GetAtt ContainerStack.Outputs.ALBSecurityGroupId
+        CloudFrontALBHandshakeSecretName: cloudfront/alb-handshake
+        ALBHTTPSListener: !GetAtt ContainerStack.Outputs.ALBHTTPSListener
+        UserPoolArn: !GetAtt CognitoStack.Outputs.UserPoolArn
+        UserPoolClientId: !GetAtt CognitoStack.Outputs.UserPoolClientId
+        UserPoolDomain: !GetAtt CognitoStack.Outputs.UserPoolDomain
+        DynamoDBTableName: !GetAtt ServerlessStack.Outputs.CoffeeOrdersTableName
+
+  ServerlessMicroserviceStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: DeployServerlessMicroservice
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/serverless_microservice.yaml
+      Parameters:
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+        PrivateSubnetIds: !Join [",",[!GetAtt VPCStack.Outputs.PrivateSubnetOne,!GetAtt VPCStack.Outputs.PrivateSubnetTwo]]
+        ExistingECSCluster: !GetAtt ContainerStack.Outputs.ECSClusterName
+        ExistingALBArn: !GetAtt ContainerStack.Outputs.ApplicationLoadBalancerArn
+        ExistingALBSecurityGroupId: !GetAtt ContainerStack.Outputs.ALBSecurityGroupId
+        CloudFrontALBHandshakeSecretName: cloudfront/alb-handshake
+        ALBHTTPSListener: !GetAtt ContainerStack.Outputs.ALBHTTPSListener
+
+  SecurityStack:
+    Condition: DeploySecurity
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://${Bucket}.s3.${BucketRegion}.amazonaws.com/${Prefix}/security.yaml
+      Parameters:
+        VpcId: !GetAtt VPCStack.Outputs.VpcId
+
+Outputs:
+  VpcId:
+    Description: The VPC Id
+    Value: !GetAtt VPCStack.Outputs.VpcId
+
+  PrivateSubnetOne:
+    Description: Private Subnet One
+    Value: !GetAtt VPCStack.Outputs.PrivateSubnetOne
+
+  SecurityStackFlowLogId:
+    Condition: DeploySecurity
+    Description: VPC Flow Log ID from Security Stack
+    Value: !GetAtt SecurityStack.Outputs.FlowLogId
+
+  SecurityStackCloudTrailArn:
+    Condition: DeploySecurity
+    Description: CloudTrail ARN from Security Stack
+    Value: !GetAtt SecurityStack.Outputs.CloudTrailArn
+

@@ -1,0 +1,1668 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: "Serverless Coffee Shop Application Infrastructure with API, Queuing, and Event Processing"
+
+Parameters:
+  LambdaCodeS3Bucket:
+    Type: String
+    Default: yikyakyuk-ap-southeast-1-875692608981
+    Description: "S3 bucket containing Lambda function code packages"
+  
+  ApiGatewayStage:
+    Type: String
+    Default: prod
+    Description: "API Gateway deployment stage name"
+  
+  ApiCertificateArn:
+    Type: String
+    Default: "arn:aws:acm:ap-southeast-1:875692608981:certificate/8186a3c2-b2cb-4c40-9210-86f79070d7ba"
+    Description: "ARN of ACM certificate for API domain"
+
+  DomainName:
+    Description: "Public Hosted Zone for domain configuration"
+    Default: aws.yikyakyuk.com
+    Type: String
+
+  ApiDomainName:
+    Type: String
+    Default: coffee-api.aws.yikyakyuk.com
+    Description: "API Gateway custom domain name"
+
+  HostedZoneId:
+    Type: String
+    Default: Z09170582IZGKC67IAX17
+    Description: "Route53 Hosted Zone ID for domain"
+
+  ApiAuthSecretName:
+    Type: String
+    Default: "cloudfront/api-gw-handshake"
+    Description: "Secrets Manager secret containing API authentication credentials"
+
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    Description: "Number of days to retain CloudWatch logs"
+
+  SQSRetries:
+    Type: Number
+    Default: 5
+    Description: "Maximum number of SQS message retries"
+
+Resources:
+  #############################################
+  # CloudWatch Log Groups
+  #############################################
+  
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  ApiGatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/coffeeshopapi-${AWS::StackName}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  #############################################
+  # Messaging Resources - SQS Queues and SNS
+  #############################################
+  
+  # Dead Letter Queue (no redrive policy)
+  OrderProcessingDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: "OrderProcessingDLQ"
+      VisibilityTimeout: 120
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Name
+          Value: "Order Processing Dead Letter Queue"
+        - Key: Purpose
+          Value: "Handle failed order processing messages"
+  
+  # Main processing queue with DLQ
+  OrderProcessingQueue: 
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: "OrderProcessingQueue"
+      VisibilityTimeout: 120
+      RedrivePolicy: 
+        deadLetterTargetArn: !GetAtt OrderProcessingDLQ.Arn
+        maxReceiveCount: !Ref SQSRetries
+      Tags:
+        - Key: Name
+          Value: "Coffee Order Processing Queue"
+        - Key: Purpose
+          Value: "Process new coffee orders"
+  
+  OrderProcessingQueuePolicy: 
+    Type: AWS::SQS::QueuePolicy
+    Properties: 
+      Queues: [!Ref OrderProcessingQueue]
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Action: ["SQS:SendMessage", "SQS:ReceiveMessage", "SQS:DeleteMessage"]
+            Effect: Allow
+            Resource: !GetAtt OrderProcessingQueue.Arn
+            Principal:  
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+  
+  # Order delivery queue
+  OrderDeliveryQueue: 
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: "OrderDeliveryQueue"
+      VisibilityTimeout: 120
+      Tags:
+        - Key: Name
+          Value: "Order Delivery Queue"
+        - Key: Purpose
+          Value: "Handle order delivery notifications"
+
+  # SNS Topic
+  OrderNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: "BestCoffeeEver"
+      Tags:
+        - Key: Purpose
+          Value: "Coffee orders notification distribution"
+
+  OrderDeliveryQueuePolicy: 
+    Type: AWS::SQS::QueuePolicy
+    Properties: 
+      Queues: [!Ref OrderDeliveryQueue]
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Action: ["SQS:SendMessage", "SQS:ReceiveMessage", "SQS:DeleteMessage"]
+            Effect: Allow
+            Resource: !GetAtt OrderDeliveryQueue.Arn
+            Principal:  
+              Service: sns.amazonaws.com
+            Condition: 
+              ArnEquals:
+                aws:SourceArn: !Ref OrderNotificationTopic
+          - Action: ["SQS:SendMessage", "SQS:ReceiveMessage", "SQS:DeleteMessage"]
+            Effect: Allow
+            Resource: !GetAtt OrderDeliveryQueue.Arn
+            Principal:  
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+
+  #############################################
+  # Storage Resources - DynamoDB
+  #############################################
+  
+  CoffeeOrdersTable: 
+    Type: AWS::DynamoDB::GlobalTable
+    Properties: 
+      TableName: "CoffeeshopTable"
+      AttributeDefinitions: 
+        - AttributeName: "SalesId"
+          AttributeType: "S"
+        - AttributeName: "Timestamp"
+          AttributeType: "S"
+      KeySchema: 
+        - AttributeName: "SalesId"
+          KeyType: "HASH"
+        - AttributeName: "Timestamp"
+          KeyType: "RANGE"
+      BillingMode: PAY_PER_REQUEST
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      Replicas:
+        - Region: ap-southeast-1
+          Tags:
+            - Key: Application
+              Value: CoffeeShop
+            - Key: Purpose
+              Value: "Store coffee orders and sales data"
+        - Region: ap-southeast-2
+          Tags:
+            - Key: Application
+              Value: CoffeeShop
+            - Key: Purpose
+              Value: "Store coffee orders and sales data"
+        - Region: ap-south-1
+          Tags:
+            - Key: Application
+              Value: CoffeeShop
+            - Key: Purpose
+              Value: "Store coffee orders and sales data"
+
+  #############################################
+  # IAM Roles
+  #############################################
+  
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: LambdaExecutionPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action:
+                  - "sqs:SendMessage"
+                  - "sqs:ReceiveMessage"
+                  - "sqs:DeleteMessage"
+                  - "sqs:GetQueueAttributes"
+                Resource: 
+                  - !GetAtt OrderProcessingQueue.Arn
+                  - !GetAtt OrderDeliveryQueue.Arn
+                  - !GetAtt OrderProcessingDLQ.Arn
+              - Effect: Allow
+                Action:
+                  - "sns:Publish"
+                Resource: !Ref OrderNotificationTopic
+              - Effect: Allow
+                Action:
+                  - "dynamodb:PutItem"
+                  - "dynamodb:GetItem"
+                  - "dynamodb:Query"
+                  - "dynamodb:Scan"
+                  - "dynamodb:UpdateItem"
+                Resource: !GetAtt CoffeeOrdersTable.Arn
+              - Effect: Allow
+                Action:
+                  - "secretsmanager:GetSecretValue"
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ApiAuthSecretName}*"
+      Tags:
+        - Key: Purpose
+          Value: "Lambda function execution role with least privilege"
+
+  #############################################
+  # Lambda Functions
+  #############################################
+  
+  BaristaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "barista"
+      Handler: barista.handler
+      Runtime: python3.11
+      Timeout: 60
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: wat/lambda/barista.zip
+      Environment: 
+        Variables: 
+          QUEUE_URL: !Ref OrderProcessingQueue
+          SNS_TOPIC: !Ref OrderNotificationTopic
+      Tags:
+        - Key: Service
+          Value: CoffeeShop
+        - Key: Application
+          Value: "Serverless Coffee Shop"
+        - Key: Function
+          Value: "Coffee Preparation"
+
+  BaristaEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt OrderProcessingQueue.Arn
+      FunctionName: !Ref BaristaFunction
+      BatchSize: 1
+      MaximumBatchingWindowInSeconds: 5
+      Enabled: true
+
+  DDBWriterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "ddbwriter"
+      Handler: dbwriter.handler
+      Runtime: python3.11
+      Timeout: 60
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: wat/lambda/dbwriter.zip
+      Environment: 
+        Variables: 
+          TABLE_NAME: !Ref CoffeeOrdersTable
+      Tags:
+        - Key: Service
+          Value: CoffeeShop
+        - Key: Application
+          Value: "Serverless Coffee Shop"
+        - Key: Function
+          Value: "Database Writer"
+
+  WaiterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "waiter"
+      Handler: waiter.handler
+      Runtime: python3.11
+      Timeout: 60
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment: 
+        Variables: 
+          QUEUE_URL: !Ref OrderDeliveryQueue
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: wat/lambda/waiter.zip
+      Tags:
+        - Key: Service
+          Value: CoffeeShop
+        - Key: Application
+          Value: "Serverless Coffee Shop"
+        - Key: Function
+          Value: "Order Delivery"
+
+  WaiterEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt OrderDeliveryQueue.Arn
+      FunctionName: !Ref WaiterFunction
+      BatchSize: 1
+      MaximumBatchingWindowInSeconds: 5
+      Enabled: true
+
+  CashierFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "cashier"
+      Handler: cashier.handler
+      Runtime: python3.11
+      Timeout: 60
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: wat/lambda/cashier.zip
+      Environment: 
+        Variables: 
+          QUEUE_URL: !Ref OrderProcessingQueue
+      Tags:
+        - Key: Service
+          Value: CoffeeShop
+        - Key: Application
+          Value: "Serverless Coffee Shop"
+        - Key: Function
+          Value: "Order Entry"
+
+  OrdersFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "orders"
+      Handler: orders.handler
+      Runtime: python3.11
+      Timeout: 60
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: wat/lambda/orders.zip
+      Environment: 
+        Variables: 
+          TABLE_NAME: !Ref CoffeeOrdersTable
+      Tags:
+        - Key: Service
+          Value: CoffeeShop
+        - Key: Application
+          Value: "Serverless Coffee Shop"
+        - Key: Function
+          Value: "Order Retrieval"
+
+  SalesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "sales"
+      Handler: sales.handler
+      Runtime: python3.11
+      Timeout: 60
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: wat/lambda/sales.zip
+      Environment: 
+        Variables: 
+          TABLE_NAME: !Ref CoffeeOrdersTable
+      Tags:
+        - Key: Service
+          Value: CoffeeShop
+        - Key: Application
+          Value: "Serverless Coffee Shop"
+        - Key: Function
+          Value: "Sales Reporting"
+
+  StatusFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "status"
+      Handler: status.handler
+      Runtime: python3.11
+      Timeout: 60
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: wat/lambda/status.zip
+      Environment: 
+        Variables: 
+          PROCESSING_QUEUE_URL: !Ref OrderProcessingQueue
+          DELIVERY_QUEUE_URL: !Ref OrderDeliveryQueue
+          DLQ_URL: !Ref OrderProcessingDLQ
+          TABLE_NAME: !Ref CoffeeOrdersTable
+      Tags:
+        - Key: Service
+          Value: CoffeeShop
+        - Key: Application
+          Value: "Serverless Coffee Shop"
+        - Key: Function
+          Value: "System Status"
+
+  AuthorizerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "authorizer"
+      Handler: authorizer.handler
+      Runtime: python3.12
+      Timeout: 60
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: wat/lambda/authorizer.zip
+      Environment:
+        Variables:
+          AUTH_HEADER_NAME: !Join ['', ['{{resolve:secretsmanager:', !Ref ApiAuthSecretName, ':SecretString:AUTH_HEADER_NAME}}']]
+          AUTH_HEADER_VALUE: !Join ['', ['{{resolve:secretsmanager:', !Ref ApiAuthSecretName, ':SecretString:AUTH_HEADER_VALUE}}']]
+          STAGE: !Ref ApiGatewayStage
+      Tags:
+        - Key: Service
+          Value: CoffeeShop
+        - Key: Application
+          Value: "Serverless Coffee Shop"
+        - Key: Function
+          Value: "API Authorization"
+
+  #############################################
+  # API Gateway and Authentication
+  #############################################
+
+  # Add API Gateway CloudWatch Role
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  # Configure API Gateway Account to use CloudWatch role
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  CoffeeShopApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: "coffeeshopapi"
+      Description: "API for Serverless Coffee Shop"
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Tags:
+        - Key: Name
+          Value: "Coffee Shop API"
+        - Key: Purpose
+          Value: "REST API for Coffee Shop operations"
+
+  # API Gateway Authorizer
+  ApiAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: LambdaAuthorizer
+      RestApiId: !Ref CoffeeShopApi
+      Type: REQUEST
+      AuthorizerUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerFunction.Arn}/invocations"
+      IdentitySource: "method.request.header.x-origin-verify"
+      AuthorizerCredentials: !GetAtt ApiGatewayExecutionRole.Arn
+
+  # API Gateway Execution Role for Authorizer
+  ApiGatewayExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaInvokePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt AuthorizerFunction.Arn
+
+  # Status Resource
+  StatusResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CoffeeShopApi
+      ParentId: !GetAtt CoffeeShopApi.RootResourceId
+      PathPart: status
+
+  StatusMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref CoffeeShopApi
+      ResourceId: !Ref StatusResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${StatusFunction.Arn}/invocations"
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+
+  # Sales Resource
+  SalesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CoffeeShopApi
+      ParentId: !GetAtt CoffeeShopApi.RootResourceId
+      PathPart: sales
+
+  SalesMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref CoffeeShopApi
+      ResourceId: !Ref SalesResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SalesFunction.Arn}/invocations"
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+
+  # Orders Resource
+  OrdersResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CoffeeShopApi
+      ParentId: !GetAtt CoffeeShopApi.RootResourceId
+      PathPart: orders
+
+  OrdersMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref CoffeeShopApi
+      ResourceId: !Ref OrdersResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OrdersFunction.Arn}/invocations"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+
+  # Cashier Resource
+  CashierResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CoffeeShopApi
+      ParentId: !GetAtt CoffeeShopApi.RootResourceId
+      PathPart: cashier
+
+  CashierMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref CoffeeShopApi
+      ResourceId: !Ref CashierResource
+      HttpMethod: POST
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CashierFunction.Arn}/invocations"
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+
+  # API Gateway Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - StatusMethod
+      - SalesMethod
+      - OrdersMethod
+      - CashierMethod
+    Properties:
+      RestApiId: !Ref CoffeeShopApi
+      Description: "Coffee Shop API Deployment"
+      StageName: !Ref ApiGatewayStage
+      StageDescription:
+        AccessLogSetting:
+          DestinationArn: !GetAtt ApiGatewayLogGroup.Arn
+          Format: '\$context.extendedRequestId \$context.identity.sourceIp \$context.identity.caller \$context.identity.user [\$context.requestTime] "\$context.httpMethod \$context.resourcePath \$context.protocol" \$context.status \$context.responseLength \$context.requestId'
+        MethodSettings:
+          - ResourcePath: "/*"
+            HttpMethod: "*"
+            LoggingLevel: INFO
+            DataTraceEnabled: false
+            MetricsEnabled: true
+        Tags:
+          - Key: Name
+            Value: "Coffee Shop API Stage"
+
+  # Custom Domain Name
+  ApiDomainNameResource:
+    Type: AWS::ApiGateway::DomainName
+    Properties:
+      DomainName: !Ref ApiDomainName
+      RegionalCertificateArn: !Ref ApiCertificateArn
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      SecurityPolicy: TLS_1_2
+      Tags:
+        - Key: Purpose
+          Value: "Custom domain for Coffee Shop API"
+
+  # Base Path Mapping
+  ApiBasePathMapping:
+    Type: AWS::ApiGateway::BasePathMapping
+    DependsOn: ApiDeployment
+    Properties:
+      DomainName: !Ref ApiDomainNameResource
+      RestApiId: !Ref CoffeeShopApi
+      Stage: !Ref ApiGatewayStage
+      BasePath: !Ref ApiGatewayStage
+
+  # Route53 Record for Custom Domain
+  ApiRoute53Record:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref ApiDomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt ApiDomainNameResource.RegionalDomainName
+        HostedZoneId: !GetAtt ApiDomainNameResource.RegionalHostedZoneId
+
+  #############################################
+  # SNS Topic Subscriptions
+  #############################################
+  
+  DDBWriterSNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: lambda
+      TopicArn: !Ref OrderNotificationTopic
+      Endpoint: !GetAtt DDBWriterFunction.Arn
+
+  OrderDeliverySNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: sqs
+      TopicArn: !Ref OrderNotificationTopic
+      Endpoint: !GetAtt OrderDeliveryQueue.Arn
+
+  #############################################
+  # Lambda Permissions
+  #############################################
+  
+  CashierApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CashierFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CoffeeShopApi}/*/POST/cashier"
+
+  SalesApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt SalesFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CoffeeShopApi}/*/GET/sales"
+
+  StatusApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt StatusFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CoffeeShopApi}/*/GET/status"
+
+  OrdersApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt OrdersFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CoffeeShopApi}/*/GET/orders"
+
+  AuthorizerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt AuthorizerFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${CoffeeShopApi}/authorizers/*"
+
+  DDBWriterSNSPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DDBWriterFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref OrderNotificationTopic
+
+  #############################################
+  # Monitoring Dashboard
+  #############################################
+  
+  CoffeeShopDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    DependsOn:
+      - CashierFunction
+      - BaristaFunction
+      - WaiterFunction
+      - DDBWriterFunction
+      - StatusFunction
+      - SalesFunction
+      - OrdersFunction
+      - CoffeeShopApi
+    Properties: 
+      DashboardName: "Serverless"
+      DashboardBody: !Sub |
+        {
+            "widgets": [
+                {
+                    "type": "metric",
+                    "x": 0,
+                    "y": 0,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Invocations", "FunctionName", "${CashierFunction}", { "region": "${AWS::Region}", "stat": "Sum" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "title": "Cashier - Invocations",
+                        "view": "singleValue",
+                        "stacked": false,
+                        "liveData": true,
+                        "sparkline": true,
+                        "singleValueFullPrecision": false
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 6,
+                    "y": 0,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Invocations", "FunctionName", "${BaristaFunction}", { "region": "${AWS::Region}", "stat": "Sum" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "title": "Barista - Invocations",
+                        "view": "singleValue",
+                        "stacked": false,
+                        "liveData": true,
+                        "sparkline": true,
+                        "singleValueFullPrecision": false
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 12,
+                    "y": 0,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Invocations", "FunctionName", "${WaiterFunction}", { "region": "${AWS::Region}", "stat": "Sum" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "title": "Waiter - Invocations",
+                        "view": "singleValue",
+                        "stacked": false,
+                        "singleValueFullPrecision": false,
+                        "liveData": true,
+                        "sparkline": true
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 18,
+                    "y": 0,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Invocations", "FunctionName", "${DDBWriterFunction}", { "region": "${AWS::Region}", "stat": "Sum" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "title": "DDBWriter - Invocations",
+                        "view": "singleValue",
+                        "stacked": true,
+                        "liveData": true,
+                        "sparkline": true,
+                        "singleValueFullPrecision": false
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 0,
+                    "y": 6,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Duration", "FunctionName", "${CashierFunction}", { "label": "Min", "stat": "Minimum", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Avg", "stat": "Average", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Max", "stat": "Maximum", "region": "${AWS::Region}" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "Cashier - Duration (ms)",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 6,
+                    "y": 6,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Duration", "FunctionName", "${BaristaFunction}", { "label": "Min", "stat": "Minimum", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Avg", "stat": "Average", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Max", "stat": "Maximum", "region": "${AWS::Region}" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "Barista - Duration (ms)",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 12,
+                    "y": 6,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Duration", "FunctionName", "${WaiterFunction}", { "label": "Min", "stat": "Minimum", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Avg", "stat": "Average", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Max", "stat": "Maximum", "region": "${AWS::Region}" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "Waiter - Duration (ms)",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 18,
+                    "y": 6,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Duration", "FunctionName", "${DDBWriterFunction}", { "label": "Min", "stat": "Minimum", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Avg", "stat": "Average", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Max", "stat": "Maximum", "region": "${AWS::Region}" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "DDBWriter - Duration (ms)",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 0,
+                    "y": 12,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Errors", "FunctionName", "${CashierFunction}", { "stat": "Sum", "color": "#d62728" } ],
+                            [ ".", "Throttles", ".", ".", { "stat": "Sum", "color": "#ff7f0e" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "Cashier - Errors & Throttles",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 6,
+                    "y": 12,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Errors", "FunctionName", "${BaristaFunction}", { "stat": "Sum", "color": "#d62728" } ],
+                            [ ".", "Throttles", ".", ".", { "stat": "Sum", "color": "#ff7f0e" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "Barista - Errors & Throttles",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 12,
+                    "y": 12,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "ConcurrentExecutions", "FunctionName", "${CashierFunction}", { "stat": "Maximum" } ],
+                            [ "...", "${BaristaFunction}", { "stat": "Maximum" } ],
+                            [ "...", "${WaiterFunction}", { "stat": "Maximum" } ],
+                            [ "...", "${DDBWriterFunction}", { "stat": "Maximum" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "Lambda - Concurrent Executions",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 18,
+                    "y": 12,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Invocations", "FunctionName", "${OrdersFunction}", { "stat": "Sum", "label": "Orders" } ],
+                            [ "...", "${SalesFunction}", { "stat": "Sum", "label": "Sales" } ],
+                            [ "...", "${StatusFunction}", { "stat": "Sum", "label": "Status" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "API Functions - Invocations",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 0,
+                    "y": 18,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${CoffeeOrdersTable}", { "stat": "Sum", "id": "m1", "visible": false, "region": "${AWS::Region}" } ],
+                            [ { "expression": "m1/PERIOD(m1)", "label": "Read Units/sec", "id": "e1", "color": "#2ca02c", "region": "${AWS::Region}" } ]
+                        ],
+                        "title": "DynamoDB - Read Capacity",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "region": "${AWS::Region}",
+                        "period": 300,
+                        "yAxis": {
+                            "left": {
+                                "min": 0,
+                                "showUnits": false
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 6,
+                    "y": 18,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${CoffeeOrdersTable}", { "stat": "Sum", "id": "m1", "visible": false, "region": "${AWS::Region}" } ],
+                            [ { "expression": "m1/PERIOD(m1)", "label": "Write Units/sec", "id": "e1", "color": "#1f77b4", "region": "${AWS::Region}" } ]
+                        ],
+                        "title": "DynamoDB - Write Capacity",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "region": "${AWS::Region}",
+                        "period": 300,
+                        "yAxis": {
+                            "left": {
+                                "min": 0,
+                                "showUnits": false
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 12,
+                    "y": 18,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/DynamoDB", "UserErrors", "TableName", "${CoffeeOrdersTable}", { "stat": "Sum", "color": "#d62728" } ],
+                            [ ".", "SystemErrors", ".", ".", { "stat": "Sum", "color": "#ff7f0e" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "DynamoDB - Errors",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 18,
+                    "y": 18,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/DynamoDB", "SuccessfulRequestLatency", "TableName", "${CoffeeOrdersTable}", "Operation", "GetItem", { "stat": "Average" } ],
+                            [ "...", "PutItem", { "stat": "Average" } ],
+                            [ "...", "Query", { "stat": "Average" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "DynamoDB - Latency (ms)",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 0,
+                    "y": 24,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "OrderProcessingQueue", { "stat": "Average", "region": "${AWS::Region}", "label": "Visible" } ],
+                            [ ".", "ApproximateNumberOfMessagesNotVisible", ".", ".", { "stat": "Average", "region": "${AWS::Region}", "label": "In Flight" } ]
+                        ],
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "region": "${AWS::Region}",
+                        "title": "Processing Queue - Messages",
+                        "period": 300,
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 6,
+                    "y": 24,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "OrderDeliveryQueue", { "stat": "Average", "region": "${AWS::Region}", "label": "Visible" } ],
+                            [ ".", "ApproximateNumberOfMessagesNotVisible", ".", ".", { "stat": "Average", "region": "${AWS::Region}", "label": "In Flight" } ]
+                        ],
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "region": "${AWS::Region}",
+                        "title": "Delivery Queue - Messages",
+                        "period": 300,
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 12,
+                    "y": 24,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "OrderProcessingDLQ", { "stat": "Average", "region": "${AWS::Region}", "color": "#d62728" } ]
+                        ],
+                        "view": "singleValue",
+                        "stacked": false,
+                        "region": "${AWS::Region}",
+                        "title": "DLQ - Messages",
+                        "period": 300,
+                        "liveData": true,
+                        "sparkline": true
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 18,
+                    "y": 24,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/SQS", "NumberOfMessagesSent", "QueueName", "OrderProcessingQueue", { "stat": "Sum", "label": "Processing" } ],
+                            [ "...", "OrderDeliveryQueue", { "stat": "Sum", "label": "Delivery" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "SQS - Messages Sent",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 0,
+                    "y": 30,
+                    "width": 8,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/SNS", "NumberOfMessagesPublished", "TopicName", "BestCoffeeEver", { "region": "${AWS::Region}", "stat": "Sum" } ],
+                            [ ".", "NumberOfNotificationsDelivered", ".", ".", { "region": "${AWS::Region}", "stat": "Sum" } ],
+                            [ ".", "NumberOfNotificationsFailed", ".", ".", { "region": "${AWS::Region}", "stat": "Sum", "color": "#d62728" } ]
+                        ],
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "region": "${AWS::Region}",
+                        "period": 300,
+                        "title": "SNS - Message Stats",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 8,
+                    "y": 30,
+                    "width": 8,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/ApiGateway", "Count", "ApiName", "coffeeshopapi", "Stage", "${ApiGatewayStage}", { "region": "${AWS::Region}", "stat": "Sum" } ],
+                            [ ".", "4XXError", ".", ".", ".", ".", { "region": "${AWS::Region}", "stat": "Sum", "color": "#ff7f0e" } ],
+                            [ ".", "5XXError", ".", ".", ".", ".", { "region": "${AWS::Region}", "stat": "Sum", "color": "#d62728" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "API Gateway - Requests & Errors",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 16,
+                    "y": 30,
+                    "width": 8,
+                    "height": 6,
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/ApiGateway", "Latency", "ApiName", "coffeeshopapi", "Stage", "${ApiGatewayStage}", { "stat": "Average", "label": "Latency Avg" } ],
+                            [ "...", { "stat": "p99", "label": "Latency p99" } ],
+                            [ ".", "IntegrationLatency", ".", ".", ".", ".", { "stat": "Average", "label": "Integration Avg" } ]
+                        ],
+                        "region": "${AWS::Region}",
+                        "period": 300,
+                        "view": "timeSeries",
+                        "stacked": false,
+                        "title": "API Gateway - Latency (ms)",
+                        "yAxis": {
+                            "left": {
+                                "min": 0
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+      DashboardBody: !Sub |
+        {
+            "widgets": [
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 0,
+                    "x": 0,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Invocations", "FunctionName", "${CashierFunction}", { "region": "${AWS::Region}" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "title": "Cashier Invocations",
+                        "view": "singleValue",
+                        "stacked": false,
+                        "stat": "Sum",
+                        "liveData": true,
+                        "sparkline": true,
+                        "singleValueFullPrecision": false
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 6,
+                    "x": 0,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Duration", "FunctionName", "${CashierFunction}", { "label": "Duration minimum", "stat": "Minimum", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Duration average", "stat": "Average", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Duration maximum", "stat": "Maximum", "region": "${AWS::Region}" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": true,
+                        "title": "Cashier Duration"
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 12,
+                    "x": 0,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${CoffeeOrdersTable}", { "stat": "Sum", "id": "m1", "visible": false, "region": "${AWS::Region}" } ],
+                            [ { "expression": "m1/PERIOD(m1)", "label": "Consumed Read", "id": "e1", "color": "#0073BB", "region": "${AWS::Region}", "period": 300 } ]
+                        ],
+                        "title": "DDB Read usage (average units/second)",
+                        "view": "timeSeries",
+                        "stacked": true,
+                        "region": "${AWS::Region}",
+                        "stat": "Average",
+                        "period": 300,
+                        "yAxis": {
+                            "left": {
+                                "showUnits": false
+                            }
+                        }
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 18,
+                    "x": 0,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${CoffeeOrdersTable}", { "stat": "Sum", "id": "m1", "visible": false, "region": "${AWS::Region}" } ],
+                            [ { "expression": "m1/PERIOD(m1)", "label": "Consumed Write", "id": "e1", "color": "#0073BB", "region": "${AWS::Region}", "period": 300 } ]
+                        ],
+                        "title": "DDB Write usage (average units/second)",
+                        "view": "timeSeries",
+                        "stacked": true,
+                        "region": "${AWS::Region}",
+                        "stat": "Average",
+                        "period": 300,
+                        "yAxis": {
+                            "left": {
+                                "showUnits": false
+                            }
+                        }
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 12,
+                    "x": 6,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/SQS", "ApproximateNumberOfMessages", "QueueName", "OrderProcessingQueue", { "stat": "Average", "region": "${AWS::Region}" } ]
+                        ],
+                        "view": "singleValue",
+                        "stacked": false,
+                        "region": "${AWS::Region}",
+                        "title": "Processing Queue Messages",
+                        "period": 300,
+                        "liveData": true,
+                        "sparkline": true,
+                        "singleValueFullPrecision": false
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 0,
+                    "x": 6,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Invocations", "FunctionName", "${BaristaFunction}", { "region": "${AWS::Region}" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "title": "Barista Invocations",
+                        "view": "singleValue",
+                        "stacked": false,
+                        "stat": "Sum",
+                        "liveData": true,
+                        "sparkline": true,
+                        "singleValueFullPrecision": false
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 6,
+                    "x": 6,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Duration", "FunctionName", "${BaristaFunction}", { "label": "Duration minimum", "stat": "Minimum", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Duration average", "stat": "Average", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Duration maximum", "stat": "Maximum", "region": "${AWS::Region}" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": true,
+                        "title": "Barista Duration"
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 0,
+                    "x": 12,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Invocations", "FunctionName", "${WaiterFunction}", { "region": "${AWS::Region}" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "title": "Waiter Invocations",
+                        "view": "singleValue",
+                        "stacked": false,
+                        "stat": "Sum",
+                        "singleValueFullPrecision": false,
+                        "liveData": true,
+                        "sparkline": true
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 6,
+                    "x": 12,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Duration", "FunctionName", "${WaiterFunction}", { "label": "Duration minimum", "stat": "Minimum", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Duration average", "stat": "Average", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Duration maximum", "stat": "Maximum", "region": "${AWS::Region}" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": true,
+                        "title": "Waiter Duration"
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 0,
+                    "x": 18,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Invocations", "FunctionName", "${DDBWriterFunction}", { "region": "${AWS::Region}" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "title": "DbWriter Invocations",
+                        "view": "singleValue",
+                        "stacked": true,
+                        "stat": "Sum",
+                        "liveData": true,
+                        "sparkline": true,
+                        "singleValueFullPrecision": false
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 6,
+                    "x": 18,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/Lambda", "Duration", "FunctionName", "${DDBWriterFunction}", { "label": "Duration minimum", "stat": "Minimum", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Duration average", "stat": "Average", "region": "${AWS::Region}" } ],
+                            [ "...", { "label": "Duration maximum", "stat": "Maximum", "region": "${AWS::Region}" } ]
+                        ],
+                        "period": 300,
+                        "region": "${AWS::Region}",
+                        "view": "timeSeries",
+                        "stacked": true,
+                        "title": "DbWriter Duration"
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 18,
+                    "x": 6,
+                    "type": "metric",
+                    "properties": {
+                        "view": "singleValue",
+                        "stacked": false,
+                        "metrics": [
+                            [ "AWS/SQS", "ApproximateNumberOfMessages", "QueueName", "OrderDeliveryQueue", { "stat": "Average", "region": "${AWS::Region}" } ]
+                        ],
+                        "region": "${AWS::Region}",
+                        "title": "Delivery Queue Messages",
+                        "period": 60,
+                        "setPeriodToTimeRange": false,
+                        "sparkline": true,
+                        "trend": true,
+                        "liveData": true
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 12,
+                    "y": 12,
+                    "x": 12,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/SNS", "NumberOfMessagesPublished", "TopicName", "BestCoffeeEver", { "region": "${AWS::Region}" } ],
+                            [ ".", "NumberOfNotificationsDelivered", ".", ".", { "region": "${AWS::Region}" } ],
+                            [ ".", "NumberOfNotificationsFailed", ".", ".", { "region": "${AWS::Region}" } ]
+                        ],
+                        "sparkline": true,
+                        "view": "singleValue",
+                        "stacked": false,
+                        "region": "${AWS::Region}",
+                        "stat": "Sum",
+                        "period": 300,
+                        "title": "SNS Stats"
+                    }
+                },
+                {
+                    "height": 6,
+                    "width": 6,
+                    "y": 18,
+                    "x": 12,
+                    "type": "metric",
+                    "properties": {
+                        "metrics": [
+                            [ "AWS/ApiGateway", "Count", "ApiName", "coffeeshopapi", "Stage", "${ApiGatewayStage}", { "region": "${AWS::Region}" } ]
+                        ],
+                        "sparkline": true,
+                        "period": 300,
+                        "stat": "Sum",
+                        "region": "${AWS::Region}",
+                        "view": "singleValue",
+                        "stacked": false,
+                        "title": "API Call Count",
+                        "setPeriodToTimeRange": false,
+                        "trend": true,
+                        "liveData": true,
+                        "singleValueFullPrecision": false
+                    }
+                },
+                {
+                    "type": "metric",
+                    "x": 18,
+                    "y": 18,
+                    "width": 6,
+                    "height": 6,
+                    "properties": {
+                        "view": "timeSeries",
+                        "stacked": true,
+                        "metrics": [
+                            [ "AWS/ApiGateway", "IntegrationLatency", "ApiName", "coffeeshopapi" ],
+                            [ ".", "Latency", ".", "." ]
+                        ],
+                        "region": "${AWS::Region}",
+                        "liveData": true,
+                        "title": "API Latency"
+                    }
+                }
+            ]
+        }
+
+Outputs: 
+  OrderProcessingQueueURL: 
+    Description: "URL of the primary order processing queue"
+    Value: !Ref OrderProcessingQueue
+    Export:
+      Name: PROCESSING-QUEUE-URL
+  
+  OrderDeliveryQueueURL: 
+    Description: "URL of the order delivery queue"
+    Value: !Ref OrderDeliveryQueue
+    Export:
+      Name: DELIVERY-QUEUE-URL
+
+  OrderProcessingDLQURL: 
+    Description: "URL of the dead letter queue"
+    Value: !Ref OrderProcessingDLQ
+    Export:
+      Name: DLQ-URL
+     
+  CoffeeOrdersTableName:
+    Value: !Ref CoffeeOrdersTable
+    Description: "Name of the DynamoDB table for coffee orders"
+    Export:
+      Name: COFFEESHOP-TABLE-NAME
+      
+  OrderNotificationTopicARN: 
+    Description: "ARN of the SNS topic for order notifications"
+    Value: !Ref OrderNotificationTopic
+    Export:
+      Name: "ORDER-NOTIFICATION-TOPIC-ARN"
+      
+  ApiEndpoint:
+    Description: "API Gateway endpoint URL for accessing the Coffee Shop API"
+    Value: !Sub "https://${CoffeeShopApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiGatewayStage}/"
+    Export:
+      Name: COFFEESHOP-API-ENDPOINT
+
+  CustomDomainEndpoint:
+    Description: "Custom domain endpoint for the Coffee Shop API"
+    Value: !Sub "https://${ApiDomainName}/${ApiGatewayStage}/"
+    Export:
+      Name: COFFEESHOP-CUSTOM-DOMAIN

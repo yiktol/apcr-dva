@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Coffee Order System</title>
+    <link rel="stylesheet" href="static/assets/css/coffee-order.css">
+    <link rel="icon" type="image/png" href="assets/img/favicon.png">
+    <script src="static/assets/js/app.js"></script>
+</head>
+
+<body>
+    <header>
+        <div class="container">
+            <h1>Coffee Order System</h1>
+        </div>
+    </header>
+
+    <main class="container">
+        <div class="grid">
+            <!-- Order Form -->
+            <section class="card order-form">
+                <div class="card-header">
+                    <h2>Order Form</h2>
+                </div>
+                <div class="card-body">
+                    <form id="orderForm">
+                        <div class="form-group">
+                            <label for="customer">Name</label>
+                            <input type="text" id="customer" name="CUSTOMER" placeholder="Your name" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="coffee">Coffee</label>
+                            <select id="coffee" name="COFFEE" required>
+                                <option value="Flat White">Flat White</option>
+                                <option value="Americano">Americano</option>
+                                <option value="Macchiato">Macchiato</option>
+                                <option value="Cappuccino">Cappuccino</option>
+                                <option value="Latte">Latte</option>
+                                <option value="Mocha">Mocha</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="milk">Milk</label>
+                            <select id="milk" name="MILK" required>
+                                <option value="Full Cream">Full Cream</option>
+                                <option value="Skinny">Skinny</option>
+                                <option value="Soy">Soy</option>
+                                <option value="Almond">Almond</option>
+                                <option value="Oat">Oat</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="size">Size</label>
+                            <select id="size" name="SIZE" required>
+                                <option value="Small">Small</option>
+                                <option value="Regular">Regular</option>
+                                <option value="Large">Large</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="qty">Quantity</label>
+                            <select id="qty" name="QTY" required>
+                                <option value="1">1</option>
+                                <option value="2">2</option>
+                                <option value="3">3</option>
+                                <option value="4">4</option>
+                            </select>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-primary">Submit Order</button>
+                    </form>
+                </div>
+            </section>
+
+            <!-- Order Status -->
+            <section class="card order-status">
+                <div class="card-header">
+                    <h2>Order Status</h2>
+                </div>
+                <div class="card-body">
+                    <div class="status-refresh">
+                        <p>Order status will refresh in <span id="countdown" class="highlight">5</span> seconds</p>
+                    </div>
+                    <div id="statusContainer" class="status-data"></div>
+                </div>
+            </section>
+
+            <!-- Orders Table -->
+            <section class="card orders-table">
+                <div class="card-header">
+                    <h2>Recent Orders</h2>
+                </div>
+                <div class="card-body">
+                    <div id="ordersContainer"></div>
+                    <div class="pagination">
+                        <button id="prevPage" class="btn btn-secondary">Previous</button>
+                        <span id="pageInfo">Page 1</span>
+                        <button id="nextPage" class="btn btn-secondary">Next</button>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2023 Coffee Order System</p>
+        </div>
+    </footer>
+</body>
+</html>

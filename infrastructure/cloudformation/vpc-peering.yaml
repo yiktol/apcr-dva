@@ -1,0 +1,486 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for VPC peering between multiple existing VPCs with region-specific configurations'
+
+Parameters:
+  PrimaryRegion:
+    Type: String
+    Default: 'ap-southeast-1'
+    Description: 'Primary region where the template is deployed (Singapore)'
+    AllowedValues:
+      - 'ap-southeast-1'
+  
+  SecondaryRegions:
+    Type: CommaDelimitedList
+    Default: 'ap-southeast-2,ap-south-1'
+    Description: 'List of secondary regions to peer with'
+
+Mappings:
+  RegionalConfig:
+    us-east-1:
+      VPCName: 'Network-Infrastructure-VPC'
+      RouteTableName: 'Private-Route-Table'
+      RegionDisplayName: 'Virginia'
+    ap-southeast-1:
+      VPCName: 'Network-Infrastructure-VPC'
+      RouteTableName: 'Private-Route-Table'
+      RegionDisplayName: 'Singapore'
+    ap-southeast-2:
+      VPCName: 'Network-Infrastructure-VPC'
+      RouteTableName: 'Private-Route-Table'
+      RegionDisplayName: 'Sydney'
+    ap-south-1:
+      VPCName: 'Network-Infrastructure-VPC'
+      RouteTableName: 'Private-Route-Table'
+      RegionDisplayName: 'Mumbai'
+
+Resources:
+  # ===== DEAD LETTER QUEUES (moved up to be referenced in IAM roles) =====
+  VPCLookupDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: 'VPCLookup-DLQ'
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Name
+          Value: 'VPCLookup-DLQ'
+
+  CrossRegionRouteDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: 'CrossRegionRoute-DLQ'
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Name
+          Value: 'CrossRegionRoute-DLQ'
+
+  # ===== IAM ROLES =====
+  VPCLookupLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: VPCLookupPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:DescribeVpcs'
+                  - 'ec2:DescribeRouteTables'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'sqs:SendMessage'
+                Resource: !GetAtt VPCLookupDLQ.Arn
+      Tags:
+        - Key: Name
+          Value: 'VPCLookupLambdaRole'
+
+  CrossRegionRouteLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: CrossRegionRoutePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:CreateRoute'
+                  - 'ec2:DeleteRoute'
+                  - 'ec2:ReplaceRoute'
+                  - 'ec2:DescribeRouteTables'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'sqs:SendMessage'
+                Resource: !GetAtt CrossRegionRouteDLQ.Arn
+      Tags:
+        - Key: Name
+          Value: 'CrossRegionRouteLambdaRole'
+
+  # ===== LAMBDA FUNCTIONS =====
+  VPCLookupLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: 'VPCLookupFunction'
+      Handler: index.lambda_handler
+      Role: !GetAtt VPCLookupLambdaExecutionRole.Arn
+      Runtime: python3.11
+      Timeout: 60
+      DeadLetterConfig:
+        TargetArn: !GetAtt VPCLookupDLQ.Arn
+      Environment:
+        Variables:
+          LOG_LEVEL: INFO
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+          import logging
+          import os
+          from botocore.exceptions import ClientError
+
+          # Configure logging
+          log_level = os.environ.get('LOG_LEVEL', 'INFO')
+          logger = logging.getLogger()
+          logger.setLevel(getattr(logging, log_level))
+
+          def lambda_handler(event, context):
+              logger.info('Received event: %s', json.dumps(event, default=str))
+              
+              request_type = event['RequestType']
+              resource_properties = event['ResourceProperties']
+              response_data = {}
+              physical_resource_id = event.get('PhysicalResourceId', f"vpc-lookup-{context.aws_request_id}")
+              
+              try:
+                  if request_type == 'Delete':
+                      logger.info('DELETE request - no action needed')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physical_resource_id)
+                      return
+                  
+                  # Validate required parameters
+                  region = resource_properties.get('Region')
+                  vpc_name = resource_properties.get('VpcName')
+                  route_table_name = resource_properties.get('RouteTableName')
+                  
+                  if not all([region, vpc_name]):
+                      raise ValueError("Region and VpcName are required parameters")
+                  
+                  # Create EC2 client for the specified region
+                  ec2 = boto3.client('ec2', region_name=region)
+                  
+                  # Find VPC by name tag
+                  vpc_response = ec2.describe_vpcs(
+                      Filters=[
+                          {'Name': 'tag:Name', 'Values': [vpc_name]},
+                          {'Name': 'state', 'Values': ['available']}
+                      ]
+                  )
+                  
+                  if not vpc_response['Vpcs']:
+                      raise ValueError(f"No available VPC found with name '{vpc_name}' in region {region}")
+                  
+                  vpc = vpc_response['Vpcs'][0]
+                  vpc_id = vpc['VpcId']
+                  
+                  # Populate response data
+                  response_data.update({
+                      'VpcId': vpc_id,
+                      'IPv4CidrBlock': vpc['CidrBlock'],
+                      'IPv6CidrBlock': '',
+                      'RouteTableIds': '',
+                      'MainRouteTableId': '',
+                      'PrivateRouteTableId': ''
+                  })
+                  
+                  # Handle IPv6 CIDR blocks
+                  ipv6_associations = vpc.get('Ipv6CidrBlockAssociationSet', [])
+                  for association in ipv6_associations:
+                      if association.get('Ipv6CidrBlockState', {}).get('State') == 'associated':
+                          response_data['IPv6CidrBlock'] = association['Ipv6CidrBlock']
+                          break
+                  
+                  # Find route tables
+                  rt_filters = [{'Name': 'vpc-id', 'Values': [vpc_id]}]
+                  if route_table_name:
+                      rt_filters.append({'Name': 'tag:Name', 'Values': [route_table_name]})
+                  
+                  rt_response = ec2.describe_route_tables(Filters=rt_filters)
+                  
+                  route_table_ids = []
+                  main_route_table_id = None
+                  private_route_table_id = None
+                  
+                  for rt in rt_response['RouteTables']:
+                      rt_id = rt['RouteTableId']
+                      route_table_ids.append(rt_id)
+                      
+                      # Check if it's the main route table
+                      for association in rt.get('Associations', []):
+                          if association.get('Main', False):
+                              main_route_table_id = rt_id
+                              break
+                      
+                      # Check if it matches our specific name
+                      if route_table_name:
+                          for tag in rt.get('Tags', []):
+                              if tag['Key'] == 'Name' and tag['Value'] == route_table_name:
+                                  private_route_table_id = rt_id
+                                  break
+                  
+                  # Update response data
+                  response_data.update({
+                      'RouteTableIds': ','.join(route_table_ids),
+                      'MainRouteTableId': main_route_table_id or '',
+                      'PrivateRouteTableId': private_route_table_id or main_route_table_id or (route_table_ids[0] if route_table_ids else '')
+                  })
+                  
+                  if not response_data['PrivateRouteTableId']:
+                      raise ValueError(f"No suitable route table found in VPC {vpc_id}")
+                  
+                  logger.info('Success: %s', response_data)
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data, physical_resource_id)
+                  
+              except Exception as e:
+                  error_msg = f"Error processing VPC lookup: {str(e)}"
+                  logger.error(error_msg)
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": error_msg}, physical_resource_id)
+      Tags:
+        - Key: Name
+          Value: 'VPCLookupFunction'
+
+  CrossRegionRouteLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: 'CrossRegionRouteFunction'
+      Handler: index.lambda_handler
+      Role: !GetAtt CrossRegionRouteLambdaExecutionRole.Arn
+      Runtime: python3.11
+      Timeout: 120
+      DeadLetterConfig:
+        TargetArn: !GetAtt CrossRegionRouteDLQ.Arn
+      Environment:
+        Variables:
+          LOG_LEVEL: INFO
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+          import logging
+          import os
+          from botocore.exceptions import ClientError
+
+          # Configure logging
+          log_level = os.environ.get('LOG_LEVEL', 'INFO')
+          logger = logging.getLogger()
+          logger.setLevel(getattr(logging, log_level))
+
+          def lambda_handler(event, context):
+              logger.info('Received event: %s', json.dumps(event, default=str))
+              
+              request_type = event['RequestType']
+              resource_properties = event['ResourceProperties']
+              response_data = {}
+              
+              # Create a more descriptive physical resource ID
+              route_table_id = resource_properties.get('RouteTableId', 'unknown')
+              destination_cidr = resource_properties.get('DestinationCidrBlock', 'unknown')
+              physical_resource_id = event.get('PhysicalResourceId', f"route-{route_table_id}-{destination_cidr.replace('/', '-')}")
+              
+              try:
+                  # Validate required parameters
+                  region = resource_properties.get('Region')
+                  vpc_peering_connection_id = resource_properties.get('VpcPeeringConnectionId')
+                  
+                  if not all([region, route_table_id, destination_cidr, vpc_peering_connection_id]):
+                      raise ValueError("Missing required parameters: Region, RouteTableId, DestinationCidrBlock, VpcPeeringConnectionId")
+                  
+                  ec2 = boto3.client('ec2', region_name=region)
+                  
+                  if request_type == 'Delete':
+                      logger.info(f"Deleting route to {destination_cidr} in route table {route_table_id}")
+                      try:
+                          ec2.delete_route(
+                              RouteTableId=route_table_id,
+                              DestinationCidrBlock=destination_cidr
+                          )
+                          logger.info("Route deleted successfully")
+                      except ClientError as e:
+                          if 'InvalidRoute.NotFound' in str(e):
+                              logger.info("Route already deleted or doesn't exist")
+                          else:
+                              raise
+                      
+                  elif request_type in ['Create', 'Update']:
+                      logger.info(f"Creating/updating route to {destination_cidr} via {vpc_peering_connection_id} in route table {route_table_id}")
+                      
+                      try:
+                          if request_type == 'Create':
+                              ec2.create_route(
+                                  RouteTableId=route_table_id,
+                                  DestinationCidrBlock=destination_cidr,
+                                  VpcPeeringConnectionId=vpc_peering_connection_id
+                              )
+                          else:  # Update
+                              try:
+                                  ec2.replace_route(
+                                      RouteTableId=route_table_id,
+                                      DestinationCidrBlock=destination_cidr,
+                                      VpcPeeringConnectionId=vpc_peering_connection_id
+                                  )
+                              except ClientError as e:
+                                  if 'InvalidRoute.NotFound' in str(e):
+                                      ec2.create_route(
+                                          RouteTableId=route_table_id,
+                                          DestinationCidrBlock=destination_cidr,
+                                          VpcPeeringConnectionId=vpc_peering_connection_id
+                                      )
+                                  else:
+                                      raise
+                          
+                          logger.info("Route created/updated successfully")
+                          
+                      except ClientError as e:
+                          if 'RouteAlreadyExists' in str(e):
+                              logger.info("Route already exists, attempting to replace")
+                              ec2.replace_route(
+                                  RouteTableId=route_table_id,
+                                  DestinationCidrBlock=destination_cidr,
+                                  VpcPeeringConnectionId=vpc_peering_connection_id
+                              )
+                          else:
+                              raise
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data, physical_resource_id)
+                  
+              except Exception as e:
+                  error_msg = f"Error managing cross-region route: {str(e)}"
+                  logger.error(error_msg)
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": error_msg}, physical_resource_id)
+      Tags:
+        - Key: Name
+          Value: 'CrossRegionRouteFunction'
+
+  # ===== VPC LOOKUPS =====
+  PrimaryVPCLookup:
+    Type: Custom::VpcLookup
+    Properties:
+      ServiceToken: !GetAtt VPCLookupLambdaFunction.Arn
+      Region: !Ref PrimaryRegion
+      VpcName: !FindInMap [RegionalConfig, !Ref PrimaryRegion, VPCName]
+      RouteTableName: !FindInMap [RegionalConfig, !Ref PrimaryRegion, RouteTableName]
+
+  SydneyVPCLookup:
+    Type: Custom::VpcLookup
+    Properties:
+      ServiceToken: !GetAtt VPCLookupLambdaFunction.Arn
+      Region: 'ap-southeast-2'
+      VpcName: !FindInMap [RegionalConfig, 'ap-southeast-2', VPCName]
+      RouteTableName: !FindInMap [RegionalConfig, 'ap-southeast-2', RouteTableName]
+
+  MumbaiVPCLookup:
+    Type: Custom::VpcLookup
+    Properties:
+      ServiceToken: !GetAtt VPCLookupLambdaFunction.Arn
+      Region: 'ap-south-1'
+      VpcName: !FindInMap [RegionalConfig, 'ap-south-1', VPCName]
+      RouteTableName: !FindInMap [RegionalConfig, 'ap-south-1', RouteTableName]
+
+  # ===== VPC PEERING CONNECTIONS =====
+  SingaporeSydneyVPCPeeringConnection:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !GetAtt PrimaryVPCLookup.VpcId
+      PeerVpcId: !GetAtt SydneyVPCLookup.VpcId
+      PeerRegion: 'ap-southeast-2'
+      PeerOwnerId: !Ref 'AWS::AccountId'
+      Tags:
+        - Key: Name
+          Value: 'Singapore-Sydney-Peering'
+        - Key: Description
+          Value: 'VPC Peering between Singapore and Sydney regions'
+
+  SingaporeMumbaiVPCPeeringConnection:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !GetAtt PrimaryVPCLookup.VpcId
+      PeerVpcId: !GetAtt MumbaiVPCLookup.VpcId
+      PeerRegion: 'ap-south-1'
+      PeerOwnerId: !Ref 'AWS::AccountId'
+      Tags:
+        - Key: Name
+          Value: 'Singapore-Mumbai-Peering'
+        - Key: Description
+          Value: 'VPC Peering between Singapore and Mumbai regions'
+
+  # ===== ROUTES FROM PRIMARY REGION =====
+  PrimaryToSydneyRoute:
+    Type: AWS::EC2::Route
+    DependsOn: SingaporeSydneyVPCPeeringConnection
+    Properties:
+      RouteTableId: !GetAtt PrimaryVPCLookup.PrivateRouteTableId
+      DestinationCidrBlock: !GetAtt SydneyVPCLookup.IPv4CidrBlock
+      VpcPeeringConnectionId: !Ref SingaporeSydneyVPCPeeringConnection
+
+  PrimaryToMumbaiRoute:
+    Type: AWS::EC2::Route
+    DependsOn: SingaporeMumbaiVPCPeeringConnection
+    Properties:
+      RouteTableId: !GetAtt PrimaryVPCLookup.PrivateRouteTableId
+      DestinationCidrBlock: !GetAtt MumbaiVPCLookup.IPv4CidrBlock
+      VpcPeeringConnectionId: !Ref SingaporeMumbaiVPCPeeringConnection
+
+  # ===== CROSS-REGION ROUTES =====
+  SydneyToPrimaryRoute:
+    Type: Custom::CrossRegionRoute
+    DependsOn: SingaporeSydneyVPCPeeringConnection
+    Properties:
+      ServiceToken: !GetAtt CrossRegionRouteLambdaFunction.Arn
+      Region: 'ap-southeast-2'
+      RouteTableId: !GetAtt SydneyVPCLookup.PrivateRouteTableId
+      DestinationCidrBlock: !GetAtt PrimaryVPCLookup.IPv4CidrBlock
+      VpcPeeringConnectionId: !Ref SingaporeSydneyVPCPeeringConnection
+
+  MumbaiToPrimaryRoute:
+    Type: Custom::CrossRegionRoute
+    DependsOn: SingaporeMumbaiVPCPeeringConnection
+    Properties:
+      ServiceToken: !GetAtt CrossRegionRouteLambdaFunction.Arn
+      Region: 'ap-south-1'
+      RouteTableId: !GetAtt MumbaiVPCLookup.PrivateRouteTableId
+      DestinationCidrBlock: !GetAtt PrimaryVPCLookup.IPv4CidrBlock
+      VpcPeeringConnectionId: !Ref SingaporeMumbaiVPCPeeringConnection
+
+Outputs:
+  PrimaryVPCId:
+    Description: 'ID of the primary VPC (Singapore)'
+    Value: !GetAtt PrimaryVPCLookup.VpcId
+
+  PrimaryVPCCIDR:
+    Description: 'CIDR block of the primary VPC'
+    Value: !GetAtt PrimaryVPCLookup.IPv4CidrBlock
+
+  SydneyVPCId:
+    Description: 'ID of the Sydney VPC'
+    Value: !GetAtt SydneyVPCLookup.VpcId
+
+  SydneyVPCCIDR:
+    Description: 'CIDR block of the Sydney VPC'
+    Value: !GetAtt SydneyVPCLookup.IPv4CidrBlock
+
+  MumbaiVPCId:
+    Description: 'ID of the Mumbai VPC'
+    Value: !GetAtt MumbaiVPCLookup.VpcId
+
+  MumbaiVPCCIDR:
+    Description: 'CIDR block of the Mumbai VPC'
+    Value: !GetAtt MumbaiVPCLookup.IPv4CidrBlock
+
+  SingaporeSydneyPeeringConnectionId:
+    Description: 'ID of the VPC Peering Connection between Singapore and Sydney'
+    Value: !Ref SingaporeSydneyVPCPeeringConnection
+
+  SingaporeMumbaiPeeringConnectionId:
+    Description: 'ID of the VPC Peering Connection between Singapore and Mumbai'
+    Value: !Ref SingaporeMumbaiVPCPeeringConnection

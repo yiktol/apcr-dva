@@ -1,0 +1,391 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Multi-region Global Aurora MySQL Cluster with primary in Singapore and secondary in Sydney'
+
+Parameters:
+  GlobalClusterIdentifier:
+    Type: String
+    Default: globaldb
+    Description: 'Identifier for the global database cluster'
+  
+  DbName:
+    Type: String
+    Default: orderdb
+    Description: 'Name of the database to create'
+  
+  DbClusterId:
+    Type: String
+    Default: aurora
+    Description: 'Identifier for the regional DB cluster'
+  
+  DbUsername:
+    Type: String
+    Default: dbadmin
+    Description: 'Master username for database access'
+  
+  SydneyRegion:
+    Type: String
+    Default: ap-southeast-2
+    Description: 'Region code for the secondary cluster'
+
+  MumbaiRegion:
+    Type: String
+    Default: ap-south-1
+    Description: 'Region code for the secondary cluster'
+  
+  LaunchDbReader:
+    Type: String
+    Default: 'TRUE'
+    AllowedValues:
+      - 'TRUE'
+      - 'FALSE'
+    Description: 'Whether to launch a second reader instance in the primary region'
+
+  # Network Parameters (converted from ImportValue)
+  Vpc:
+    Description: VPC ID for the infrastructure
+    Type: String
+
+  PrivateSubnetOne:
+    Type: String
+    Description: 'ID of the first private subnet'
+  
+  PrivateSubnetTwo:
+    Type: String
+    Description: 'ID of the second private subnet'
+  
+  PrivateSubnetThree:
+    Type: String
+    Description: 'ID of the third private subnet'
+  
+  InstanceSecurityGroupId:
+    Type: String
+    Description: 'Security Group ID for database access'
+
+Conditions:
+  IsSingapore: !Equals [!Ref AWS::Region, ap-southeast-1]
+  IsSydney: !Equals [!Ref AWS::Region, ap-southeast-2]
+  IsMumbai: !Equals [!Ref AWS::Region, ap-south-1]
+  CreateDbReaderInSingapore: !And 
+    - !Equals [!Ref LaunchDbReader, 'TRUE']
+    - !Equals [!Ref AWS::Region, ap-southeast-1]
+
+Resources:
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Description: Security group for database instances - allows MySQL from EC2 instances and private network
+    Properties:
+      GroupName: DatabaseSecurityGroup
+      GroupDescription: Enable SQL access to DB
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref InstanceSecurityGroupId
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 10.2.0.0/16  # Sydney VPC CIDR
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 10.11.0.0/16  # Mumbai VPC CIDR
+      Tags:
+        - Key: Name
+          Value: "Database-Security-Group"
+
+  # Shared resources between regions
+  DBSubnetGroup:
+    Type: "AWS::RDS::DBSubnetGroup"
+    Properties:
+      DBSubnetGroupName: DBSubnetGroup
+      DBSubnetGroupDescription: 'Subnet group for Aurora database placement'
+      SubnetIds:
+        - !Ref PrivateSubnetOne
+        - !Ref PrivateSubnetTwo
+        - !Ref PrivateSubnetThree
+
+  # Singapore (Primary) region resources
+  RDSSecret:
+    Condition: IsSingapore
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: RDSSecret
+      Description: 'Securely stores RDS master password'
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${DbUsername}"}'
+        GenerateStringKey: "password"
+        PasswordLength: 15
+        ExcludeCharacters: '"@/\'
+      ReplicaRegions: 
+        - Region: !Ref SydneyRegion
+        - Region: !Ref MumbaiRegion
+
+  GlobalCluster:
+    Condition: IsSingapore
+    Type: AWS::RDS::GlobalCluster
+    Properties:
+      GlobalClusterIdentifier: !Ref GlobalClusterIdentifier
+      SourceDBClusterIdentifier: !Ref RDSCluster
+
+  RDSCluster:
+    Condition: IsSingapore
+    DeletionPolicy: Delete
+    Type: 'AWS::RDS::DBCluster'
+    Properties:
+      DBClusterIdentifier: !Ref DbClusterId
+      DatabaseName: !Ref DbName
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.08.2
+      EngineMode: provisioned
+      MasterUsername: !Sub "{{resolve:secretsmanager:${RDSSecret}::username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${RDSSecret}::password}}"
+      ServerlessV2ScalingConfiguration:
+        MaxCapacity: 2
+        MinCapacity: 0.5
+      StorageEncrypted: true
+      EnableCloudwatchLogsExports:
+        - audit
+        - error
+        - general
+        - slowquery
+      VpcSecurityGroupIds:
+        - !GetAtt DBSecurityGroup.GroupId
+      Tags:
+        - Key: Name
+          Value: Singapore-Primary-Cluster
+
+  SecretAttachment:
+    Condition: IsSingapore
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref RDSSecret
+      TargetId: !Ref RDSCluster
+      TargetType: AWS::RDS::DBCluster
+
+  # Singapore DB Instances
+  RDSDBPrimaryInstance:
+    Condition: IsSingapore
+    DeletionPolicy: Delete
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      Engine: aurora-mysql
+      DBInstanceIdentifier: db1-primary
+      DBInstanceClass: db.serverless
+      DBClusterIdentifier: !Ref RDSCluster
+      Tags:
+        - Key: Name
+          Value: Singapore-Primary-Instance
+
+  RDSDBReaderInstance:
+    Condition: CreateDbReaderInSingapore
+    DeletionPolicy: Delete
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      Engine: aurora-mysql
+      DBInstanceIdentifier: db2-reader
+      DBInstanceClass: db.serverless
+      DBClusterIdentifier: !Ref RDSCluster
+      Tags:
+        - Key: Name
+          Value: Singapore-Reader-Instance
+
+  # Sydney (Secondary) region resources
+  RDSSydneySecondaryCluster: 
+    DeletionPolicy: Delete
+    Condition: IsSydney
+    Type: "AWS::RDS::DBCluster"
+    Properties: 
+      DBClusterIdentifier: !Ref DbClusterId
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.08.2
+      EngineMode: provisioned
+      ServerlessV2ScalingConfiguration:
+        MaxCapacity: 2
+        MinCapacity: 0.5
+      StorageEncrypted: true
+      KmsKeyId: alias/aws/rds
+      GlobalClusterIdentifier: !Ref GlobalClusterIdentifier
+      SourceRegion: ap-southeast-1
+      EnableCloudwatchLogsExports:
+        - audit
+        - error
+        - general
+        - slowquery
+      VpcSecurityGroupIds:
+        - !GetAtt DBSecurityGroup.GroupId
+      Tags:
+        - Key: Name
+          Value: Sydney-Secondary-Cluster
+
+  # Sydney DB Instance
+  RDSSydneySecondaryInstance: 
+    DeletionPolicy: Delete
+    Condition: IsSydney
+    Type: "AWS::RDS::DBInstance"
+    Properties: 
+      DBInstanceIdentifier: db3-secondary
+      AvailabilityZone: !Join ['', [!Ref AWS::Region, 'a']]
+      DBClusterIdentifier: !Ref RDSSydneySecondaryCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-mysql
+      Tags:
+        - Key: Name
+          Value: Sydney-Secondary-Instance
+
+  # Mumbai (Secondary) region resources
+  RDSMumbaiSecondaryCluster: 
+    DeletionPolicy: Delete
+    Condition: IsMumbai
+    Type: "AWS::RDS::DBCluster"
+    Properties: 
+      DBClusterIdentifier: !Ref DbClusterId
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.08.2
+      EngineMode: provisioned
+      ServerlessV2ScalingConfiguration:
+        MaxCapacity: 2
+        MinCapacity: 0.5
+      StorageEncrypted: true
+      KmsKeyId: alias/aws/rds
+      GlobalClusterIdentifier: !Ref GlobalClusterIdentifier
+      SourceRegion: ap-southeast-1
+      EnableCloudwatchLogsExports:
+        - audit
+        - error
+        - general
+        - slowquery
+      VpcSecurityGroupIds:
+        - !GetAtt DBSecurityGroup.GroupId
+      Tags:
+        - Key: Name
+          Value: Mumbai-Secondary-Cluster
+
+  # Mumbai DB Instance
+  RDSMumbaiSecondaryInstance: 
+    DeletionPolicy: Delete
+    Condition: IsMumbai
+    Type: "AWS::RDS::DBInstance"
+    Properties: 
+      DBInstanceIdentifier: db4-secondary
+      AvailabilityZone: !Join ['', [!Ref AWS::Region, 'a']]
+      DBClusterIdentifier: !Ref RDSMumbaiSecondaryCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-mysql
+      Tags:
+        - Key: Name
+          Value: Mumbai-Secondary-Instance
+
+Outputs:
+  # Primary DB Cluster Outputs
+  DBClusterArn:
+    Description: ARN of the primary DB cluster
+    Value: !If 
+      - IsSingapore
+      - !GetAtt RDSCluster.DBClusterArn
+      - !If 
+        - IsSydney
+        - !GetAtt RDSSydneySecondaryCluster.DBClusterArn
+        - !GetAtt RDSMumbaiSecondaryCluster.DBClusterArn
+  
+  DBClusterIdentifier:
+    Description: Identifier of the regional DB cluster
+    Value: !If 
+      - IsSingapore
+      - !Ref RDSCluster
+      - !If 
+        - IsSydney
+        - !Ref RDSSydneySecondaryCluster
+        - !Ref RDSMumbaiSecondaryCluster
+
+  DBClusterEndpoint:
+    Description: Writer endpoint of the DB cluster
+    Value: !If 
+      - IsSingapore
+      - !GetAtt RDSCluster.Endpoint.Address
+      - !If 
+        - IsSydney
+        - !GetAtt RDSSydneySecondaryCluster.Endpoint.Address
+        - !GetAtt RDSMumbaiSecondaryCluster.Endpoint.Address
+
+  DBClusterReadEndpoint:
+    Description: Reader endpoint of the DB cluster
+    Value: !If 
+      - IsSingapore
+      - !GetAtt RDSCluster.ReadEndpoint.Address
+      - !If 
+        - IsSydney
+        - !GetAtt RDSSydneySecondaryCluster.ReadEndpoint.Address
+        - !GetAtt RDSMumbaiSecondaryCluster.ReadEndpoint.Address
+
+  DBClusterPort:
+    Description: Port of the DB cluster
+    Value: !If 
+      - IsSingapore
+      - !GetAtt RDSCluster.Endpoint.Port
+      - !If 
+        - IsSydney
+        - !GetAtt RDSSydneySecondaryCluster.Endpoint.Port
+        - !GetAtt RDSMumbaiSecondaryCluster.Endpoint.Port
+
+  # Global Cluster Outputs
+  GlobalClusterIdentifier:
+    Description: Identifier of the global database cluster
+    Value: !Ref GlobalClusterIdentifier
+    Condition: IsSingapore
+
+  # Database Configuration Outputs
+  DatabaseName:
+    Description: Name of the database
+    Value: !Ref DbName
+
+  MasterUsername:
+    Description: Master username for database access
+    Value: !Ref DbUsername
+
+  # Secret Outputs
+  SecretArn:
+    Description: ARN of the secrets manager secret
+    Value: !Ref RDSSecret
+    Condition: IsSingapore
+
+  # Subnet Group Output
+  DBSubnetGroupName:
+    Description: Name of the DB subnet group
+    Value: !Ref DBSubnetGroup
+
+  # Instance Outputs
+  PrimaryInstanceIdentifier:
+    Description: Identifier of the primary DB instance
+    Value: !Ref RDSDBPrimaryInstance
+    Condition: IsSingapore
+
+  ReaderInstanceIdentifier:
+    Description: Identifier of the reader DB instance
+    Value: !Ref RDSDBReaderInstance
+    Condition: CreateDbReaderInSingapore
+
+  SecondaryInstanceIdentifier:
+    Description: Identifier of the secondary DB instance
+    Value: !If
+      - IsSydney
+      - !Ref RDSSydneySecondaryInstance
+      - !If
+        - IsMumbai
+        - !Ref RDSMumbaiSecondaryInstance
+        - "N/A"
+
+  # Regional Information
+  DeployedRegion:
+    Description: Region where this stack is deployed
+    Value: !Ref AWS::Region
+
+  RegionRole:
+    Description: Role of this region in the global cluster
+    Value: !If
+      - IsSingapore
+      - "Primary"
+      - "Secondary"

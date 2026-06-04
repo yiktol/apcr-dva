@@ -1,0 +1,923 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Coffee Shop Order Monitoring - Enhanced with DLQ, Message Filtering, and Fanout - ECS Fargate Deployment'
+
+Parameters:
+  # Application Configuration
+  AppName:
+    Type: String
+    Default: sns-lambda-slack-demo
+    Description: Application name
+
+  # Networking Configuration
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where resources will be created
+    
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of private subnet IDs for ECS tasks (comma-separated)
+
+  # Existing Infrastructure
+  ExistingECSCluster:
+    Type: String
+    Description: Name or ARN of the existing ECS cluster
+    Default: CoffeeShop
+
+  ExistingALBArn:
+    Type: String
+    Description: ARN of the existing Application Load Balancer
+
+  ExistingALBSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group ID of the existing ALB
+
+  ALBHTTPSListener:
+    Type: String
+    Description: ARN of the ALB HTTPS listener
+
+  # Container Configuration
+  DockerImage:
+    Type: String
+    Description: Docker image URI from ECR
+    Default: 875692608981.dkr.ecr.ap-southeast-1.amazonaws.com/aws/sns-lambda-slack-demo:latest
+    
+  ContainerPort:
+    Type: Number
+    Default: 8080
+    Description: Port that the container exposes
+
+  # ECS Configuration
+  DesiredCount:
+    Type: Number
+    Default: 1
+    Description: Number of tasks to run
+    MinValue: 1
+    MaxValue: 10
+    
+  TaskCpu:
+    Type: Number
+    Default: 512
+    AllowedValues: [256, 512, 1024, 2048, 4096]
+    Description: CPU units for the task (256 = 0.25 vCPU)
+    
+  TaskMemory:
+    Type: Number
+    Default: 1024
+    AllowedValues: [512, 1024, 2048, 4096, 8192]
+    Description: Memory in MB for the task
+
+  # Security Configuration
+  CloudFrontALBHandshakeSecretName:
+    Type: String
+    Description: Name of the CloudFront ALB handshake secrets
+
+  UserPoolArn:
+    Type: String
+    Description: ARN of the User pool
+
+  UserPoolClientId:
+    Type: String
+    Description: ID of Userpool client
+
+  UserPoolDomain:
+    Type: String
+    Description: Domain of Userpool
+
+  # Monitoring Configuration
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    Description: CloudWatch logs retention period in days
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+
+  HealthCheckPath:
+    Type: String
+    Default: /_stcore/health
+    Description: Health check path for ALB target group
+
+  SlackWebhookParameter:
+    Type: String
+    Default: /apcr/slack/coffee-alerts/webhook
+    Description: SSM Parameter Store path containing Slack webhook URL
+
+Resources:
+  # ============================================================================
+  # SNS Topic for Order Events
+  # ============================================================================
+  OrderEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: coffee-shop-order-events
+      DisplayName: Coffee Shop Order Events
+      Tags:
+        - Key: Application
+          Value: CoffeeShopAlerts
+
+  # ============================================================================
+  # SQS Queue for Failed Orders Processing
+  # ============================================================================
+  FailedOrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: coffee-shop-failed-orders
+      VisibilityTimeout: 300  # 5 minutes
+      MessageRetentionPeriod: 345600  # 4 days
+      ReceiveMessageWaitTimeSeconds: 20  # Long polling
+      Tags:
+        - Key: Application
+          Value: CoffeeShopAlerts
+        - Key: Purpose
+          Value: FailedOrdersProcessing
+
+  # Queue Policy for SNS to send messages
+  FailedOrdersQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref FailedOrdersQueue
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: 
+              - sqs:SendMessage
+            Resource: !GetAtt FailedOrdersQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref OrderEventsTopic
+
+  # ============================================================================
+  # IAM ROLES AND POLICIES
+  # ============================================================================
+  
+  # ECS Task Execution Role
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ecsTaskExecutionRole-${AppName}-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ECRAndLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${AppName}*"
+
+  # IAM Role for the application (Task Role)
+  AppTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ecsTaskRole-${AppName}-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SNSAppPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # SNS Permissions
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                  - sns:ListTopics
+                  - sns:ListSubscriptionsByTopic
+                Resource: !Ref OrderEventsTopic
+              # SQS Permissions
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt FailedOrdersQueue.Arn
+              # SSM Parameter Access
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SlackWebhookParameter}'
+              # CloudWatch Logs
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/${AppName}*"
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+
+  # Lambda Execution Role (kept for Lambda function)
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "coffee-shop-lambda-execution-role-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SSMParameterAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SlackWebhookParameter}'
+
+  # ============================================================================
+  # NETWORKING AND SECURITY GROUPS
+  # ============================================================================
+  
+  # Security Group for ECS Tasks
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${AppName}-ecs-task-sg"
+      GroupDescription: Security group for ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref ExistingALBSecurityGroupId
+          Description: Allow traffic from existing ALB
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${AppName}-ecs-sg'
+        - Key: Application
+          Value: !Ref AppName
+
+  # ============================================================================
+  # LOAD BALANCER TARGET GROUP AND LISTENER RULE
+  # ============================================================================
+  
+  # ALB Target Group
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${AppName}-tg'
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+      HealthCheckProtocol: HTTP
+      Matcher:
+        HttpCode: 200-299
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+        - Key: stickiness.enabled
+          Value: 'false'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AppName}-tg'
+        - Key: Application
+          Value: !Ref AppName
+
+  # ALB Listener Rule with Cognito Authentication
+  ALBCustomHeaderListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: authenticate-cognito
+          AuthenticateCognitoConfig:
+            UserPoolArn: !Ref UserPoolArn
+            UserPoolClientId: !Ref UserPoolClientId
+            UserPoolDomain: !Ref UserPoolDomain
+            Scope: 'email openid profile'
+            SessionCookieName: AWSALBAuthSessionCookie
+            OnUnauthenticatedRequest: authenticate
+          Order: 1
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+          Order: 2
+      Conditions:
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_NAME}}']]
+            Values:
+              - !Join ['', ['{{resolve:secretsmanager:', !Ref CloudFrontALBHandshakeSecretName, ':SecretString:HEADER_VALUE}}']]
+        - Field: http-header
+          HttpHeaderConfig:
+            HttpHeaderName: 'x-cloudfront-path-pattern'
+            Values:
+              - '/sns-demo/'
+        - Field: path-pattern
+          Values:
+            - '/*'
+      ListenerArn: !Ref ALBHTTPSListener
+      Priority: 4
+
+  # ============================================================================
+  # CONTAINER ORCHESTRATION
+  # ============================================================================
+  
+  # CloudWatch Log Group for ECS
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${AppName}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ECS Task Definition
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref AppName
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt AppTaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Sub '${AppName}-container'
+          Image: !Ref DockerImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Environment:
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+            - Name: SNS_TOPIC_ARN
+              Value: !Ref OrderEventsTopic
+            - Name: SQS_QUEUE_URL
+              Value: !Ref FailedOrdersQueue
+            - Name: SLACK_WEBHOOK_PARAMETER
+              Value: !Ref SlackWebhookParameter
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - !Sub "curl -f http://localhost:${ContainerPort}${HealthCheckPath} || exit 1"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+      Tags:
+        - Key: Name
+          Value: !Sub '${AppName}-task'
+        - Key: Application
+          Value: !Ref AppName
+
+  # ECS Service using existing cluster
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${AppName}-service"
+      Cluster: !Ref ExistingECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      EnableExecuteCommand: true
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets: !Ref PrivateSubnetIds
+      LoadBalancers:
+        - ContainerName: !Sub '${AppName}-container'
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      HealthCheckGracePeriodSeconds: 120
+      Tags:
+        - Key: Name
+          Value: !Sub '${AppName}-service'
+        - Key: Application
+          Value: !Ref AppName
+
+  # ============================================================================
+  # Lambda Function for Slack Notifications (kept for SNS subscription)
+  # ============================================================================
+  SlackNotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: coffee-shop-slack-notifier
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      ReservedConcurrentExecutions: 10
+      Environment:
+        Variables:
+          SLACK_WEBHOOK_PARAMETER: !Ref SlackWebhookParameter
+          CHANNEL_NAME: '#coffeeshop-alerts'
+      Code:
+        ZipFile: |
+          import json
+          import urllib3
+          import boto3
+          import os
+          
+          http = urllib3.PoolManager()
+          ssm = boto3.client('ssm')
+          
+          def get_webhook_url():
+              param_name = os.environ['SLACK_WEBHOOK_PARAMETER']
+              response = ssm.get_parameter(Name=param_name, WithDecryption=True)
+              return response['Parameter']['Value']
+          
+          def format_slack_message(event_type, order):
+              """Format Slack message based on event type"""
+              
+              if event_type == 'high_value_order':
+                  return {
+                      "text": "🔥 High Value Order Alert!",
+                      "blocks": [
+                          {
+                              "type": "header",
+                              "text": {
+                                  "type": "plain_text",
+                                  "text": "🔥 High Value Order Alert!"
+                              }
+                          },
+                          {
+                              "type": "section",
+                              "fields": [
+                                  {"type": "mrkdwn", "text": f"*Order ID:*\n{order.get('orderId', 'N/A')}"},
+                                  {"type": "mrkdwn", "text": f"*Customer:*\n{order.get('customer', 'N/A')}"},
+                                  {"type": "mrkdwn", "text": f"*Total:*\n${order.get('total', 0):.2f}"},
+                                  {"type": "mrkdwn", "text": f"*Items:*\n{order.get('items', 'N/A')}"}
+                              ]
+                          }
+                      ]
+                  }
+              
+              elif event_type == 'failed_order':
+                  return {
+                      "text": "⚠️ Order Failed!",
+                      "blocks": [
+                          {
+                              "type": "header",
+                              "text": {
+                                  "type": "plain_text",
+                                  "text": "⚠️ Order Failed - Immediate Action Required!"
+                              }
+                          },
+                          {
+                              "type": "section",
+                              "fields": [
+                                  {"type": "mrkdwn", "text": f"*Order ID:*\n{order.get('orderId', 'N/A')}"},
+                                  {"type": "mrkdwn", "text": f"*Customer:*\n{order.get('customer', 'N/A')}"},
+                                  {"type": "mrkdwn", "text": f"*Total:*\n${order.get('total', 0):.2f}"},
+                                  {"type": "mrkdwn", "text": f"*Items:*\n{order.get('items', 'N/A')}"}
+                              ]
+                          },
+                          {
+                              "type": "section",
+                              "text": {
+                                  "type": "mrkdwn",
+                                  "text": "⚠️ *Action Required:* This failed order has been queued for investigation and retry."
+                              }
+                          },
+                          {
+                              "type": "context",
+                              "elements": [
+                                  {
+                                      "type": "mrkdwn",
+                                      "text": "📋 Order details sent to processing queue for automated retry"
+                                  }
+                              ]
+                          }
+                      ]
+                  }
+              
+              elif event_type == 'new_order':
+                  return {
+                      "text": "🆕 New Order Received",
+                      "blocks": [
+                          {
+                              "type": "section",
+                              "text": {
+                                  "type": "mrkdwn",
+                                  "text": f"🆕 *New Order:* {order.get('orderId', 'N/A')} | Customer: {order.get('customer', 'N/A')} | Total: ${order.get('total', 0):.2f}"
+                              }
+                          }
+                      ]
+                  }
+              
+              elif event_type == 'order_complete':
+                  return {
+                      "text": "✅ Order Complete",
+                      "blocks": [
+                          {
+                              "type": "section",
+                              "text": {
+                                  "type": "mrkdwn",
+                                  "text": f"✅ *Order Complete:* {order.get('orderId', 'N/A')} | Customer: {order.get('customer', 'N/A')}"
+                              }
+                          }
+                      ]
+                  }
+              
+              else:
+                  return {
+                      "text": f"📬 Coffee Shop Event: {event_type}",
+                      "blocks": [
+                          {
+                              "type": "section",
+                              "text": {
+                                  "type": "mrkdwn",
+                                  "text": f"*Event:* {event_type}\n*Order:* {order.get('orderId', 'N/A')}"
+                              }
+                          }
+                      ]
+                  }
+          
+          def lambda_handler(event, context):
+              print(f"Received event: {json.dumps(event)}")
+              
+              try:
+                  # Parse SNS message
+                  sns_message = event['Records'][0]['Sns']['Message']
+                  message_data = json.loads(sns_message)
+                  
+                  event_type = message_data.get('eventType', 'unknown')
+                  order = message_data.get('order', {})
+                  
+                  print(f"Event type: {event_type}")
+                  print(f"Order: {json.dumps(order)}")
+                  
+                  # Format Slack message
+                  slack_message = format_slack_message(event_type, order)
+                  
+                  # Send to Slack
+                  webhook_url = get_webhook_url()
+                  response = http.request(
+                      'POST',
+                      webhook_url,
+                      body=json.dumps(slack_message),
+                      headers={'Content-Type': 'application/json'}
+                  )
+                  
+                  print(f"Slack response status: {response.status}")
+                  print(f"Slack response body: {response.data.decode('utf-8')}")
+                  
+                  if response.status == 200:
+                      return {'statusCode': 200, 'body': 'Success'}
+                  else:
+                      raise Exception(f"Slack API returned status {response.status}")
+                  
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  import traceback
+                  traceback.print_exc()
+                  raise
+
+  # ============================================================================
+  # SNS Subscriptions with Message Filtering
+  # ============================================================================
+  
+  # Subscription 1: All events to Slack (Lambda)
+  SNSSubscriptionAllEvents:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: lambda
+      TopicArn: !Ref OrderEventsTopic
+      Endpoint: !GetAtt SlackNotificationFunction.Arn
+      # No filter policy - receives all events
+
+  # Subscription 2: Failed orders ONLY to SQS Queue
+  SNSSubscriptionFailedOrders:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: sqs
+      TopicArn: !Ref OrderEventsTopic
+      Endpoint: !GetAtt FailedOrdersQueue.Arn
+      RawMessageDelivery: false
+      FilterPolicy:
+        eventType:
+          - failed_order
+      FilterPolicyScope: MessageBody
+
+  # ============================================================================
+  # Lambda Permissions
+  # ============================================================================
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SlackNotificationFunction
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref OrderEventsTopic
+
+  # ============================================================================
+  # CloudWatch Alarms
+  # ============================================================================
+  
+  # Alarm for Lambda Errors
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: coffee-shop-lambda-error-alarm
+      AlarmDescription: Alert when Lambda function has errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SlackNotificationFunction
+      TreatMissingData: notBreaching
+
+  # Alarm for Failed Orders Queue Depth
+  FailedOrdersQueueDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: coffee-shop-failed-orders-queue-depth
+      AlarmDescription: Alert when failed orders queue has many messages
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt FailedOrdersQueue.QueueName
+      TreatMissingData: notBreaching
+
+  # ECS Service Alarms
+  ECSServiceCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-high-cpu"
+      AlarmDescription: Alert when ECS service CPU is high
+      MetricName: CPUUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: !GetAtt ECSService.Name
+        - Name: ClusterName
+          Value: !Ref ExistingECSCluster
+      TreatMissingData: notBreaching
+
+  ECSServiceMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-high-memory"
+      AlarmDescription: Alert when ECS service memory is high
+      MetricName: MemoryUtilization
+      Namespace: AWS/ECS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: ServiceName
+          Value: !GetAtt ECSService.Name
+        - Name: ClusterName
+          Value: !Ref ExistingECSCluster
+      TreatMissingData: notBreaching
+
+  UnhealthyTargetsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-unhealthy-targets"
+      AlarmDescription: Alert when there are unhealthy targets
+      MetricName: UnHealthyHostCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt TargetGroup.TargetGroupFullName
+      TreatMissingData: notBreaching
+
+# ============================================================================
+# Outputs
+# ============================================================================
+Outputs:
+  # SNS and SQS Outputs
+  SNSTopicArn:
+    Description: SNS Topic ARN for order events
+    Value: !Ref OrderEventsTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-SNSTopicArn'
+
+  SlackNotificationFunctionName:
+    Description: Slack Notification Lambda Function Name
+    Value: !Ref SlackNotificationFunction
+
+  SlackNotificationFunctionArn:
+    Description: Slack Notification Lambda Function ARN
+    Value: !GetAtt SlackNotificationFunction.Arn
+
+  FailedOrdersQueueUrl:
+    Description: SQS Queue URL for failed orders processing
+    Value: !Ref FailedOrdersQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-FailedOrdersQueueUrl'
+
+  FailedOrdersQueueArn:
+    Description: SQS Queue ARN for failed orders
+    Value: !GetAtt FailedOrdersQueue.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-FailedOrdersQueueArn'
+
+  # ECS Service Outputs
+  ECSServiceName:
+    Description: Name of the ECS Service
+    Value: !GetAtt ECSService.Name
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSServiceName'
+
+  ECSServiceArn:
+    Description: ARN of the ECS Service
+    Value: !Ref ECSService
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSServiceArn'
+
+  TaskDefinitionArn:
+    Description: ARN of the ECS Task Definition
+    Value: !Ref TaskDefinition
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskDefinitionArn'
+
+  TaskDefinitionFamily:
+    Description: Family name of the Task Definition
+    Value: !Ref AppName
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskDefinitionFamily'
+
+  # IAM Role Outputs
+  AppTaskRoleArn:
+    Description: ARN of the ECS Task Role
+    Value: !GetAtt AppTaskRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskRoleArn'
+
+  TaskExecutionRoleArn:
+    Description: ARN of the ECS Task Execution Role
+    Value: !GetAtt TaskExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskExecutionRoleArn'
+
+  # Networking Outputs
+  TargetGroupArn:
+    Description: ARN of the Target Group
+    Value: !Ref TargetGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-TargetGroupArn'
+
+  ECSTaskSecurityGroupId:
+    Description: ID of the ECS Task Security Group
+    Value: !Ref ECSSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSTaskSecurityGroupId'
+
+  # Monitoring Outputs
+  ECSLogGroupName:
+    Description: ECS CloudWatch Log Group Name
+    Value: !Ref ECSLogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSLogGroupName'
+
+  ECSLogGroupArn:
+    Description: ARN of the CloudWatch Log Group
+    Value: !GetAtt ECSLogGroup.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ECSLogGroupArn'
+
+  LambdaErrorAlarmName:
+    Description: CloudWatch Alarm for Lambda Errors
+    Value: !Ref LambdaErrorAlarm
+
+  FailedOrdersQueueDepthAlarmName:
+    Description: CloudWatch Alarm for Failed Orders Queue Depth
+    Value: !Ref FailedOrdersQueueDepthAlarm
+
+  ECSServiceCPUAlarmName:
+    Description: CloudWatch Alarm for ECS Service CPU
+    Value: !Ref ECSServiceCPUAlarm
+
+  ECSServiceMemoryAlarmName:
+    Description: CloudWatch Alarm for ECS Service Memory
+    Value: !Ref ECSServiceMemoryAlarm
+
+  # Infrastructure Outputs
+  UsedECSCluster:
+    Description: ECS Cluster used for the deployment
+    Value: !Ref ExistingECSCluster
+    Export:
+      Name: !Sub '${AWS::StackName}-UsedECSCluster'
+
+  UsedALBArn:
+    Description: ALB ARN used for the deployment
+    Value: !Ref ExistingALBArn
+    Export:
+      Name: !Sub '${AWS::StackName}-UsedALBArn'
+
+  VpcId:
+    Description: VPC ID used for the deployment
+    Value: !Ref VpcId
+    Export:
+      Name: !Sub '${AWS::StackName}-VpcId'
+
+  PrivateSubnetIds:
+    Description: Private subnet IDs used for ECS tasks
+    Value: !Join [",", !Ref PrivateSubnetIds]
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnetIds'
+
+  # Container Configuration Outputs
+  ContainerImageURI:
+    Description: Container image URI used in the task definition
+    Value: !Ref DockerImage
+    Export:
+      Name: !Sub '${AWS::StackName}-ContainerImageURI'
+
+  DesiredTaskCount:
+    Description: Desired number of ECS tasks
+    Value: !Ref DesiredCount
+    Export:
+      Name: !Sub '${AWS::StackName}-DesiredTaskCount'
+
+  ContainerCpuAllocation:
+    Description: CPU allocation for containers
+    Value: !Ref TaskCpu
+    Export:
+      Name: !Sub '${AWS::StackName}-ContainerCpuAllocation'
+
+  ContainerMemoryAllocation:
+    Description: Memory allocation for containers in MB
+    Value: !Ref TaskMemory
+    Export:
+      Name: !Sub '${AWS::StackName}-ContainerMemoryAllocation'
