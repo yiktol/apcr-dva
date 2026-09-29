@@ -124,6 +124,23 @@ cd demo/session3
 ./run.sh all        # deploy, then test
 ```
 
+### Full teardown
+
+`./run.sh cleanup` deletes the stack. For a **complete** teardown that also removes the
+out-of-band resources (the seeded users go with the user pool, plus the Logs-Insights
+grant added to the public-dashboard sharing role and any leftover dashboards), use the
+dedicated script:
+
+```bash
+./cleanup.sh          # prompts: type 'delete' to confirm
+./cleanup.sh --yes    # no prompt (CI/scripts)
+```
+
+It empties the S3 buckets first (including versioned objects), removes the sharing-role
+inline policy `beanthere-logs-insights-worker`, deletes the CloudWatch dashboards, deletes
+the CloudFormation stack, then sweeps any orphaned buckets. The shared VPC and other
+stacks are left untouched.
+
 ### Order generator (populate the dashboard)
 
 Two ways to drive random traffic — random coffees from random superhero customers,
