@@ -1,0 +1,794 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  BeanThere - APCR-DVA Session 3 core-services demo. Exercises Cognito, ElastiCache,
+  SQS, SNS, EventBridge, CloudWatch, CloudWatch Logs, and CloudTrail in one serverless app.
+  Reuses an existing VPC via CloudFormation Exports.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: beanthere
+    Description: Prefix for resource names.
+  VpcIdExport:
+    Type: String
+    Default: VpcId
+    Description: Name of the CloudFormation Export for the VPC ID.
+  Subnet1Export:
+    Type: String
+    Default: PrivateSubnetOne
+  Subnet2Export:
+    Type: String
+    Default: PrivateSubnetTwo
+  Subnet3Export:
+    Type: String
+    Default: PrivateSubnetThree
+  TrailBucketName:
+    Type: String
+    Default: ""
+    Description: Optional pre-existing bucket name for CloudTrail; leave blank to create one.
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Timeout: 30
+    MemorySize: 256
+    Architectures: [arm64]
+
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # Networking: reuse existing VPC/subnets via Exports; create a security group.
+  # ---------------------------------------------------------------------------
+  CacheSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "${ProjectName} Lambda + ElastiCache SG"
+      VpcId:
+        Fn::ImportValue: !Ref VpcIdExport
+
+  # Lambda and the cache share this SG; allow the SG to talk to itself on the Valkey port.
+  CacheSelfIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref CacheSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      SourceSecurityGroupId: !Ref CacheSecurityGroup
+
+  # ---------------------------------------------------------------------------
+  # Amazon ElastiCache (Serverless, Valkey) - the menu cache tier, in the VPC.
+  # ---------------------------------------------------------------------------
+  MenuCache:
+    Type: AWS::ElastiCache::ServerlessCache
+    Properties:
+      ServerlessCacheName: !Sub "${ProjectName}-menu-cache"
+      Engine: valkey
+      SecurityGroupIds:
+        - !Ref CacheSecurityGroup
+      SubnetIds:
+        - Fn::ImportValue: !Ref Subnet1Export
+        - Fn::ImportValue: !Ref Subnet2Export
+        - Fn::ImportValue: !Ref Subnet3Export
+
+  # ---------------------------------------------------------------------------
+  # Amazon DynamoDB - source of truth for menu + orders.
+  # ---------------------------------------------------------------------------
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProjectName}-orders"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  # ---------------------------------------------------------------------------
+  # Amazon Cognito - user pool (authN) + identity pool (temporary AWS creds).
+  # ---------------------------------------------------------------------------
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${ProjectName}-users"
+      AutoVerifiedAttributes: [email]
+      UsernameAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireUppercase: true
+          RequireSymbols: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "${ProjectName}-web"
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders: [COGNITO]
+
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: !Sub "${ProjectName}_identity"
+      AllowUnauthenticatedIdentities: false
+      CognitoIdentityProviders:
+        - ClientId: !Ref UserPoolClient
+          ProviderName: !GetAtt UserPool.ProviderName
+
+  # Role assumed by authenticated identity-pool users. Scoped to reading their own
+  # profile-photo prefix in the frontend bucket - demonstrates "temporary AWS creds".
+  AuthenticatedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "cognito-identity.amazonaws.com:aud": !Ref IdentityPool
+              "ForAnyValue:StringLike":
+                "cognito-identity.amazonaws.com:amr": authenticated
+      Policies:
+        - PolicyName: scoped-s3-profile
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource: !Sub "arn:aws:s3:::${FrontendBucket}/profile/${!cognito-identity.amazonaws.com:sub}/*"
+
+  IdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref IdentityPool
+      Roles:
+        authenticated: !GetAtt AuthenticatedRole.Arn
+
+  # ---------------------------------------------------------------------------
+  # Amazon SQS - order buffer + dead-letter queue.
+  # ---------------------------------------------------------------------------
+  OrderDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-orders-dlq"
+      MessageRetentionPeriod: 1209600
+
+  OrderQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-orders"
+      # Short visibility timeout so a failing message cycles through its 3 retries
+      # quickly and reaches the DLQ within ~1 minute - good for a live demo.
+      VisibilityTimeout: 20
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrderDLQ.Arn
+        maxReceiveCount: 3
+
+  # ---------------------------------------------------------------------------
+  # Amazon SNS - fan-out topic + separate ops-alerts topic (alarm target).
+  # ---------------------------------------------------------------------------
+  OrderEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-order-events"
+
+  OpsAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-ops-alerts"
+
+  # ---------------------------------------------------------------------------
+  # Amazon EventBridge - custom bus + content-based rules.
+  # ---------------------------------------------------------------------------
+  EventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub "${ProjectName}-bus"
+
+  OrderPlacedRule:
+    Type: AWS::Events::Rule
+    DependsOn: [EventLogGroupTarget, EventBridgeToLogsPolicy]
+    Properties:
+      EventBusName: !Ref EventBus
+      EventPattern:
+        source: ["beanthere.orders"]
+        detail-type: ["OrderPlaced"]
+      Targets:
+        - Id: fulfillment-logs
+          Arn: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/beanthere/${ProjectName}/eventbridge-orderplaced:*"
+
+  # EventBridge -> CloudWatch Logs target (a rule writes matched events to a log group).
+  EventLogGroupTarget:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/beanthere/${ProjectName}/eventbridge-orderplaced"
+      RetentionInDays: 7
+
+  EventBridgeToLogsPolicy:
+    Type: AWS::Logs::ResourcePolicy
+    Properties:
+      PolicyName: !Sub "${ProjectName}-eb-to-logs"
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "events.amazonaws.com"},
+            "Action": ["logs:CreateLogStream","logs:PutLogEvents"],
+            "Resource": "${EventLogGroupTarget.Arn}"
+          }]
+        }
+
+  # ---------------------------------------------------------------------------
+  # Frontend hosting: S3 (private) + CloudFront via OAC.
+  # ---------------------------------------------------------------------------
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-web-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${ProjectName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_200
+        Origins:
+          - Id: s3origin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref CloudFrontOAC
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: s3origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  # ---------------------------------------------------------------------------
+  # API Lambda (in VPC): menu (cache lazy-load), place order (-> SQS), status.
+  # ---------------------------------------------------------------------------
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-api"
+      Handler: index.handler
+      VpcConfig:
+        SecurityGroupIds: [!Ref CacheSecurityGroup]
+        SubnetIds:
+          - Fn::ImportValue: !Ref Subnet1Export
+          - Fn::ImportValue: !Ref Subnet2Export
+          - Fn::ImportValue: !Ref Subnet3Export
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref OrdersTable
+          QUEUE_URL: !Ref OrderQueue
+          CACHE_ENDPOINT: !GetAtt MenuCache.Endpoint.Address
+          CACHE_PORT: !GetAtt MenuCache.Endpoint.Port
+          MENU_TTL_SECONDS: "3600"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OrdersTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt OrderQueue.QueueName
+      Events:
+        GetMenu:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /menu
+            Method: GET
+        PostOrder:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /orders
+            Method: POST
+        ListOrders:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /orders
+            Method: GET
+        GetOrder:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /orders/{id}
+            Method: GET
+        SeedMenu:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /seed
+            Method: POST
+      InlineCode: |
+        const net = require('net');
+        const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+        const { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand } = require('@aws-sdk/lib-dynamodb');
+        const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
+
+        const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+        const sqs = new SQSClient({});
+        const TABLE = process.env.TABLE_NAME;
+        const QUEUE = process.env.QUEUE_URL;
+        const CACHE_HOST = process.env.CACHE_ENDPOINT;
+        const CACHE_PORT = parseInt(process.env.CACHE_PORT || '6379', 10);
+        const TTL = parseInt(process.env.MENU_TTL_SECONDS || '3600', 10);
+
+        // Minimal RESP client over TLS (ElastiCache Serverless requires TLS).
+        const tls = require('tls');
+        function redisCmd(args) {
+          return new Promise((resolve, reject) => {
+            const sock = tls.connect({ host: CACHE_HOST, port: CACHE_PORT, servername: CACHE_HOST, rejectUnauthorized: false }, () => {
+              let cmd = `*${args.length}\r\n`;
+              for (const a of args) { const s = String(a); cmd += `$${Buffer.byteLength(s)}\r\n${s}\r\n`; }
+              sock.write(cmd);
+            });
+            let buf = Buffer.alloc(0);
+            const to = setTimeout(() => { sock.destroy(); reject(new Error('redis timeout')); }, 4000);
+            sock.on('data', (d) => {
+              buf = Buffer.concat([buf, d]);
+              const s = buf.toString();
+              // resolve on first complete reply line/bulk
+              if (s.startsWith('$-1')) { clearTimeout(to); sock.end(); return resolve(null); }
+              if (s[0] === '+' || s[0] === ':' || s[0] === '-') {
+                const end = s.indexOf('\r\n');
+                if (end !== -1) { clearTimeout(to); sock.end(); return resolve(s.slice(1, end)); }
+              }
+              if (s[0] === '$') {
+                const nl = s.indexOf('\r\n');
+                if (nl !== -1) {
+                  const len = parseInt(s.slice(1, nl), 10);
+                  const start = nl + 2;
+                  if (buf.length >= start + len) { clearTimeout(to); sock.end(); return resolve(buf.slice(start, start + len).toString()); }
+                }
+              }
+            });
+            sock.on('error', (e) => { clearTimeout(to); reject(e); });
+          });
+        }
+        const cacheGet = (k) => redisCmd(['GET', k]).catch(() => null);
+        const cacheSet = (k, v) => redisCmd(['SET', k, v, 'EX', String(TTL)]).catch(() => null);
+
+        const DEFAULT_MENU = [
+          { id: 'esp', name: 'Espresso', price: 3.0 },
+          { id: 'lat', name: 'Latte', price: 4.5 },
+          { id: 'cap', name: 'Cappuccino', price: 4.0 },
+          { id: 'moc', name: 'Mocha', price: 5.0 },
+          { id: 'cbr', name: 'Cold Brew', price: 4.75 },
+        ];
+
+        const json = (code, body, extra) => ({
+          statusCode: code,
+          headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*',
+            'access-control-allow-headers': '*', 'access-control-allow-methods': '*' },
+          body: JSON.stringify(body), ...(extra || {}),
+        });
+
+        exports.handler = async (event) => {
+          const route = `${event.requestContext?.http?.method} ${event.requestContext?.http?.path}`;
+          const rk = event.routeKey || route;
+          try {
+            if (rk.startsWith('OPTIONS')) return json(200, {});
+            if (rk === 'POST /seed') {
+              await ddb.send(new PutCommand({ TableName: TABLE, Item: { pk: 'MENU', items: DEFAULT_MENU } }));
+              await cacheSet('menu', JSON.stringify(DEFAULT_MENU));
+              return json(200, { seeded: true, items: DEFAULT_MENU.length });
+            }
+            if (rk === 'GET /menu') {
+              // Lazy loading: try cache first, fall back to DynamoDB, then populate cache.
+              const cached = await cacheGet('menu');
+              if (cached) return json(200, { source: 'cache', items: JSON.parse(cached) });
+              const res = await ddb.send(new GetCommand({ TableName: TABLE, Key: { pk: 'MENU' } }));
+              const items = res.Item?.items || DEFAULT_MENU;
+              await cacheSet('menu', JSON.stringify(items));
+              return json(200, { source: 'database', items });
+            }
+            if (rk === 'POST /orders') {
+              const body = JSON.parse(event.body || '{}');
+              const orderId = 'ord_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+              const msg = { orderId, customerId: body.customerId || 'guest', items: body.items || [],
+                total: body.total || 0, placedAt: new Date().toISOString(),
+                simulateFailure: body.simulateFailure === true };
+              await sqs.send(new SendMessageCommand({ QueueUrl: QUEUE, MessageBody: JSON.stringify(msg) }));
+              await ddb.send(new PutCommand({ TableName: TABLE, Item: { pk: 'ORDER#' + orderId, status: 'QUEUED', ...msg } }));
+              return json(202, { orderId, status: 'QUEUED' });
+            }
+            if (rk === 'GET /orders') {
+              // List all order items from DynamoDB, newest first. Scan is fine for a
+              // demo-sized table; a production catalog would use a GSI on placedAt.
+              const res = await ddb.send(new ScanCommand({
+                TableName: TABLE,
+                FilterExpression: 'begins_with(pk, :p)',
+                ExpressionAttributeValues: { ':p': 'ORDER#' },
+              }));
+              const orders = (res.Items || []).map((o) => ({
+                orderId: o.orderId, customerId: o.customerId, status: o.status,
+                total: o.total, placedAt: o.placedAt,
+              })).sort((a, b) => (b.placedAt || '').localeCompare(a.placedAt || ''));
+              return json(200, { count: orders.length, orders });
+            }
+            if (rk.startsWith('GET /orders/')) {
+              const id = event.pathParameters?.id;
+              const res = await ddb.send(new GetCommand({ TableName: TABLE, Key: { pk: 'ORDER#' + id } }));
+              if (!res.Item) return json(404, { error: 'not found' });
+              return json(200, res.Item);
+            }
+            return json(404, { error: 'no route', route: rk });
+          } catch (e) {
+            console.error(JSON.stringify({ level: 'ERROR', route: rk, message: e.message }));
+            return json(500, { error: e.message });
+          }
+        };
+
+  # ---------------------------------------------------------------------------
+  # Worker Lambda: SQS-triggered. Processes orders, emits custom metric + JSON
+  # logs, publishes to SNS, and puts a typed event on EventBridge.
+  # ---------------------------------------------------------------------------
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-worker"
+      Handler: index.handler
+      Timeout: 15
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref OrdersTable
+          EVENTS_TOPIC_ARN: !Ref OrderEventsTopic
+          EVENT_BUS_NAME: !Ref EventBus
+          METRIC_NAMESPACE: BeanThere
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OrdersTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt OrderEventsTopic.TopicName
+        - Statement:
+            - Effect: Allow
+              Action: [cloudwatch:PutMetricData]
+              Resource: "*"
+            - Effect: Allow
+              Action: [events:PutEvents]
+              Resource: !GetAtt EventBus.Arn
+      Events:
+        FromQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OrderQueue.Arn
+            BatchSize: 1
+      InlineCode: |
+        const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+        const { DynamoDBDocumentClient, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
+        const { SNSClient, PublishCommand } = require('@aws-sdk/client-sns');
+        const { EventBridgeClient, PutEventsCommand } = require('@aws-sdk/client-eventbridge');
+        const { CloudWatchClient, PutMetricDataCommand } = require('@aws-sdk/client-cloudwatch');
+
+        const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+        const sns = new SNSClient({});
+        const eb = new EventBridgeClient({});
+        const cw = new CloudWatchClient({});
+        const TABLE = process.env.TABLE_NAME;
+        const TOPIC = process.env.EVENTS_TOPIC_ARN;
+        const BUS = process.env.EVENT_BUS_NAME;
+        const NS = process.env.METRIC_NAMESPACE;
+
+        // Structured JSON log: discoverable fields (customerId, severity) in CloudWatch Logs.
+        const log = (severity, customerId, msg, extra) =>
+          console.log(JSON.stringify({ severity, customerId, msg, ...(extra || {}), ts: new Date().toISOString() }));
+
+        exports.handler = async (event) => {
+          for (const record of event.Records) {
+            const started = Date.now();
+            const order = JSON.parse(record.body);
+            log('INFO', order.customerId, 'processing order', { orderId: order.orderId });
+
+            // A poison message: throwing sends it back to SQS, and after maxReceiveCount
+            // it lands in the dead-letter queue. This demonstrates the DLQ path.
+            if (order.simulateFailure) {
+              log('ERROR', order.customerId, 'simulated failure - will retry then DLQ', { orderId: order.orderId });
+              throw new Error('simulated processing failure for ' + order.orderId);
+            }
+
+            await ddb.send(new UpdateCommand({
+              TableName: TABLE, Key: { pk: 'ORDER#' + order.orderId },
+              UpdateExpression: 'SET #s = :s', ExpressionAttributeNames: { '#s': 'status' },
+              ExpressionAttributeValues: { ':s': 'CONFIRMED' },
+            }));
+
+            // SNS fan-out: one message to every subscriber (email, loyalty, display...).
+            await sns.send(new PublishCommand({ TopicArn: TOPIC,
+              Message: JSON.stringify({ event: 'OrderConfirmed', ...order }),
+              Subject: 'OrderConfirmed' }));
+
+            // EventBridge: typed event, routed by content rules.
+            await eb.send(new PutEventsCommand({ Entries: [{
+              EventBusName: BUS, Source: 'beanthere.orders', DetailType: 'OrderPlaced',
+              Detail: JSON.stringify(order) }] }));
+
+            // CloudWatch custom metric: OrderProcessingTime (ms) - the alarm watches this.
+            const elapsed = Date.now() - started;
+            await cw.send(new PutMetricDataCommand({ Namespace: NS, MetricData: [{
+              MetricName: 'OrderProcessingTime', Unit: 'Milliseconds', Value: elapsed }] }));
+            log('INFO', order.customerId, 'order confirmed', { orderId: order.orderId, elapsedMs: elapsed });
+          }
+          return { ok: true };
+        };
+
+  # ---------------------------------------------------------------------------
+  # Amazon CloudWatch alarm on the custom metric -> notifies the ops SNS topic.
+  # ---------------------------------------------------------------------------
+  ProcessingTimeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-order-processing-slow"
+      AlarmDescription: Average OrderProcessingTime over 5 minutes exceeded threshold.
+      Namespace: BeanThere
+      MetricName: OrderProcessingTime
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref OpsAlertsTopic
+
+  # ---------------------------------------------------------------------------
+  # API Gateway HTTP API with a Cognito JWT authorizer available for protected routes.
+  # (Routes above are open for the demo test harness; the authorizer is provisioned
+  #  to show the Cognito wiring.)
+  # ---------------------------------------------------------------------------
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: "$default"
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowHeaders: ["*"]
+        AllowMethods: ["*"]
+      Auth:
+        Authorizers:
+          CognitoAuth:
+            IdentitySource: "$request.header.Authorization"
+            JwtConfiguration:
+              audience:
+                - !Ref UserPoolClient
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+
+  # ---------------------------------------------------------------------------
+  # AWS CloudTrail - records management API calls to a dedicated bucket.
+  # ---------------------------------------------------------------------------
+  TrailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-trail-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  TrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TrailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt TrailBucket.Arn
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action: s3:PutObject
+            Resource: !Sub "arn:aws:s3:::${TrailBucket}/AWSLogs/${AWS::AccountId}/*"
+            Condition:
+              StringEquals:
+                "s3:x-amz-acl": bucket-owner-full-control
+
+  Trail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: TrailBucketPolicy
+    Properties:
+      TrailName: !Sub "${ProjectName}-trail"
+      S3BucketName: !Ref TrailBucket
+      IsLogging: true
+      IncludeGlobalServiceEvents: false
+      IsMultiRegionTrail: false
+      EnableLogFileValidation: false
+
+  # ---------------------------------------------------------------------------
+  # Amazon CloudWatch dashboard - one pane of glass for the core services.
+  # Rule name and API id are injected from the actual resources so the widgets
+  # always resolve, even though CloudFormation generates those names.
+  # ---------------------------------------------------------------------------
+  CoreServicesDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${ProjectName}-CoreServices"
+      DashboardBody: !Sub
+        - |
+          {
+            "widgets": [
+              { "type": "text", "x": 0, "y": 0, "width": 24, "height": 2,
+                "properties": { "markdown": "# BeanThere &#8212; Core Services\nLive metrics for the eight core services in ${AWS::Region}. Place orders in the app (or run generate_orders.sh) to drive traffic. Top row = at-a-glance KPIs; panels below show detail." } },
+
+              { "type": "metric", "x": 0, "y": 2, "width": 6, "height": 4,
+                "properties": { "title": "Orders confirmed (1h)", "region": "${AWS::Region}", "view": "singleValue", "sparkline": true, "period": 3600, "stat": "SampleCount",
+                  "metrics": [ [ "BeanThere", "OrderProcessingTime", { "label": "confirmed" } ] ] } },
+              { "type": "metric", "x": 6, "y": 2, "width": 6, "height": 4,
+                "properties": { "title": "Dead-letter queue depth", "region": "${AWS::Region}", "view": "singleValue", "sparkline": true, "period": 60, "stat": "Maximum",
+                  "metrics": [ [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${ProjectName}-orders-dlq", { "label": "in DLQ" } ] ] } },
+              { "type": "metric", "x": 12, "y": 2, "width": 6, "height": 4,
+                "properties": { "title": "Cache hit rate", "region": "${AWS::Region}", "view": "singleValue", "sparkline": true, "period": 300, "stat": "Sum",
+                  "metrics": [
+                    [ { "expression": "100*(h/(h+m+0.0001))", "label": "hit rate %", "id": "e1" } ],
+                    [ "AWS/ElastiCache", "CacheHits", "clusterId", "${ProjectName}-menu-cache", { "id": "h", "visible": false } ],
+                    [ "AWS/ElastiCache", "CacheMisses", "clusterId", "${ProjectName}-menu-cache", { "id": "m", "visible": false } ] ] } },
+              { "type": "metric", "x": 18, "y": 2, "width": 6, "height": 4,
+                "properties": { "title": "Avg order processing (ms)", "region": "${AWS::Region}", "view": "gauge", "period": 300, "stat": "Average",
+                  "yAxis": { "left": { "min": 0, "max": 6000 } },
+                  "annotations": { "horizontal": [ { "label": "alarm", "value": 5000, "color": "#d13212" } ] },
+                  "metrics": [ [ "BeanThere", "OrderProcessingTime", { "label": "avg ms" } ] ] } },
+
+              { "type": "metric", "x": 0, "y": 6, "width": 8, "height": 6,
+                "properties": { "title": "SQS - buffering (orders in vs waiting)", "region": "${AWS::Region}", "view": "timeSeries", "stacked": false, "period": 60,
+                  "metrics": [
+                    [ "AWS/SQS", "NumberOfMessagesSent", "QueueName", "${ProjectName}-orders", { "label": "orders sent", "stat": "Sum" } ],
+                    [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${ProjectName}-orders", { "label": "waiting in queue", "stat": "Maximum" } ],
+                    [ "AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${ProjectName}-orders-dlq", { "label": "DLQ depth", "stat": "Maximum", "color": "#d13212" } ] ] } },
+              { "type": "metric", "x": 8, "y": 6, "width": 8, "height": 6,
+                "properties": { "title": "OrderProcessingTime vs alarm threshold", "region": "${AWS::Region}", "view": "timeSeries", "stacked": false, "period": 60,
+                  "annotations": { "horizontal": [ { "label": "alarm threshold 5000 ms", "value": 5000, "color": "#d13212", "fill": "above" } ] },
+                  "metrics": [
+                    [ "BeanThere", "OrderProcessingTime", { "label": "avg (ms)", "stat": "Average" } ],
+                    [ "BeanThere", "OrderProcessingTime", { "label": "p99 (ms)", "stat": "p99", "color": "#ff7f0e" } ] ] } },
+              { "type": "metric", "x": 16, "y": 6, "width": 8, "height": 6,
+                "properties": { "title": "Lambda - duration (ms)", "region": "${AWS::Region}", "view": "timeSeries", "stacked": false, "period": 60,
+                  "metrics": [
+                    [ "AWS/Lambda", "Duration", "FunctionName", "${ProjectName}-worker", { "label": "worker avg", "stat": "Average" } ],
+                    [ "AWS/Lambda", "Duration", "FunctionName", "${ProjectName}-api", { "label": "api avg", "stat": "Average", "color": "#1f77b4" } ],
+                    [ "AWS/Lambda", "Duration", "FunctionName", "${ProjectName}-api", { "label": "api p99", "stat": "p99", "color": "#9467bd" } ] ] } },
+
+              { "type": "metric", "x": 0, "y": 12, "width": 8, "height": 6,
+                "properties": { "title": "Lambda - invocations & errors (per min)", "region": "${AWS::Region}", "view": "bar", "stacked": false, "period": 60, "stat": "Sum",
+                  "metrics": [
+                    [ "AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-api", { "label": "api" } ],
+                    [ "AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-worker", { "label": "worker" } ],
+                    [ "AWS/Lambda", "Errors", "FunctionName", "${ProjectName}-worker", { "label": "worker errors", "color": "#d13212" } ] ] } },
+              { "type": "metric", "x": 8, "y": 12, "width": 8, "height": 6,
+                "properties": { "title": "SNS - fan-out (published vs delivered)", "region": "${AWS::Region}", "view": "bar", "stacked": false, "period": 60, "stat": "Sum",
+                  "metrics": [
+                    [ "AWS/SNS", "NumberOfMessagesPublished", "TopicName", "${ProjectName}-order-events", { "label": "published" } ],
+                    [ "AWS/SNS", "NumberOfNotificationsDelivered", "TopicName", "${ProjectName}-order-events", { "label": "delivered", "color": "#2ca02c" } ],
+                    [ "AWS/SNS", "NumberOfNotificationsFailed", "TopicName", "${ProjectName}-order-events", { "label": "failed", "color": "#d13212" } ] ] } },
+              { "type": "metric", "x": 16, "y": 12, "width": 8, "height": 6,
+                "properties": { "title": "EventBridge - rule matches & invocations (per min)", "region": "${AWS::Region}", "view": "bar", "stacked": false, "period": 60, "stat": "Sum",
+                  "metrics": [
+                    [ "AWS/Events", "TriggeredRules", "EventBusName", "${ProjectName}-bus", "RuleName", "${RuleName}", { "label": "rule matched" } ],
+                    [ "AWS/Events", "Invocations", "EventBusName", "${ProjectName}-bus", "RuleName", "${RuleName}", { "label": "target invoked", "color": "#2ca02c" } ],
+                    [ "AWS/Events", "FailedInvocations", "EventBusName", "${ProjectName}-bus", "RuleName", "${RuleName}", { "label": "failed", "color": "#d13212" } ] ] } },
+
+              { "type": "metric", "x": 0, "y": 18, "width": 8, "height": 6,
+                "properties": { "title": "ElastiCache - hits vs misses (per min)", "region": "${AWS::Region}", "view": "bar", "stacked": true, "period": 60, "stat": "Sum",
+                  "metrics": [
+                    [ "AWS/ElastiCache", "CacheHits", "clusterId", "${ProjectName}-menu-cache", { "label": "hits", "color": "#2ca02c" } ],
+                    [ "AWS/ElastiCache", "CacheMisses", "clusterId", "${ProjectName}-menu-cache", { "label": "misses", "color": "#ff7f0e" } ] ] } },
+              { "type": "metric", "x": 8, "y": 18, "width": 8, "height": 6,
+                "properties": { "title": "DynamoDB - consumed capacity", "region": "${AWS::Region}", "view": "timeSeries", "stacked": false, "period": 60, "stat": "Sum",
+                  "metrics": [
+                    [ "AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${ProjectName}-orders", { "label": "read units" } ],
+                    [ "AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${ProjectName}-orders", { "label": "write units", "color": "#2ca02c" } ] ] } },
+              { "type": "metric", "x": 16, "y": 18, "width": 8, "height": 6,
+                "properties": { "title": "API Gateway - requests & latency", "region": "${AWS::Region}", "view": "timeSeries", "stacked": false, "period": 60,
+                  "metrics": [
+                    [ "AWS/ApiGateway", "Count", "ApiId", "${ApiId}", { "label": "requests", "stat": "Sum" } ],
+                    [ "AWS/ApiGateway", "5xx", "ApiId", "${ApiId}", { "label": "5xx", "stat": "Sum", "color": "#d13212" } ],
+                    [ "AWS/ApiGateway", "Latency", "ApiId", "${ApiId}", { "label": "latency avg (ms)", "stat": "Average", "yAxis": "right" } ] ] } },
+
+              { "type": "alarm", "x": 0, "y": 24, "width": 8, "height": 4,
+                "properties": { "title": "CloudWatch alarm - order processing slow", "alarms": [ "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}-order-processing-slow" ] } },
+              { "type": "log", "x": 8, "y": 24, "width": 16, "height": 7,
+                "properties": { "title": "CloudWatch Logs - structured worker logs (filterable by field)", "region": "${AWS::Region}", "view": "table",
+                  "query": "SOURCE '/aws/lambda/${ProjectName}-worker' | fields @timestamp, severity, customerId, orderId, elapsedMs, msg | sort @timestamp desc | limit 25" } }
+            ]
+          }
+        # !Ref on a rule attached to a custom bus returns "bus|rule"; the CloudWatch
+        # RuleName dimension is the bare rule name. Extract it from the ARN:
+        # arn:aws:events:REGION:ACCT:rule/BUS/RULE -> split ":" [5] -> "rule/BUS/RULE" -> split "/" [2].
+        - RuleName: !Select [2, !Split ["/", !Select [5, !Split [":", !GetAtt OrderPlacedRule.Arn]]]]
+          ApiId: !Ref HttpApi
+
+Outputs:
+  ApiUrl:
+    Description: HTTP API base URL
+    Value: !GetAtt HttpApi.ApiEndpoint
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  IdentityPoolId:
+    Value: !Ref IdentityPool
+  CacheEndpoint:
+    Value: !GetAtt MenuCache.Endpoint.Address
+  OrderQueueUrl:
+    Value: !Ref OrderQueue
+  OrderDLQUrl:
+    Value: !Ref OrderDLQ
+  OrderEventsTopicArn:
+    Value: !Ref OrderEventsTopic
+  OpsAlertsTopicArn:
+    Value: !Ref OpsAlertsTopic
+  EventBusName:
+    Value: !Ref EventBus
+  AlarmName:
+    Value: !Ref ProcessingTimeAlarm
+  TrailName:
+    Value: !Ref Trail
+  FrontendBucket:
+    Value: !Ref FrontendBucket
+  CloudFrontUrl:
+    Value: !Sub "https://${Distribution.DomainName}"
+  WorkerLogGroup:
+    Value: !Sub "/aws/lambda/${ProjectName}-worker"
+  DashboardName:
+    Value: !Ref CoreServicesDashboard
+  DashboardUrl:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards/dashboard/${ProjectName}-CoreServices"
