@@ -1,2 +1,3 @@
-# coffee-ship container service is stdlib-only (http.server) — no runtime deps.
-# Kept intentionally empty to keep the image small. Pin any additions here.
+# coffee-ship container runtime dependencies. Pin exact versions here.
+# boto3 is used by app.py for DynamoDB (orders) and SSM (loyalty rate).
+boto3==1.34.162

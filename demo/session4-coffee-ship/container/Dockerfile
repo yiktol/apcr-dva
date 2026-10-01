@@ -6,8 +6,8 @@
 # architecture diagram at `container/architecture.svg`.
 #
 # Stage 1 (node:20-alpine) builds the Vite SPA to `/build/dist`.
-# Stage 2 (python:3.12-slim) is the runtime: a stdlib-only Python HTTP server
-# (no pip install) that serves the baked SPA from /app/static plus the JSON API.
+# Stage 2 (python:3.12-slim) is the runtime: a boto3 Python HTTP server that
+# serves the baked SPA from /app/static plus the JSON API (DynamoDB + SSM).
 
 # --- Stage 1: build the SPA ---
 FROM node:20-alpine AS build
@@ -21,8 +21,10 @@ RUN npm run build
 FROM python:3.12-slim
 WORKDIR /app
 
-# No external dependencies (stdlib-only); copy requirements for parity/future use.
+# Install the Python runtime dependencies (boto3) before copying app code so
+# the pip layer is cached independently of app.py changes.
 COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py ./
 
 # Bake the built SPA and the architecture diagram into the static root.
