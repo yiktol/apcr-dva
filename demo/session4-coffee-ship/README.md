@@ -150,28 +150,59 @@ pipeline itself** (plus a third on the serverless path):
 
 ### Bootstrap order (important — chicken-and-egg)
 
-Both ECS services reference `coffee-ship:latest`, but the ECR repo is **empty**
-until the pipeline builds the first image, and the PROD service is on the
-`CODE_DEPLOY` controller (CodeDeploy owns its task set after the first run). So:
+Both ECS services reference `coffee-ship:latest`, but the ECR repo starts
+**empty**, and the PROD service is on the `CODE_DEPLOY` controller. If the ECS
+services were created before any image existed, they could not pull `:latest`
+and would never stabilize (the test circuit breaker trips; the prod blue task
+set never comes up). So the ECR repo is created in `CoffeeShipNetworkData`
+(the first stack) and seeded **before** the services exist. `deploy.sh` does
+exactly this, in order:
 
-1. Deploy the stacks (`CoffeeShipNetworkData` + `CoffeeShipAppPipeline`). This
-   creates the empty ECR repo, **two** ECS services (`coffee-ship-test` and
-   `coffee-ship-prod` — neither stabilizes yet, expected), **two** ALBs, **two**
-   CloudFront distributions (`CloudFrontUrl` + `TestCloudFrontUrl`), the
-   CodeDeploy application/deployment group for prod, and the pipeline.
-2. Run the pipeline once: upload a `source.zip` containing `container/` (the SPA
-   source at `container/frontend/`, `container/architecture.svg`, `app.py`,
-   `Dockerfile`, and `container/buildspec.yml`; local `node_modules/`/`dist/`
-   are excluded and rebuilt inside the image). Build runs the multi-stage docker
-   build, pushes `:latest` + a unique tag to ECR, and emits the rolling artifact
-   (`imagedefinitions.json`) **and** the CodeDeploy artifacts
-   (`imageDetails.json`, `taskdef.json`, `appspec.yaml`). Deploy-Test rolls the
-   `coffee-ship-test` service — it becomes healthy and is reachable at
+1. Deploy **`CoffeeShipNetworkData`** — creates the empty ECR repo (`coffee-ship`,
+   keep-10 lifecycle), DynamoDB, SQS, SSM, Secrets, AppConfig. No services yet.
+2. **Seed ECR**: `docker build --platform linux/amd64` the `container/` image and
+   push it as `coffee-ship:latest`. The `--platform linux/amd64` is required —
+   Fargate runs X86_64, so an arm64 host (Apple Silicon) must cross-build or the
+   task fails to run.
+3. Deploy **`CoffeeShipAppPipeline`** — now the **two** ECS services
+   (`coffee-ship-test`, `coffee-ship-prod`) find `coffee-ship:latest` in ECR and
+   stabilize. This also creates **two** ALBs, **two** CloudFront distributions
+   (`CloudFrontUrl` + `TestCloudFrontUrl`), the CodeDeploy application/deployment
+   group for prod, and the pipeline.
+4. Run the pipeline once: `deploy.sh` uploads a `source.zip` of `container/` (SPA
+   source at `container/frontend/`, `architecture.svg`, `app.py`, `Dockerfile`,
+   `buildspec.yml`; local `node_modules/`/`dist/` excluded and rebuilt in the
+   image). Build runs the multi-stage docker build, pushes `:latest` + a unique
+   tag, and emits the rolling artifact (`imagedefinitions.json`) **and** the
+   CodeDeploy artifacts (**`imageDetail.json`** — singular, the exact name the
+   CodeDeployToECS blue/green action requires — plus `taskdef.json`,
+   `appspec.yaml`). Deploy-Test rolls `coffee-ship-test`; verify it at
    `TestCloudFrontUrl`.
-3. Verify on `TestCloudFrontUrl`, then approve the manual gate. Deploy-Prod runs
-   the `CodeDeployEcsDeployAction` blue/green canary on `coffee-ship-prod` — the
-   first run brings the green task set up and shifts traffic, making the prod
-   service healthy. Curl `CloudFrontUrl` to see the live PROD app.
+5. Approve the manual gate. Deploy-Prod runs the `CodeDeployEcsDeployAction`
+   blue/green canary (10%/5min) on `coffee-ship-prod`: the green task set comes
+   up (it needs the `/ecs/coffee-ship-prod` log group + `logs:CreateLogStream`
+   on the prod execution role — both wired in the CDK), traffic shifts 10% →
+   100% with alarm auto-rollback armed, and `CloudFrontUrl` shows the new app.
+
+### Two gotchas this demo already handles (so you don't rediscover them)
+
+- **`imageDetail.json` is singular.** The rolling ECS deploy action reads
+  `imagedefinitions.json`; the CodeDeploy ECS **blue/green** action reads
+  `imageDetail.json` (singular). The buildspec emits both. Using the plural name
+  for blue/green fails with `Exception while trying to read the image artifact
+  file` before any deployment is created.
+- **The prod task's log group must exist and be writable.** The rendered
+  `taskdef.json` logs to `/ecs/coffee-ship-prod`; the CDK creates that log group
+  explicitly and grants the prod execution role `logs:CreateLogStream`, or the
+  green task fails with `TaskFailedToStart` and the canary stalls at 0%.
+
+### Re-deploying onto an already-running stack
+
+`deploy.sh` is written for a **clean** account. The ECR repo lives in
+`CoffeeShipNetworkData`; if you are updating an older deployment where ECR was in
+`CoffeeShipAppPipeline`, a straight `cdk deploy` will try to move the repo
+(destroy + recreate), orphaning images. For a clean reproduction, run
+`./destroy.sh` first (or use a fresh account), then `./deploy.sh`.
 
 The CDK app and the SAM app each declare name-consistent `coffee-ship-orders`
 SQS/DynamoDB resources on purpose — that is the "declare the same thing more
