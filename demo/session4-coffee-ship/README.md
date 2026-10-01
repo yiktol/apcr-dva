@@ -14,7 +14,7 @@ Everything lives under this one folder. Region is pinned to **ap-southeast-1**.
 | --- | --- |
 | `infra/` | AWS CDK v2 (TypeScript) app — `CoffeeShipNetworkData` + `CoffeeShipAppPipeline` stacks |
 | `app/` | AWS SAM serverless app (Python 3.12 Lambda, API Gateway, SQS, DynamoDB, CodeDeploy canary) |
-| `container/` | ECS/Fargate container path (stdlib Python HTTP service + Dockerfile + taskdef) |
+| `container/` | ECS/Fargate container path: React (Vite) SPA at `container/frontend/`, stdlib Python HTTP service (`app.py`) that serves the baked SPA + same-origin `/order` API, the `container/architecture.svg` diagram, and a multi-stage `Dockerfile` (node build stage + python runtime) |
 | `events/` | Lambda test events (happy + malformed) for replay / `sam local` |
 | `reference/` | "Same SQS queue three ways" teaching artifacts (CloudFormation / CDK / SAM) |
 | `.kiro/hooks/` | Kiro hook that generates unit tests on Python file save |
@@ -32,13 +32,16 @@ Everything lives under this one folder. Region is pinned to **ap-southeast-1**.
   [S3 source bucket] -----------------          |            |     (SNS approval)     |
                                                  v            v                        v
                        [CodeBuild privileged/Docker]   [ECS deploy]              [ECS deploy]
-                        docker build container/          (rolling)                 (rolling)
+                        multi-stage docker build         (rolling)                 (rolling)
+                        (node: npm run build SPA
+                         -> python runtime serves it)
                         push :latest + :<tag> to ECR        \                        /
                         emit imagedefinitions.json           \                      /
                                                               v                    v
-                                            CloudFront --> ALB (SG = CloudFront prefix list only)
-                                                               --> ECS Fargate service (circuit breaker)
-                                                                     ^ image pulled from ECR "coffee-ship"
+        Browser --> CloudFront --> ALB (SG = CloudFront prefix list only)
+       (Coffee Ship              --> ECS Fargate service (circuit breaker)
+        web app, SPA)                  ^ image pulled from ECR "coffee-ship"
+                                       serves the baked SPA + same-origin /order API
 
   Serverless path (separate, SAM-managed, out of this pipeline):
      API Gateway --> Lambda (alias "live", CodeDeploy canary 10%/5min) --> DynamoDB "coffee-ship-orders"
@@ -54,14 +57,36 @@ Everything lives under this one folder. Region is pinned to **ap-southeast-1**.
               AppConfig application/environment/profile + staged deployment strategy.
 ```
 
-The container release pipeline is **real end to end**: the Build stage does a
-`docker build` of `container/` and pushes the image to the `coffee-ship` ECR
-repo (both `:latest` and a unique per-build tag), writes `imagedefinitions.json`
-(container name `web`, image = the unique tag), and the Deploy-Test / Deploy-Prod
-stages are real `EcsDeployAction`s that register a new task definition and roll
-the one `coffee-ship` ECS service. Edit `container/app.py`, push a new
-`source.zip`, approve, and the live response served through CloudFront changes —
-there is no placeholder/no-op gate and no stand-in image.
+### The web app (what CloudFront serves)
+
+CloudFront serves the **Coffee Ship web app** — a React (Vite) single-page app
+baked into the container image. The browser loads HTML/JS from `GET /`, and the
+app calls the **same-origin** JSON API at `/order` (POST an order, get loyalty
+points back). The Python container (`container/app.py`, stdlib `http.server`)
+serves both: the built SPA from `/app/static` and the `/order` + `/health`
+endpoints. `GET /` now returns the SPA `index.html` as `text/html` **200**, so
+the ALB health check (which targets `GET /`) still passes. `GET /health` returns
+`{"status":"ok","version":APP_VERSION}`, and the SPA shows that version in its
+header.
+
+The image is built by a **multi-stage `Dockerfile`**: a `node` stage runs
+`npm ci && npm run build` on `container/frontend/` to produce `dist/`, then a
+`python:3.12-slim` runtime stage copies `frontend/dist` and
+`container/architecture.svg` into `/app/static` and runs `app.py`. The runtime
+stays **stdlib-only** (no pip deps); npm never runs in the final image.
+
+The container release pipeline is **real end to end**: the Build stage runs that
+multi-stage `docker build` of `container/` (so `npm run build` happens inside the
+image) and pushes to the `coffee-ship` ECR repo (both `:latest` and a unique
+per-build tag), writes `imagedefinitions.json` (container name `web`, image = the
+unique tag), and the Deploy-Test / Deploy-Prod stages are real `EcsDeployAction`s
+that register a new task definition and roll the one `coffee-ship` ECS service.
+
+**Student edit loop:** edit the React app under `container/frontend/src/` (menu,
+copy, styling) or bump `APP_VERSION` / change the API in `container/app.py`, push
+a new `source.zip`, approve the manual gate, and the Coffee Ship web page served
+through CloudFront visibly changes (new UI, or the bumped version in the header).
+There is no placeholder/no-op gate and no stand-in image.
 
 Two safe-deploy strategies are demonstrated side by side:
 
@@ -79,9 +104,12 @@ until the pipeline builds the first image. So:
 1. Deploy the stacks (`CoffeeShipNetworkData` + `CoffeeShipAppPipeline`). This
    creates the empty ECR repo, the ECS service (which will **not** stabilize
    yet — expected), the ALB, CloudFront, and the pipeline.
-2. Run the pipeline once: upload a `source.zip` containing `container/` and
-   `container/buildspec.yml`. Build pushes `:latest` + a unique tag to ECR, and
-   Deploy-Test rolls the service to the new image — now it becomes healthy.
+2. Run the pipeline once: upload a `source.zip` containing `container/` (the SPA
+   source at `container/frontend/`, `container/architecture.svg`, `app.py`,
+   `Dockerfile`, and `container/buildspec.yml`; local `node_modules/`/`dist/`
+   are excluded and rebuilt inside the image). Build runs the multi-stage docker
+   build and pushes `:latest` + a unique tag to ECR, and Deploy-Test rolls the
+   service to the new image — now it becomes healthy.
 3. Approve the manual gate; Deploy-Prod rolls the same service to the approved
    image. Curl the CloudFront URL to see the live app.
 
@@ -113,12 +141,15 @@ The script pins `ap-southeast-1`, then:
    stacks (the VPC is imported from CloudFormation exports, not created). On
    this first deploy the ECS service will not stabilize yet because ECR is still
    empty — that is expected (see **Bootstrap order** above).
-3. Zips `container/` as `source.zip` and uploads it to the pipeline's S3 source
+3. Zips `container/` as `source.zip` (SPA source + `architecture.svg` included;
+   `node_modules/`/`dist/` excluded) and uploads it to the pipeline's S3 source
    bucket (resolved from the stack), which starts the `coffee-ship` pipeline.
-   The pipeline's CodeBuild stage does the real `docker build` + push to ECR,
-   then the ECS deploy stages roll the service onto the new image.
+   The pipeline's CodeBuild stage does the real multi-stage `docker build` (which
+   runs `npm run build` for the SPA) + push to ECR, then the ECS deploy stages
+   roll the service onto the new image.
 4. Prints the **CloudFront URL** at the end — the public entry point. The ALB is
-   not publicly reachable; always use the CloudFront URL.
+   not publicly reachable; always use the CloudFront URL. Open it in a browser to
+   see the Coffee Ship web app.
 
 > The CloudFront URL comes from the `CoffeeShipAppPipeline` stack output
 > `CloudFrontUrl`.
