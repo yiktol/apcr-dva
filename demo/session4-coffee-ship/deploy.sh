@@ -47,28 +47,45 @@ echo "==> [1/6] Bootstrapping CDK environment (idempotent)"
   npx cdk bootstrap "aws://${ACCOUNT_ID}/${AWS_REGION}"
 )
 
-# --- 2. Deploy the CDK infra + pipeline --------------------------------------
-echo "==> [2/6] Deploying CDK stacks (${NETWORK_STACK}, ${PIPELINE_STACK})"
+# --- 2a. Deploy the data/network stack FIRST (creates the ECR repo) ----------
+# ORDERING MATTERS: both the test ECS service and the CODE_DEPLOY prod service
+# reference 'coffee-ship:latest'. If we deployed the pipeline stack (which
+# creates those services) before any image exists in ECR, the services could
+# not pull an image and would never stabilize (ECS circuit breaker trips). So
+# we deploy the network/data stack first (it is what the AppPipeline stack
+# imports), THEN seed ECR, THEN deploy the pipeline stack whose services now
+# find 'coffee-ship:latest' already present.
+echo "==> [2/6] Deploying the data/network stack (${NETWORK_STACK}) — creates ECR"
 (
   cd "${ROOT}/infra"
   CDK_DEFAULT_ACCOUNT="${ACCOUNT_ID}" CDK_DEFAULT_REGION="${AWS_REGION}" \
-    npx cdk deploy --all --require-approval never
+    npx cdk deploy "${NETWORK_STACK}" --require-approval never
 )
 
-# --- 3. Seed the ECR repo so the ECS service can start -----------------------
-# Bootstrap: the ECS/Fargate service references 'coffee-ship:latest', but the
-# ECR repo is empty right after 'cdk deploy', so the service cannot stabilize
-# until an image exists. We seed ':latest' with a local build here so the
-# service becomes healthy immediately; the pipeline (step 4) then owns all
-# subsequent image builds and real ECS deploys.
-echo "==> [3/6] Seeding ECR with an initial container image"
+# The ECR repository 'coffee-ship' is created by the network stack above, so it
+# now exists and can be seeded before the pipeline stack's ECS services (which
+# pull 'coffee-ship:latest') are created.
+
+# --- 2b. Seed ECR with an initial image BEFORE the services are created ------
+# Build for linux/amd64 explicitly: AWS Fargate runs X86_64 by default, and on
+# Apple Silicon / arm64 hosts a plain 'docker build' produces an arm64 image
+# that will NOT run on the X86_64 task (CannotPullImageManifest / exec format
+# error). --platform pins the target architecture regardless of the build host.
+echo "==> [3/6] Seeding ECR with an initial container image (linux/amd64)"
 ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}"
 aws ecr get-login-password --region "${AWS_REGION}" \
   | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-docker build -t "${ECR_REPO}:latest" "${ROOT}/container"
-docker tag "${ECR_REPO}:latest" "${ECR_URI}:latest"
+docker build --platform linux/amd64 -t "${ECR_URI}:latest" "${ROOT}/container"
 docker push "${ECR_URI}:latest"
-echo "    Pushed ${ECR_URI}:latest"
+echo "    Pushed ${ECR_URI}:latest (linux/amd64)"
+
+# --- 2c. Deploy the pipeline/app stack (services now find :latest in ECR) ----
+echo "==> [3b/6] Deploying the app/pipeline stack (${PIPELINE_STACK})"
+(
+  cd "${ROOT}/infra"
+  CDK_DEFAULT_ACCOUNT="${ACCOUNT_ID}" CDK_DEFAULT_REGION="${AWS_REGION}" \
+    npx cdk deploy "${PIPELINE_STACK}" --require-approval never
+)
 
 # --- 4. Package the container source and upload to the pipeline source bucket -
 # The CodePipeline source is an S3 object 'source.zip' in a versioned bucket

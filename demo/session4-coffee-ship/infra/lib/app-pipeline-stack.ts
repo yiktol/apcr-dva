@@ -25,6 +25,7 @@ export interface AppPipelineStackProps extends cdk.StackProps {
   readonly ordersQueue: sqs.Queue;
   readonly ordersTable: dynamodb.Table;
   readonly loyaltyParam: ssm.StringParameter;
+  readonly repository: ecr.Repository;
 }
 
 /**
@@ -68,7 +69,7 @@ export class AppPipelineStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: AppPipelineStackProps) {
     super(scope, id, props);
 
-    const { ordersQueue, ordersTable } = props;
+    const { ordersQueue, ordersTable, repository } = props;
 
     // ---------------------------------------------------------------------
     // Import the EXISTING VPC from the account's CloudFormation exports.
@@ -88,20 +89,9 @@ export class AppPipelineStack extends cdk.Stack {
       ],
     });
 
-    // ---------------------------------------------------------------------
-    // ECR repository with a lifecycle rule keeping the 10 most recent images.
-    // ---------------------------------------------------------------------
-    const repository = new ecr.Repository(this, 'CoffeeShipRepo', {
-      repositoryName: 'coffee-ship',
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      emptyOnDelete: true,
-      lifecycleRules: [
-        {
-          description: 'Keep only the 10 most recent images',
-          maxImageCount: 10,
-        },
-      ],
-    });
+    // The ECR repository (keep-10 lifecycle) is defined in NetworkDataStack and
+    // passed in via props, so it exists and can be seeded with an image BEFORE
+    // the ECS services below (which pull 'coffee-ship:latest') are created.
 
     // ---------------------------------------------------------------------
     // Two SEPARATE ECS clusters in the imported VPC so students can see the
