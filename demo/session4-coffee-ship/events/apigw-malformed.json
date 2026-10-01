@@ -1,0 +1,15 @@
+{
+  "resource": "/orders",
+  "path": "/orders",
+  "httpMethod": "POST",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "requestContext": {
+    "resourcePath": "/orders",
+    "httpMethod": "POST",
+    "stage": "Prod"
+  },
+  "body": "{this is not valid json, total=oops",
+  "isBase64Encoded": false
+}

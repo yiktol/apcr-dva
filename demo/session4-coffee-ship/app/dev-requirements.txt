@@ -1,0 +1,2 @@
+# Development/test dependencies for the coffee-ship loyalty Lambda.
+pytest==8.3.2

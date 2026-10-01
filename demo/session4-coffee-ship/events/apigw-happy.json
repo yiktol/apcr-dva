@@ -1,0 +1,15 @@
+{
+  "resource": "/orders",
+  "path": "/orders",
+  "httpMethod": "POST",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "requestContext": {
+    "resourcePath": "/orders",
+    "httpMethod": "POST",
+    "stage": "Prod"
+  },
+  "body": "{\"orderId\": \"order-1001\", \"total\": 42.50, \"items\": [{\"sku\": \"ESP-250\", \"qty\": 2}]}",
+  "isBase64Encoded": false
+}

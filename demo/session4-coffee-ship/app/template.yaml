@@ -1,0 +1,111 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  coffee-ship serverless app (FEAT-002). Python 3.12 Lambda behind API Gateway,
+  consuming the orders SQS queue and writing to the orders DynamoDB table.
+  Ships via CodeDeploy with a 10%/5min canary and CloudWatch-alarm rollback.
+
+Globals:
+  Function:
+    Timeout: 15
+    MemorySize: 256
+    Runtime: python3.12
+
+Parameters:
+  OrdersTableName:
+    Type: String
+    Default: coffee-ship-orders
+    Description: DynamoDB orders table name (matches the CDK NetworkDataStack table).
+  OrdersQueueName:
+    Type: String
+    Default: coffee-ship-orders
+    Description: SQS orders queue name (matches the CDK NetworkDataStack queue).
+
+Resources:
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref OrdersTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: orderId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: orderId
+          KeyType: HASH
+
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref OrdersQueueName
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 345600
+
+  LoyaltyErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: coffee-ship-loyalty-errors
+      AlarmDescription: >
+        Rolls back the Lambda canary if the loyalty function errors spike during deployment.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: Resource
+          Value: !Sub '${LoyaltyFunction}:live'
+        - Name: FunctionName
+          Value: !Ref LoyaltyFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  LoyaltyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: coffee-ship-loyalty
+      CodeUri: src/
+      Handler: app.handler
+      AutoPublishAlias: live
+      DeploymentPreference:
+        Type: Canary10Percent5Minutes
+        Alarms:
+          - !Ref LoyaltyErrorsAlarm
+      Environment:
+        Variables:
+          ORDERS_TABLE_NAME: !Ref OrdersTableName
+          POINTS_PER_DOLLAR: '10'
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OrdersTableName
+        - SQSPollerPolicy:
+            QueueName: !Ref OrdersQueueName
+      Events:
+        OrdersQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OrdersQueue.Arn
+            BatchSize: 10
+        PostOrder:
+          Type: Api
+          Properties:
+            Path: /orders
+            Method: post
+
+Outputs:
+  LoyaltyFunctionArn:
+    Description: ARN of the loyalty Lambda function.
+    Value: !GetAtt LoyaltyFunction.Arn
+  LoyaltyFunctionAlias:
+    Description: The live alias that CodeDeploy shifts traffic to.
+    Value: !Ref LoyaltyFunction.Alias
+  OrdersApiEndpoint:
+    Description: POST /orders endpoint on the implicit API Gateway stage.
+    Value: !Sub 'https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/orders'
+  OrdersTableArn:
+    Description: ARN of the orders DynamoDB table.
+    Value: !GetAtt OrdersTable.Arn
+  OrdersQueueUrl:
+    Description: URL of the orders SQS queue.
+    Value: !Ref OrdersQueue

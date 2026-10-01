@@ -1,0 +1,19 @@
+# CodeDeploy AppSpec for the coffee-ship loyalty Lambda deployment.
+# CodeDeploy shifts traffic from the current version to the new version behind
+# the 'live' alias using the Canary10Percent5Minutes config declared in the SAM
+# template's DeploymentPreference. The <PLACEHOLDER> tokens are substituted at
+# deploy time (SAM/CodeDeploy fill these in from the published version).
+version: 0.0
+Resources:
+  - LoyaltyFunction:
+      Type: AWS::Lambda::Function
+      Properties:
+        Name: coffee-ship-loyalty
+        Alias: live
+        CurrentVersion: <CURRENT_VERSION>
+        TargetVersion: <TARGET_VERSION>
+Hooks:
+  # Validation hook that runs before any traffic shifts to the new version.
+  - BeforeAllowTraffic: coffee-ship-loyalty-preTrafficHook
+  # Validation hook that runs after traffic has fully shifted.
+  - AfterAllowTraffic: coffee-ship-loyalty-postTrafficHook

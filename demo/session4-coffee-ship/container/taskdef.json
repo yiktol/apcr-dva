@@ -1,0 +1,44 @@
+{
+  "family": "coffee-ship",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/coffee-ship-execution-role",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/coffee-ship-task-role",
+  "containerDefinitions": [
+    {
+      "name": "coffee-ship",
+      "image": "<ACCOUNT_ID>.dkr.ecr.ap-southeast-1.amazonaws.com/coffee-ship:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "ORDERS_QUEUE_URL",
+          "value": "<ORDERS_QUEUE_URL>"
+        },
+        {
+          "name": "ORDERS_TABLE_NAME",
+          "value": "coffee-ship-orders"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/coffee-ship",
+          "awslogs-region": "ap-southeast-1",
+          "awslogs-stream-prefix": "coffee-ship"
+        }
+      }
+    }
+  ]
+}
