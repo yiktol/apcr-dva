@@ -204,7 +204,7 @@ export default function App() {
       </header>
 
       <details className="diagram">
-        <summary>▸ Architecture diagram — how this demo ships to Fargate</summary>
+        <summary>▸ Architecture diagram — how this app runs on Fargate</summary>
         <div className="diagram-body">
           <img src="/architecture.svg" alt={`${APP_NAME} architecture diagram`} />
           <p className="hint">
@@ -255,7 +255,7 @@ export default function App() {
         </section>
 
         <section className="card services">
-          <h2>AWS services in this demo</h2>
+          <h2>AWS services in this app</h2>
           <ul>
             {SERVICES.map(([n, d]) => (
               <li key={n}>
