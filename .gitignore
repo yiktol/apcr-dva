@@ -214,3 +214,9 @@ __marimo__/
 # AWS icons and PowerPoint files
 aws-icons/
 ppt/
+
+# The Python-template 'lib/' rule above unintentionally matches the AWS CDK
+# source dirs (infra/lib/). CDK infrastructure code must be tracked, so negate
+# the ignore for any infra/lib directory and its contents.
+!**/infra/lib/
+!**/infra/lib/**
