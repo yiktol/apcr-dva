@@ -1,0 +1,22 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  The coffee-ship orders queue declared as a SAM/CloudFormation resource.
+  Teaching artifact only - not deployed. Mirrors the OrdersQueue construct in
+  infra/lib/network-data-stack.ts.
+
+Resources:
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: coffee-ship-orders
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 345600
+
+Outputs:
+  OrdersQueueUrl:
+    Description: URL of the coffee-ship orders queue
+    Value: !Ref OrdersQueue
+  OrdersQueueArn:
+    Description: ARN of the coffee-ship orders queue
+    Value: !GetAtt OrdersQueue.Arn

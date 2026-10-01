@@ -1,0 +1,16 @@
+{
+  "version": "1",
+  "enabled": true,
+  "name": "Generate tests on save",
+  "description": "When a Python file is saved, generate or update its unit tests.",
+  "when": {
+    "type": "PostFileSave",
+    "patterns": [
+      "\\.py$"
+    ]
+  },
+  "then": {
+    "type": "agent",
+    "prompt": "A Python file was just saved. Generate or update the matching unit tests for the changed file: cover the public functions and important branches, follow the existing test framework and conventions in this project, and place the tests in the project's test directory. Only add or update tests - do not modify the source file."
+  }
+}
