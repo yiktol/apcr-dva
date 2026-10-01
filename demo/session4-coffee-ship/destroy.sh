@@ -96,6 +96,11 @@ else
 fi
 
 # --- 4. Destroy the CDK stacks -----------------------------------------------
+# NOTE: the two-environment resources — the SECOND CloudFront distribution
+# (TestCloudFrontUrl, test ALB origin) and the CodeDeploy application +
+# deployment group 'coffee-ship-prod' (prod blue/green) — are all declared
+# in-stack, so `cdk destroy --all` removes them automatically. No extra manual
+# deletion is needed for them beyond emptying the buckets/ECR done above.
 echo "==> [4/5] Destroying CDK stacks (${PIPELINE_STACK}, ${NETWORK_STACK})"
 (
   cd "${ROOT}/infra"

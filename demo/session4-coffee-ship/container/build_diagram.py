@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a self-contained architecture SVG for the coffee-ship REAL app.
+"""Generate a self-contained architecture SVG for the Coffee Shop REAL app.
 
 Embeds the official AWS service icons (base64) from the repo's aws-icons set so
 the SVG needs no external files. Modeled on demo/session3/build_diagram.py:
@@ -7,12 +7,20 @@ color-coded group zones (AWS category colors), curved bezier flow arrows,
 numbered steps, drop shadows, a legend. Unlike session3 (which embeds PNGs),
 this embeds the vector ``*_64.svg`` icons as ``data:image/svg+xml;base64``.
 
-Two lanes are drawn:
-  * Runtime  — User -> CloudFront -> ALB (imported VPC, SG locked to the
-    CloudFront prefix list) -> ECS Fargate -> DynamoDB orders + SSM loyalty rate.
+Two deploy environments are drawn distinctly:
+  * TEST  — User -> CloudFront (test) -> test ALB -> test ECS service, deployed
+    by a rolling ``EcsDeployAction`` (circuit breaker).
+  * PROD  — User -> CloudFront (prod) -> prod ALB (blue/green target groups) ->
+    prod ECS service (CODE_DEPLOY controller), deployed by a
+    ``CodeDeployEcsDeployAction`` doing a blue/green canary 10%/5min with
+    automatic alarm rollback.
+
+Lanes:
+  * Runtime  — User -> CloudFront(prod/test) -> ALB (imported VPC, SG locked to
+    the CloudFront prefix list) -> ECS Fargate -> DynamoDB orders + SSM rate.
   * CI/CD    — source.zip in S3 -> EventBridge -> CodePipeline -> CodeBuild
-    (docker build/push) -> ECR -> EcsDeployAction (rolling + circuit breaker)
-    -> the ECS service.
+    (docker build/push) -> ECR -> EcsDeployAction (rolling) to TEST, then a
+    manual Approval gate, then CodeDeployEcsDeployAction (blue/green) to PROD.
 
 Output: container/architecture.svg (next to this script).
 """
@@ -33,6 +41,7 @@ ICONS = {
     "ssm":        "Arch_Management-Tools/64/Arch_AWS-Systems-Manager_64.svg",
     "pipeline":   "Arch_Developer-Tools/64/Arch_AWS-CodePipeline_64.svg",
     "codebuild":  "Arch_Developer-Tools/64/Arch_AWS-CodeBuild_64.svg",
+    "codedeploy": "Arch_Developer-Tools/64/Arch_AWS-CodeDeploy_64.svg",
     "s3":         "Arch_Storage/64/Arch_Amazon-Simple-Storage-Service_64.svg",
     "eventbridge":"Arch_Application-Integration/64/Arch_Amazon-EventBridge_64.svg",
 }
@@ -45,27 +54,31 @@ def data_uri(rel):
 
 U = {k: data_uri(v) for k, v in ICONS.items()}
 
-W, H = 1320, 760
-ICON = 58
+W, H = 1360, 860
+ICON = 56
 
 # AWS-ish category palette for the group zones (fill, stroke, title).
 ZONES = {
-    "runtime": ("#fff2e6", "#ed7100", "#c25e00"),   # compute / runtime (orange)
+    "test":    ("#eafaf1", "#1f9d55", "#157a40"),   # TEST env (green)
+    "prod":    ("#fff2e6", "#ed7100", "#c25e00"),   # PROD env (orange)
     "data":    ("#eaf0fb", "#4d72d6", "#2f52b0"),   # data plane (blue)
     "cicd":    ("#f3eefc", "#8c4fff", "#6b2fd6"),    # developer tools (purple)
 }
 
 # Node coordinates: (cx, top-of-icon-y). A separate User node is drawn by hand.
 N = {
-    # Runtime lane (top)
-    "cloudfront": (330, 150), "alb": (545, 150), "ecs": (760, 150),
-    "fargate":    (760, 268), "dynamodb": (975, 120), "ssm": (975, 230),
+    # TEST runtime lane (upper)
+    "cf_test":  (360, 150), "alb_test": (570, 150), "ecs_test": (790, 150),
+    # PROD runtime lane (lower)
+    "cf_prod":  (360, 320), "alb_prod": (570, 320), "ecs_prod": (790, 320),
+    # Data plane (right)
+    "dynamodb": (1030, 170), "ssm": (1030, 300),
     # CI/CD lane (bottom)
-    "s3":          (170, 560), "eventbridge": (355, 560), "pipeline": (545, 560),
-    "codebuild":   (735, 560), "ecr": (925, 560),
+    "s3":          (170, 660), "eventbridge": (355, 660), "pipeline": (545, 660),
+    "codebuild":   (735, 660), "ecr": (925, 660), "codedeploy": (1120, 660),
 }
 
-USER = (120, 150)  # User node center (cx, top-of-icon-y) drawn as a glyph
+USER = (130, 235)  # User node center (cx, top-of-icon-y) drawn as a glyph
 
 
 def icon(cx, y, key, label, sub=""):
@@ -81,7 +94,6 @@ def icon(cx, y, key, label, sub=""):
 def user_node(cx, y, label="User", sub="browser"):
     """A simple person glyph for the human initiating the flow."""
     x = cx - ICON // 2
-    cy = y + ICON // 2
     s = f'<g filter="url(#soft)"><rect x="{x-4}" y="{y-4}" width="{ICON+8}" height="{ICON+8}" rx="12" fill="#ffffff"/></g>'
     s += f'<circle cx="{cx}" cy="{y+18}" r="10" fill="#48607c"/>'
     s += f'<path d="M {cx-16} {y+ICON-6} q 16 -22 32 0 z" fill="#48607c"/>'
@@ -149,23 +161,30 @@ p.append(f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" font-
   .note {{ fill:#7a8aa0; font-size:10.5px; }}
 </style>
 <rect x="0" y="0" width="{W}" height="{H}" fill="url(#bg)"/>
-<text x="34" y="44" class="title">coffee-ship &#8212; real app: runtime &amp; CI/CD</text>
-<text x="34" y="66" class="cap">Order coffee through CloudFront; a real CodePipeline rebuilds and rolls the ECS service. Region ap-southeast-1.</text>
+<text x="34" y="44" class="title">Coffee Shop &#8212; two environments: TEST (rolling) &amp; PROD (blue/green)</text>
+<text x="34" y="66" class="cap">Order coffee through CloudFront; one CodePipeline rolls TEST then does a CodeDeploy blue/green canary to PROD. Region ap-southeast-1.</text>
 ''')
 
-# Zones (behind nodes). Runtime lane on top, CI/CD lane at the bottom.
-p.append(zone(280, 100, 790, 262, "Runtime lane &#8212; serve &amp; order", "runtime"))
-p.append(zone(910, 90, 150, 272, "Data plane", "data"))
-p.append(zone(120, 510, 900, 180, "CI/CD lane &#8212; build &amp; deploy", "cicd"))
+# Zones (behind nodes). TEST env on top, PROD env below, data plane right.
+p.append(zone(300, 100, 620, 130, "TEST env &#8212; coffee-ship-test (rolling)", "test"))
+p.append(zone(300, 270, 620, 130, "PROD env &#8212; coffee-ship-prod (blue/green)", "prod"))
+p.append(zone(970, 120, 160, 290, "Data plane", "data"))
+p.append(zone(120, 610, 1130, 180, "CI/CD lane &#8212; one pipeline, two deploy actions", "cicd"))
 
 # User (hand-drawn glyph, outside the zones)
 p.append(user_node(*USER))
 
-# Runtime lane nodes
-p.append(icon(*N["cloudfront"], "cloudfront", "CloudFront", "public entry"))
-p.append(icon(*N["alb"], "alb", "ALB", "SG = CF prefix list"))
-p.append(icon(*N["ecs"], "ecs", "ECS service", "coffee-ship"))
-p.append(icon(*N["fargate"], "fargate", "Fargate task", "boto3 app :8080"))
+# TEST runtime lane nodes
+p.append(icon(*N["cf_test"], "cloudfront", "CloudFront", "TestCloudFrontUrl"))
+p.append(icon(*N["alb_test"], "alb", "test ALB", "SG = CF prefix list"))
+p.append(icon(*N["ecs_test"], "ecs", "test ECS", "coffee-ship-test"))
+
+# PROD runtime lane nodes
+p.append(icon(*N["cf_prod"], "cloudfront", "CloudFront", "CloudFrontUrl"))
+p.append(icon(*N["alb_prod"], "alb", "prod ALB", "blue/green TGs"))
+p.append(icon(*N["ecs_prod"], "ecs", "prod ECS", "coffee-ship-prod"))
+
+# Data plane nodes
 p.append(icon(*N["dynamodb"], "dynamodb", "DynamoDB", "coffee-ship-orders"))
 p.append(icon(*N["ssm"], "ssm", "SSM Parameter", "loyalty rate"))
 
@@ -175,39 +194,53 @@ p.append(icon(*N["eventbridge"], "eventbridge", "EventBridge", "Object Created")
 p.append(icon(*N["pipeline"], "pipeline", "CodePipeline", "coffee-ship"))
 p.append(icon(*N["codebuild"], "codebuild", "CodeBuild", "docker build/push"))
 p.append(icon(*N["ecr"], "ecr", "ECR", "coffee-ship repo"))
+p.append(icon(*N["codedeploy"], "codedeploy", "CodeDeploy", "blue/green canary"))
 
-# Imported-VPC note under the runtime lane.
-p.append('<text x="296" y="352" class="note">ALB runs in the imported VPC (public subnets, no NAT); only CloudFront can reach it.</text>')
+# Imported-VPC note under the PROD lane.
+p.append('<text x="316" y="420" class="note">Both ALBs run in the imported VPC (public subnets, no NAT); only CloudFront can reach them.</text>')
 
-ORANGE, BLUE, PURPLE = "#ed7100", "#4d72d6", "#8c4fff"
+GREEN, ORANGE, BLUE, PURPLE = "#1f9d55", "#ed7100", "#4d72d6", "#8c4fff"
 
-# Runtime flow (numbered 1-6).
-p.append(edge("user", "cloudfront", "order coffee", color=ORANGE, bend=30, num=1))
-p.append(edge("cloudfront", "alb", "forward", color=ORANGE, bend=28, num=2))
-p.append(edge("alb", "ecs", "route", color=ORANGE, bend=28, num=3))
-p.append(edge("ecs", "fargate", "run task", color=ORANGE, bend=70, num=4))
-p.append(edge("fargate", "dynamodb", "put / scan orders", color=BLUE, bend=40, num=5))
-p.append(edge("fargate", "ssm", "get loyalty rate", dash=True, color=BLUE, bend=70, num=6))
+# TEST runtime flow (numbered 1-3).
+p.append(edge("user", "cf_test", "order (test)", color=GREEN, bend=30, num=1))
+p.append(edge("cf_test", "alb_test", "forward", color=GREEN, bend=22, num=2))
+p.append(edge("alb_test", "ecs_test", "route", color=GREEN, bend=22, num=3))
 
-# CI/CD flow (numbered 7-11).
-p.append(edge("s3", "eventbridge", "Object Created", color=PURPLE, bend=22, num=7))
-p.append(edge("eventbridge", "pipeline", "start", color=PURPLE, bend=22, num=8))
-p.append(edge("pipeline", "codebuild", "build stage", color=PURPLE, bend=22, num=9))
-p.append(edge("codebuild", "ecr", "push image", color=PURPLE, bend=22, num=10))
-# EcsDeployAction: ECR image rolled onto the ECS service (rolling + circuit breaker).
-p.append(edge("ecr", "ecs", "EcsDeployAction (rolling, circuit breaker)", color=PURPLE, bend=120, num=11))
+# PROD runtime flow (numbered 4-6).
+p.append(edge("user", "cf_prod", "order (prod)", color=ORANGE, bend=30, num=4))
+p.append(edge("cf_prod", "alb_prod", "forward", color=ORANGE, bend=22, num=5))
+p.append(edge("alb_prod", "ecs_prod", "blue/green", color=ORANGE, bend=22, num=6))
 
-# Legend (bottom-right).
-lg_x, lg_y = 1060, 520
+# Data-plane flow (numbered 7-8): prod service reads/writes DynamoDB + SSM.
+p.append(edge("ecs_prod", "dynamodb", "put / scan orders", color=BLUE, bend=40, num=7))
+p.append(edge("ecs_prod", "ssm", "get loyalty rate", dash=True, color=BLUE, bend=40, num=8))
+
+# CI/CD flow (numbered 9-13).
+p.append(edge("s3", "eventbridge", "Object Created", color=PURPLE, bend=20, num=9))
+p.append(edge("eventbridge", "pipeline", "start", color=PURPLE, bend=20, num=10))
+p.append(edge("pipeline", "codebuild", "build stage", color=PURPLE, bend=20, num=11))
+p.append(edge("codebuild", "ecr", "push image", color=PURPLE, bend=20, num=12))
+# Deploy-Test: EcsDeployAction rolls the ECR image onto the TEST service.
+p.append(edge("ecr", "ecs_test", "EcsDeployAction (rolling)", color=GREEN, bend=150, num=13))
+# Deploy-Prod: after the manual Approval gate, CodeDeploy does blue/green canary.
+p.append(edge("ecr", "codedeploy", "after Approval", color=PURPLE, bend=20, num=14))
+p.append(edge("codedeploy", "ecs_prod", "CodeDeployEcsDeployAction (blue/green canary 10%/5m)", color=ORANGE, bend=150, num=15))
+
+# Legend (bottom-right, above the CI/CD zone title area).
+lg_x, lg_y = 1270, 150
 p.append(f'<text x="{lg_x}" y="{lg_y}" class="lgd">Flow legend</text>')
-legend = [(ORANGE, "1-4  serve the request"),
-          (BLUE, "5-6  data &amp; config"),
-          (PURPLE, "7-11  CI/CD pipeline")]
+legend = [(GREEN, "1-3  TEST runtime"),
+          (ORANGE, "4-6  PROD runtime"),
+          (BLUE, "7-8  data &amp; config"),
+          (PURPLE, "9-15 CI/CD pipeline")]
 for i, (c, t) in enumerate(legend):
     yy = lg_y + 20 + i * 22
-    p.append(f'<line x1="{lg_x}" y1="{yy-4}" x2="{lg_x+26}" y2="{yy-4}" stroke="{c}" stroke-width="3"/>')
-    p.append(f'<text x="{lg_x+34}" y="{yy}" class="lgd">{t}</text>')
-p.append(f'<text x="{lg_x}" y="{lg_y + 20 + 3*22 + 4}" class="lgd" fill="#9aa9bf">dashed = cached / async</text>')
+    p.append(f'<line x1="{lg_x-6}" y1="{yy-4}" x2="{lg_x+20}" y2="{yy-4}" stroke="{c}" stroke-width="3"/>')
+    p.append(f'<text x="{lg_x+28}" y="{yy}" class="lgd">{t}</text>')
+p.append(f'<text x="{lg_x-6}" y="{lg_y + 20 + 4*22 + 4}" class="lgd" fill="#9aa9bf">dashed = cached / async</text>')
+p.append(f'<text x="{lg_x-6}" y="{lg_y + 20 + 4*22 + 22}" class="note">TEST = rolling EcsDeployAction;</text>')
+p.append(f'<text x="{lg_x-6}" y="{lg_y + 20 + 4*22 + 37}" class="note">PROD = CodeDeploy blue/green</text>')
+p.append(f'<text x="{lg_x-6}" y="{lg_y + 20 + 4*22 + 52}" class="note">canary 10%/5m + alarm rollback.</text>')
 
 p.append('</svg>')
 

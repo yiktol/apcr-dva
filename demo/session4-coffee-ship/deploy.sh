@@ -103,13 +103,20 @@ trap 'rm -f "${TMP_ZIP}"' EXIT
 aws s3 cp "${TMP_ZIP}" "s3://${SOURCE_BUCKET}/${SOURCE_KEY}"
 echo "    Uploaded s3://${SOURCE_BUCKET}/${SOURCE_KEY} (pipeline '${PIPELINE_NAME}' will start)"
 
-# --- 5. Resolve the CloudFront URL (the public entry point) ------------------
-# The ALB is NOT publicly reachable (its SG only admits the CloudFront prefix
-# list), so the student-facing URL is CloudFront, from the stack output.
-echo "==> [5/6] Resolving the CloudFront URL"
+# --- 5. Resolve the CloudFront URLs (the public entry points) ----------------
+# Neither ALB is publicly reachable (each SG only admits the CloudFront prefix
+# list), so the student-facing URLs are CloudFront, from the stack outputs.
+# PROD = CloudFrontUrl (prod ALB origin); TEST = TestCloudFrontUrl (test ALB
+# origin). The second distribution adds no S3 bucket, so the AWS::S3::Bucket
+# | [0] source-bucket lookup above is unaffected.
+echo "==> [5/6] Resolving the CloudFront URLs"
 CLOUDFRONT_URL="$(aws cloudformation describe-stacks \
   --stack-name "${PIPELINE_STACK}" \
   --query "Stacks[0].Outputs[?OutputKey=='CloudFrontUrl'].OutputValue | [0]" \
+  --output text 2>/dev/null || true)"
+TEST_CLOUDFRONT_URL="$(aws cloudformation describe-stacks \
+  --stack-name "${PIPELINE_STACK}" \
+  --query "Stacks[0].Outputs[?OutputKey=='TestCloudFrontUrl'].OutputValue | [0]" \
   --output text 2>/dev/null || true)"
 
 # --- 6. Resolve the SAM API endpoint (if the SAM app stack is deployed) ------
@@ -125,9 +132,14 @@ echo "============================================================"
 echo " coffee-ship demo deployed in ${AWS_REGION}"
 echo "------------------------------------------------------------"
 if [[ -n "${CLOUDFRONT_URL}" && "${CLOUDFRONT_URL}" != "None" ]]; then
-  echo " CloudFront URL : ${CLOUDFRONT_URL}  (use this; the ALB is not public)"
+  echo " CloudFront URL : ${CLOUDFRONT_URL}  (PROD — use this; the ALB is not public)"
 else
   echo " CloudFront URL : (not available yet — distribution may still deploy)"
+fi
+if [[ -n "${TEST_CLOUDFRONT_URL}" && "${TEST_CLOUDFRONT_URL}" != "None" ]]; then
+  echo " Test CloudFront : ${TEST_CLOUDFRONT_URL}  (TEST — verify here before approving prod)"
+else
+  echo " Test CloudFront : (not available yet — distribution may still deploy)"
 fi
 if [[ -n "${API_ENDPOINT}" && "${API_ENDPOINT}" != "None" ]]; then
   echo " API endpoint   : ${API_ENDPOINT}"
@@ -138,10 +150,12 @@ fi
 echo "------------------------------------------------------------"
 echo " The container pipeline rebuilds container/ on every source.zip upload"
 echo " (multi-stage image: it runs 'npm run build' for the SPA, then serves it"
-echo " from the python runtime) and rolls the ECS service via real ECS deploy"
-echo " actions — edit container/frontend/src/* or bump APP_VERSION in"
-echo " container/app.py, re-run the Act 4 upload, approve, and watch the"
-echo " Coffee Ship web page served through CloudFront change."
+echo " from the python runtime). It deploys to TWO environments: a rolling"
+echo " EcsDeployAction to coffee-ship-test, then — after the manual approval —"
+echo " a CodeDeploy blue/green canary to coffee-ship-prod. Edit"
+echo " container/frontend/src/* or container/app.py, run ./demo-pipeline.sh,"
+echo " verify on the Test CloudFront URL, approve, and watch the Coffee Shop"
+echo " web page served through the PROD CloudFront URL change."
 echo "------------------------------------------------------------"
 echo " Remember to run ./destroy.sh when you are finished — this"
 echo " stack costs real money per hour (Fargate + ALB + CloudFront + pipeline)."
