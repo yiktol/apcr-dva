@@ -5,6 +5,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 // container's /health endpoint (app.py APP_VERSION) and overrides this.
 const VERSION = 'v1';
 
+// User-facing app name. Single source of truth for the header, document.title,
+// and the architecture diagram alt text. A demo edit flips this one line to
+// 'BeanThere Cafe'.
+export const APP_NAME = 'Coffee Shop';
+
 // Hardcoded menu. The SPA is a demo storefront; prices are fixed client-side
 // and the server recomputes loyalty points from the posted total.
 const MENU = [
@@ -65,6 +70,11 @@ export default function App() {
   const [recentError, setRecentError] = useState(null);
 
   const pollRef = useRef(null);
+
+  // Keep the browser tab title in sync with the user-facing app name.
+  useEffect(() => {
+    document.title = APP_NAME;
+  }, []);
 
   const push = (line) =>
     setLog((l) => [{ t: new Date().toLocaleTimeString(), line }, ...l].slice(0, 40));
@@ -189,14 +199,14 @@ export default function App() {
   return (
     <div className="wrap">
       <header>
-        <h1>☕ Coffee Ship</h1>
+        <h1>{`☕ ${APP_NAME}`}</h1>
         <span className="tag">live · {version}</span>
       </header>
 
       <details className="diagram">
         <summary>▸ Architecture diagram — how this demo ships to Fargate</summary>
         <div className="diagram-body">
-          <img src="/architecture.svg" alt="Coffee Ship architecture diagram" />
+          <img src="/architecture.svg" alt={`${APP_NAME} architecture diagram`} />
           <p className="hint">
             <a href="/architecture.svg" target="_blank" rel="noreferrer">
               Open full size ↗
