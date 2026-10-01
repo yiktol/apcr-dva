@@ -1,6 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -8,32 +7,19 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as appconfig from 'aws-cdk-lib/aws-appconfig';
 
 /**
- * Network + data layer for the coffee-ship demo.
+ * Data layer for the coffee-ship demo.
  *
- * Cost-light by design: public subnets only, zero NAT gateways, on-demand
- * DynamoDB. Exposes the VPC, orders queue and orders table so the pipeline
- * stack can wire the ECS service and app to them.
+ * Cost-light by design: on-demand DynamoDB and no networking of its own. The
+ * VPC is NOT created here — the pipeline stack imports the existing VPC from
+ * the account's CloudFormation exports. Exposes the orders queue and table so
+ * the pipeline stack can wire the ECS service and app to them.
  */
 export class NetworkDataStack extends cdk.Stack {
-  public readonly vpc: ec2.Vpc;
   public readonly ordersQueue: sqs.Queue;
   public readonly ordersTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
-
-    // VPC with PUBLIC subnets only and no NAT gateways (keeps the demo cheap).
-    this.vpc = new ec2.Vpc(this, 'CoffeeShipVpc', {
-      maxAzs: 2,
-      natGateways: 0,
-      subnetConfiguration: [
-        {
-          name: 'public',
-          subnetType: ec2.SubnetType.PUBLIC,
-          cidrMask: 24,
-        },
-      ],
-    });
 
     // Orders table: on-demand billing, orderId partition key.
     this.ordersTable = new dynamodb.Table(this, 'OrdersTable', {

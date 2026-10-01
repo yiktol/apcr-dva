@@ -24,28 +24,66 @@ Everything lives under this one folder. Region is pinned to **ap-southeast-1**.
 ## Architecture
 
 ```
-                         CodePipeline  (S3 source -> Build -> test -> approval -> prod)
-                              |
-  source.zip (SAM app) --> [S3 source bucket] --> [CodeBuild: sam validate + pytest + headless gate]
-                                                        |
-                                              (manual approval via SNS topic)
-                                                        |
-  Serverless path:  API Gateway --> Lambda (alias "live", CodeDeploy canary 10%/5min) --> DynamoDB "coffee-ship-orders"
-                                              ^                                          ^
-  Queue path:       SQS "coffee-ship-orders" |                                          |
-  Container path:   ALB --> ECS Fargate service (circuit breaker) <-- image from ECR "coffee-ship"
+  Container release path (the pipeline this demo runs):
 
-  Networking: VPC with PUBLIC subnets only, 0 NAT gateways (cost control).
+  source.zip (container/)                CodePipeline "coffee-ship"
+       |                        Source(S3) -> Build -> Deploy-Test -> Approval -> Deploy-Prod
+       v                             |          |            |           |            |
+  [S3 source bucket] -----------------          |            |     (SNS approval)     |
+                                                 v            v                        v
+                       [CodeBuild privileged/Docker]   [ECS deploy]              [ECS deploy]
+                        docker build container/          (rolling)                 (rolling)
+                        push :latest + :<tag> to ECR        \                        /
+                        emit imagedefinitions.json           \                      /
+                                                              v                    v
+                                            CloudFront --> ALB (SG = CloudFront prefix list only)
+                                                               --> ECS Fargate service (circuit breaker)
+                                                                     ^ image pulled from ECR "coffee-ship"
+
+  Serverless path (separate, SAM-managed, out of this pipeline):
+     API Gateway --> Lambda (alias "live", CodeDeploy canary 10%/5min) --> DynamoDB "coffee-ship-orders"
+     Queue path:  SQS "coffee-ship-orders"
+
+  Networking: the EXISTING VPC is imported from CloudFormation exports (VpcId,
+              VpcCidrBlock, PublicSubnetOne/Two/Three) — this demo does NOT create a VPC.
+  Edge:       The ALB is NOT reachable from the public internet directly. CloudFront sits in
+              front of it, and the ALB security group only admits the AWS managed CloudFront
+              origin-facing prefix list (no 0.0.0.0/0 ingress). Reach the app via the
+              CloudFront URL, never the ALB DNS name.
   Config:     SSM Parameter (loyalty points-per-dollar), Secrets Manager (payment API key),
               AppConfig application/environment/profile + staged deployment strategy.
 ```
 
-Two deploy paths are demonstrated side by side:
+The container release pipeline is **real end to end**: the Build stage does a
+`docker build` of `container/` and pushes the image to the `coffee-ship` ECR
+repo (both `:latest` and a unique per-build tag), writes `imagedefinitions.json`
+(container name `web`, image = the unique tag), and the Deploy-Test / Deploy-Prod
+stages are real `EcsDeployAction`s that register a new task definition and roll
+the one `coffee-ship` ECS service. Edit `container/app.py`, push a new
+`source.zip`, approve, and the live response served through CloudFront changes —
+there is no placeholder/no-op gate and no stand-in image.
 
-- **Lambda canary** via SAM `DeploymentPreference` (`Canary10Percent5Minutes`) with a
-  CloudWatch error alarm that triggers CodeDeploy rollback.
+Two safe-deploy strategies are demonstrated side by side:
+
 - **ECS rolling update** behind an ALB with a deployment **circuit breaker**
-  (`minHealthyPercent 100` / `maxHealthyPercent 200`, rollback on failure).
+  (`minHealthyPercent 100` / `maxHealthyPercent 200`, rollback on failure) —
+  driven by the container pipeline above.
+- **Lambda canary** via SAM `DeploymentPreference` (`Canary10Percent5Minutes`) with a
+  CloudWatch error alarm that triggers CodeDeploy rollback (serverless path).
+
+### Bootstrap order (important — chicken-and-egg)
+
+The ECS service references `coffee-ship:latest`, but the ECR repo is **empty**
+until the pipeline builds the first image. So:
+
+1. Deploy the stacks (`CoffeeShipNetworkData` + `CoffeeShipAppPipeline`). This
+   creates the empty ECR repo, the ECS service (which will **not** stabilize
+   yet — expected), the ALB, CloudFront, and the pipeline.
+2. Run the pipeline once: upload a `source.zip` containing `container/` and
+   `container/buildspec.yml`. Build pushes `:latest` + a unique tag to ECR, and
+   Deploy-Test rolls the service to the new image — now it becomes healthy.
+3. Approve the manual gate; Deploy-Prod rolls the same service to the approved
+   image. Curl the CloudFront URL to see the live app.
 
 The CDK app and the SAM app each declare name-consistent `coffee-ship-orders`
 SQS/DynamoDB resources on purpose — that is the "declare the same thing more
@@ -71,14 +109,19 @@ than one way" teaching point, not a bug.
 The script pins `ap-southeast-1`, then:
 
 1. `npm install` + `cdk bootstrap` the account/region (idempotent).
-2. `cdk deploy --all` — the `CoffeeShipNetworkData` and `CoffeeShipAppPipeline` stacks.
-3. Builds the `container/` image and pushes it to the `coffee-ship` ECR repo.
-4. Zips `app/` and uploads it as `source.zip` to the pipeline's S3 source
+2. `cdk deploy --all` — the `CoffeeShipNetworkData` and `CoffeeShipAppPipeline`
+   stacks (the VPC is imported from CloudFormation exports, not created). On
+   this first deploy the ECS service will not stabilize yet because ECR is still
+   empty — that is expected (see **Bootstrap order** above).
+3. Zips `container/` as `source.zip` and uploads it to the pipeline's S3 source
    bucket (resolved from the stack), which starts the `coffee-ship` pipeline.
-5. Prints the **ALB URL** and the **API endpoint** at the end.
+   The pipeline's CodeBuild stage does the real `docker build` + push to ECR,
+   then the ECS deploy stages roll the service onto the new image.
+4. Prints the **CloudFront URL** at the end — the public entry point. The ALB is
+   not publicly reachable; always use the CloudFront URL.
 
-> The API endpoint comes from the `coffee-ship-app` SAM stack output
-> `OrdersApiEndpoint`, which exists once the pipeline has deployed the app.
+> The CloudFront URL comes from the `CoffeeShipAppPipeline` stack output
+> `CloudFrontUrl`.
 
 ## Destroy
 

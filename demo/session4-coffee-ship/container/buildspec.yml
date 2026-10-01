@@ -1,0 +1,45 @@
+version: 0.2
+
+# Real container build for the coffee-ship ECS/Fargate service.
+#
+# Runs in a CodeBuild project with privileged:true so Docker is available.
+# Builds container/ via container/Dockerfile, tags BOTH :latest and a unique
+# per-build tag, pushes BOTH to the coffee-ship ECR repo, runs real checks, and
+# emits imagedefinitions.json (containerName "web") for the ECS deploy actions.
+#
+# The source.zip fed to the pipeline must contain the container/ directory
+# (app.py, Dockerfile, requirements.txt) and this buildspec at
+# container/buildspec.yml.
+
+phases:
+  pre_build:
+    commands:
+      - echo "Resolving account/region and logging in to ECR..."
+      - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - 'REPO_URI=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/coffee-ship'
+      # Unique, immutable tag per build (commit sha when available, else build number).
+      - 'IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION:-$CODEBUILD_BUILD_NUMBER}'
+      - echo "Repo URI = $REPO_URI  Image tag = $IMAGE_TAG"
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+  build:
+    commands:
+      # Real check: the app must compile. No "|| true" — a nonzero exit fails the build.
+      - echo "Compiling container app (py_compile)..."
+      - python -m py_compile container/app.py
+      - echo "Building Docker image..."
+      - docker build -t "$REPO_URI:$IMAGE_TAG" -t "$REPO_URI:latest" container/
+  post_build:
+    commands:
+      - echo "Pushing images to ECR..."
+      - docker push "$REPO_URI:$IMAGE_TAG"
+      - docker push "$REPO_URI:latest"
+      # imagedefinitions.json: containerName MUST match the ECS container name
+      # ("web", the ApplicationLoadBalancedFargateService default). imageUri uses
+      # the unique tag so the ECS deploy registers a distinct task definition.
+      - echo "Writing imagedefinitions.json..."
+      - printf '[{"name":"web","imageUri":"%s"}]' "$REPO_URI:$IMAGE_TAG" > imagedefinitions.json
+      - cat imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json

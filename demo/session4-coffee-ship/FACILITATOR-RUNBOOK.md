@@ -95,30 +95,66 @@ Lambda versions and aliases.
 
 ---
 
-## Act 4 — The pipeline
+## Act 4 — The pipeline (real, end-to-end, student-verifiable)
 
-**Story:** one push drives source → build/test → manual approval → prod.
+**Story:** a student edits the container app, pushes a new `source.zip`, and the
+pipeline really rebuilds the Docker image, pushes it to ECR, and rolls the live
+ECS service — the webpage served through CloudFront visibly changes. There is no
+simulation and no placeholder: Build runs `docker build`/`docker push`, and
+Deploy-Test / Deploy-Prod are real `EcsDeployAction`s.
+
+**Bootstrap note:** the ECR repo is empty right after `cdk deploy`, so the ECS
+service stays unhealthy until this pipeline runs its first build. The first run
+is what makes the service healthy; subsequent runs roll it to new images.
 
 ```bash
-# Trigger the pipeline by uploading the SAM app as source.zip (deploy.sh does
-# this for you). The source bucket name is auto-generated, so resolve it.
+# 0) Resolve the pipeline's auto-named S3 source bucket and the CloudFront URL.
 SOURCE_BUCKET=$(aws cloudformation describe-stack-resources \
   --stack-name CoffeeShipAppPipeline --region ap-southeast-1 \
   --query "StackResources[?ResourceType=='AWS::S3::Bucket'].PhysicalResourceId | [0]" --output text)
-( cd app && zip -r /tmp/source.zip . -x '*__pycache__*' >/dev/null )
+CLOUDFRONT_URL=$(aws cloudformation describe-stacks \
+  --stack-name CoffeeShipAppPipeline --region ap-southeast-1 \
+  --query "Stacks[0].Outputs[?OutputKey=='CloudFrontUrl'].OutputValue | [0]" --output text)
+echo "Source bucket: $SOURCE_BUCKET"
+echo "CloudFront URL: $CLOUDFRONT_URL"
+
+# 1) See the current live response (served through CloudFront, NOT the ALB —
+#    the ALB SG only admits the CloudFront prefix list).
+curl -s "$CLOUDFRONT_URL/"      # -> {"status": "ok"}
+
+# 2) STUDENT EDIT: change what the app returns. For example, edit the GET "/"
+#    body in container/app.py from {"status": "ok"} to include a marker, e.g.
+#    self._send_json(200, {"status": "ok", "build": "act4-demo"})
+$EDITOR container/app.py
+
+# 3) Package container/ (with its buildspec) as source.zip and upload it. This
+#    triggers the pipeline.
+( zip -r /tmp/source.zip container/ -x '*__pycache__*' >/dev/null )
 aws s3 cp /tmp/source.zip s3://${SOURCE_BUCKET}/source.zip --region ap-southeast-1
 
-# Watch the stages: Source -> Build -> Deploy-Test -> Approval -> Deploy-Prod.
-aws codepipeline get-pipeline-state --name coffee-ship --region ap-southeast-1 \
-  --query 'stageStates[].{stage:stageName,status:latestExecution.status}'
+# 4) Watch the stages: Source -> Build -> Deploy-Test -> Approval -> Deploy-Prod.
+#    Build does the docker build + push to ECR and emits imagedefinitions.json;
+#    Deploy-Test is a real ECS rolling deploy to the coffee-ship service.
+watch -n 10 "aws codepipeline get-pipeline-state --name coffee-ship --region ap-southeast-1 \
+  --query 'stageStates[].{stage:stageName,status:latestExecution.status}' --output table"
 
-# The Approval stage publishes to the SNS topic 'coffee-ship-approval'; approve
-# it in the console (CodePipeline > coffee-ship > Approve), or via CLI with the
-# token from get-pipeline-state.
+# 5) When the pipeline reaches Approval it publishes to the SNS topic
+#    'coffee-ship-approval'. Approve in the console (CodePipeline > coffee-ship >
+#    Review > Approve), or via CLI using the token from get-pipeline-state:
+#      aws codepipeline put-approval-result --pipeline-name coffee-ship \
+#        --stage-name Approval --action-name Manual_Approval --region ap-southeast-1 \
+#        --result summary="approved",status=Approved --token <TOKEN>
+
+# 6) After Deploy-Prod succeeds, curl the SAME CloudFront URL and SEE the change
+#    the student made in step 2 (CloudFront caching is disabled, so it is
+#    immediate once the rolling deploy finishes).
+curl -s "$CLOUDFRONT_URL/"      # -> {"status": "ok", "build": "act4-demo"}
 ```
 
 **Services demonstrated:** CodePipeline (S3 source, no GitHub/CodeCommit),
-CodeBuild, S3 artifacts, SNS manual-approval notification.
+CodeBuild (privileged Docker build + ECR push), Amazon ECR, real ECS deploy
+actions (rolling update), SNS manual-approval notification, CloudFront as the
+single public entry point in front of a locked-down ALB.
 
 ---
 

@@ -14,13 +14,12 @@ const env: cdk.Environment = {
 
 const networkData = new NetworkDataStack(app, 'CoffeeShipNetworkData', {
   env,
-  description: 'coffee-ship demo: VPC (public-only), DynamoDB, SQS, SSM, Secrets Manager, AppConfig',
+  description: 'coffee-ship demo: DynamoDB, SQS, SSM, Secrets Manager, AppConfig (VPC is imported, not created)',
 });
 
 new AppPipelineStack(app, 'CoffeeShipAppPipeline', {
   env,
-  description: 'coffee-ship demo: ECR, ECS Fargate+ALB, CodePipeline (S3 source) with manual approval',
-  vpc: networkData.vpc,
+  description: 'coffee-ship demo: ECR, ECS Fargate behind an ALB fronted by CloudFront (ALB SG locked to the CloudFront prefix list), CodePipeline (S3 source) with real CodeBuild (docker) and ECS deploy actions + manual approval. Uses the existing VPC imported from CloudFormation exports.',
   ordersQueue: networkData.ordersQueue,
   ordersTable: networkData.ordersTable,
 });
