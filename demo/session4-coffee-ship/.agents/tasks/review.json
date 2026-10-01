@@ -1,11 +1,1 @@
-{
-  "verdict": "APPROVED",
-  "findings": [
-    {
-      "severity": "non-blocking",
-      "label": "Runbook zip cwd",
-      "detail": "FACILITATOR-RUNBOOK.md Act 4 step 3 runs `zip -r /tmp/source.zip container/` without an explicit `cd` into session4-coffee-ship (deploy.sh cds explicitly). Works if the facilitator is already in that directory; consider adding an explicit cd for parity. Not a correctness blocker."
-    }
-  ],
-  "reviewDoc": "/Users/erictole/demo/apcr-dva/.worktrees/real-pipeline/demo/session4-coffee-ship/.agents/tasks/review.md"
-}
+{"verdict":"CHANGES_REQUESTED","findings":[],"note":"reset for coffee-ship-frontend task"}
