@@ -44,10 +44,12 @@ phases:
       # definition.
       - echo "Writing imagedefinitions.json (rolling Test deploy)..."
       - printf '[{"name":"web","imageUri":"%s"}]' "$REPO_URI:$IMAGE_TAG" > imagedefinitions.json
-      # imageDetails.json: {ImageURI} shape consumed by the prod CodeDeploy ECS
+      # imageDetail.json: {ImageURI} shape consumed by the prod CodeDeploy ECS
       # blue/green action to fill the taskdef.json <IMAGE1_NAME> placeholder.
-      - echo "Writing imageDetails.json (prod CodeDeploy blue/green)..."
-      - printf '{"ImageURI":"%s"}' "$REPO_URI:$IMAGE_TAG" > imageDetails.json
+      # NOTE: the name MUST be imageDetail.json (SINGULAR) — the CodeDeployToECS
+      # blue/green action hard-requires that exact filename (not imageDetails).
+      - echo "Writing imageDetail.json (prod CodeDeploy blue/green)..."
+      - printf '{"ImageURI":"%s"}' "$REPO_URI:$IMAGE_TAG" > imageDetail.json
       # Fail loudly if the prod substitution inputs are missing — no silent gaps.
       - echo "Checking required prod task-definition env vars..."
       - test -n "$PROD_EXECUTION_ROLE_ARN" && test -n "$PROD_TASK_ROLE_ARN" && test -n "$ORDERS_QUEUE_URL"
@@ -63,11 +65,11 @@ phases:
       # appspec.yaml: the ECS blue/green appspec consumed by the prod CodeDeploy action.
       - echo "Copying appspec.yaml (prod CodeDeploy blue/green)..."
       - cp container/appspec.yaml appspec.yaml
-      - cat imagedefinitions.json imageDetails.json taskdef.json appspec.yaml
+      - cat imagedefinitions.json imageDetail.json taskdef.json appspec.yaml
 
 artifacts:
   files:
     - imagedefinitions.json
-    - imageDetails.json
+    - imageDetail.json
     - taskdef.json
     - appspec.yaml

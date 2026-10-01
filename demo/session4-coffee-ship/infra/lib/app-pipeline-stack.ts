@@ -17,6 +17,7 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as events_targets from 'aws-cdk-lib/aws-events-targets';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as codedeploy from 'aws-cdk-lib/aws-codedeploy';
 
@@ -274,9 +275,20 @@ export class AppPipelineStack extends cdk.Stack {
       cpu: 256,
       memoryLimitMiB: 512,
     });
+    // Explicit log group named exactly '/ecs/coffee-ship-prod' so it MATCHES the
+    // awslogs-group hard-coded in the CodeDeploy-registered container/taskdef.json.
+    // Using an explicit log group here makes CDK grant the prod task EXECUTION
+    // role logs:CreateLogStream/PutLogEvents on THIS group — without it the
+    // CodeDeploy green task fails to start (TaskFailedToStart: not authorized to
+    // CreateLogStream on /ecs/coffee-ship-prod), stalling the blue/green shift.
+    const prodLogGroup = new logs.LogGroup(this, 'ProdLogGroup', {
+      logGroupName: '/ecs/coffee-ship-prod',
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
     const prodContainer = prodTaskDef.addContainer('web', {
       image: ecs.ContainerImage.fromEcrRepository(repository, 'latest'),
-      logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'coffee-ship-prod' }),
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: 'coffee-ship-prod', logGroup: prodLogGroup }),
       environment: {
         ORDERS_QUEUE_URL: ordersQueue.queueUrl,
         ORDERS_TABLE_NAME: ordersTable.tableName,
