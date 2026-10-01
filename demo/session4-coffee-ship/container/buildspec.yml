@@ -40,11 +40,34 @@ phases:
       - docker push "$REPO_URI:latest"
       # imagedefinitions.json: containerName MUST match the ECS container name
       # ("web", the ApplicationLoadBalancedFargateService default). imageUri uses
-      # the unique tag so the ECS deploy registers a distinct task definition.
-      - echo "Writing imagedefinitions.json..."
+      # the unique tag so the rolling ECS deploy (Test) registers a distinct task
+      # definition.
+      - echo "Writing imagedefinitions.json (rolling Test deploy)..."
       - printf '[{"name":"web","imageUri":"%s"}]' "$REPO_URI:$IMAGE_TAG" > imagedefinitions.json
-      - cat imagedefinitions.json
+      # imageDetails.json: {ImageURI} shape consumed by the prod CodeDeploy ECS
+      # blue/green action to fill the taskdef.json <IMAGE1_NAME> placeholder.
+      - echo "Writing imageDetails.json (prod CodeDeploy blue/green)..."
+      - printf '{"ImageURI":"%s"}' "$REPO_URI:$IMAGE_TAG" > imageDetails.json
+      # Fail loudly if the prod substitution inputs are missing — no silent gaps.
+      - echo "Checking required prod task-definition env vars..."
+      - test -n "$PROD_EXECUTION_ROLE_ARN" && test -n "$PROD_TASK_ROLE_ARN" && test -n "$ORDERS_QUEUE_URL"
+      # Render the prod CodeDeploy task definition template into the artifact root.
+      # Substitute the role ARNs and queue URL; leave <IMAGE1_NAME> for CodeDeploy.
+      # '#' sed delimiter avoids clashing with '/' in ARNs/URLs.
+      - echo "Rendering taskdef.json (prod CodeDeploy template)..."
+      - |
+        sed -e "s#<EXECUTION_ROLE_ARN>#${PROD_EXECUTION_ROLE_ARN}#g" \
+            -e "s#<TASK_ROLE_ARN>#${PROD_TASK_ROLE_ARN}#g" \
+            -e "s#<ORDERS_QUEUE_URL>#${ORDERS_QUEUE_URL}#g" \
+            container/taskdef.json > taskdef.json
+      # appspec.yaml: the ECS blue/green appspec consumed by the prod CodeDeploy action.
+      - echo "Copying appspec.yaml (prod CodeDeploy blue/green)..."
+      - cp container/appspec.yaml appspec.yaml
+      - cat imagedefinitions.json imageDetails.json taskdef.json appspec.yaml
 
 artifacts:
   files:
     - imagedefinitions.json
+    - imageDetails.json
+    - taskdef.json
+    - appspec.yaml
