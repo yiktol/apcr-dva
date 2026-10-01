@@ -1,0 +1,8 @@
+node_modules/
+cdk.out/
+cdk.context.json
+.aws-sam/
+__pycache__/
+*.pyc
+*.zip
+.venv/

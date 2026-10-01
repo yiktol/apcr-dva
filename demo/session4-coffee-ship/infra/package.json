@@ -1,0 +1,23 @@
+{
+  "name": "coffee-ship-infra",
+  "version": "0.1.0",
+  "description": "CDK v2 infra + pipeline for the session4 coffee-ship demo (ap-southeast-1)",
+  "private": true,
+  "bin": {
+    "coffee-ship": "bin/coffee-ship.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "synth": "cdk synth"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.160.0",
+    "constructs": "^10.3.0"
+  },
+  "devDependencies": {
+    "aws-cdk": "2.160.0",
+    "typescript": "~5.5.4",
+    "ts-node": "^10.9.2",
+    "@types/node": "^20.14.0"
+  }
+}
