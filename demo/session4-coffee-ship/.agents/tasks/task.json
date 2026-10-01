@@ -1,6 +1,6 @@
 {
-  "task_id": "task-coffee-ship-realapp",
-  "task_description": "Turn the coffee-ship demo into a REAL AWS-backed coffee-ordering app: boto3 backend writing orders to DynamoDB with an SSM-driven loyalty rate and a pure time-based order status (RECEIVED/BREWING/READY); a React SPA that polls live order status and lists the 10 most recent orders; an IAM grant adding ssm:GetParameter on the loyalty parameter to the ECS task role; and an architecture diagram rebuilt from the official AWS icon set. Region pinned ap-southeast-1. Verify LOCAL ONLY (SPA build, docker build, py_compile, status_for unit test, runtime smoke, cdk synth, tsc). No live AWS, no docker push, no cdk deploy. All work inside the worktree /Users/erictole/demo/apcr-dva/.worktrees/realapp (branch coffee-ship-realapp); commit locally, never push.",
+  "task_id": "task-bluegreen-ecs-split",
+  "task_description": "Split the coffee-ship delivery into a dedicated TEST ECS service (rolling EcsDeployAction) and a dedicated PROD ECS service (CODE_DEPLOY controller, real blue/green canary 10%/5min with dual auto-rollback), two clusters, two prefix-list-locked ALBs, prod ALB as the CloudFront origin + a second CloudFront distribution (TestCloudFrontUrl) for test; rename the user-facing app to 'Coffee Shop' via a single APP_NAME constant; emit both imagedefinitions.json and imageDetails.json from the build; add a step-by-step demo-pipeline.sh/DEMO-SCRIPT.md, update the architecture diagram (two envs + CodeDeploy icon) and README/FACILITATOR-RUNBOOK. Apply the final design-review fixes (1 HIGH, 1 MEDIUM, 3 NIT). LOCAL verification only.",
   "status": "pending",
   "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
   "blocked_reason": null

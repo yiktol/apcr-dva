@@ -1,211 +1,84 @@
-# Implementation Plan — coffee-ship REAL app rewrite
+# Implementation Plan — Test/Prod ECS split + real CodeDeploy ECS blue/green (coffee-ship)
 
-Turn the coffee-ship demo into a REAL AWS-backed coffee-ordering app: boto3
-backend writing to DynamoDB with an SSM-driven loyalty rate and time-based order
-status, a React SPA that shows live order status + the 10 most recent orders, an
-IAM grant for `ssm:GetParameter`, and an architecture diagram rebuilt from the
-official AWS icon set. Region pinned to **ap-southeast-1**. Verification is LOCAL
-ONLY (build + synth); no live AWS, no docker push, no cdk deploy.
+Spec: `.agents/tasks/design.md` (approved) + `.agents/tasks/design-review.{md,json}` (final: 1 HIGH, 1 MEDIUM, 3 NIT).
+Worktree: `/Users/erictole/demo/apcr-dva/.worktrees/bluegreen` (branch `coffee-ship-bluegreen`).
+Project dir (all paths below are relative to it): `demo/session4-coffee-ship/`.
+Region pinned `ap-southeast-1`; account `875692608981`; VPC imported (create NO VPC); container stays stdlib+boto3-only; do NOT touch `app/**`.
+Verification is LOCAL only — NO `cdk deploy`, NO `docker push`, NO live AWS.
 
-All paths below are absolute under the worktree. Worktree root:
-`/Users/erictole/demo/apcr-dva/.worktrees/realapp` (branch `coffee-ship-realapp`).
-Project dir (abbreviated `<P>` in verify commands):
-`/Users/erictole/demo/apcr-dva/.worktrees/realapp/demo/session4-coffee-ship`.
-Worktree git commands MUST use `git -C /Users/erictole/demo/apcr-dva/.worktrees/realapp`.
+Baseline confirmed before planning: `npx tsc --noEmit` is clean and `cdk synth CoffeeShipAppPipeline` synths (1367 lines) on the current code. `rsvg-convert` is on PATH at `/opt/homebrew/bin/rsvg-convert`. CodeDeploy icon exists at `aws-icons/Architecture-Service-Icons_04302026/Arch_Developer-Tools/64/Arch_AWS-CodeDeploy_64.svg`. Frontend `dist`/`node_modules` are not present yet (built fresh).
 
-## Design decisions (made here, grounded in the code)
+Order is by dependency: frontend rename (independent) → container build/templates (define artifact contract) → CDK re-architecture (consumes that contract) → diagram → docs/scripts → final synth + verification record. Each item leaves the tree buildable.
 
-- **SVG icons, not PNG.** session3's `build_diagram.py` embedded `*_64.png`, but
-  this icon set ships `*_64.svg` for every service needed (verified: CloudFront,
-  Elastic-Load-Balancing, Elastic-Container-Service, AWS-Fargate,
-  Elastic-Container-Registry, DynamoDB, AWS-Systems-Manager, CodePipeline,
-  CodeBuild, Simple-Storage-Service, EventBridge). Embed as
-  `data:image/svg+xml;base64,...` so the output SVG stays self-contained. Reuse
-  session3's layout approach (zones, bezier edges, legend, base64 embed).
-- **Status is a pure function of time**, not stored/mutated: `status_for(created_at, now)`
-  returns RECEIVED (`< 10s`), BREWING (`10–25s`), READY (`>= 25s`). Storing only
-  `createdAt` keeps writes simple and makes the function unit-testable with no
-  AWS. Thresholds chosen so a facilitator sees all three states within ~30s of
-  polling at 3–4s.
-- **Loyalty rate from SSM, cached ~60s, fallback 10.** A module-level cache
-  `(value, fetched_at)` avoids an SSM call per request; on any `ClientError` or
-  missing param the code falls back to `10` (matches the SSM param default and
-  the old `POINTS_PER_DOLLAR`). points = `floor(total) * rate`.
-- **Scan for GET /orders.** The table has only `orderId` (PK) and no GSI; the
-  demo is tiny, so a `Scan` + in-memory sort by `createdAt` desc + top 10 is
-  correct and simplest. A code comment states this is a demo-scale choice.
-- **boto3 is the ONLY new dependency.** It goes in `requirements.txt`; the
-  Dockerfile python stage must `pip install --no-cache-dir -r requirements.txt`.
-  `app.py` guards the boto3 import (try/except at module load, lazy client
-  creation) so `python3 -m py_compile` and `/health` work even if boto3 or AWS
-  is unreachable.
-- **Smallest IAM change:** expose the loyalty `ssm.StringParameter` from
-  `network-data-stack.ts` as a public readonly field and call
-  `loyaltyParam.grantRead(taskRole)` in `app-pipeline-stack.ts`. This adds only
-  `ssm:GetParameter*` on that one parameter ARN; nothing else in infra changes.
-- **Same-origin API.** The SPA keeps calling relative paths (`/order`, `/orders`,
-  `/order/{id}`, `/health`) — no base URL, no CORS — because CloudFront → ALB →
-  container serve the SPA and API from one origin.
-- **ALB health check stays green:** `GET /` still returns the SPA `index.html`
-  (text/html 200) and `/health` returns 200 even when DynamoDB is down, so the
-  circuit breaker never trips on a data-plane outage.
+---
 
-## Ordered steps
+- [ ] 1. Rename the user-facing app to "Coffee Shop" via a single `APP_NAME` constant.
+      Add `export const APP_NAME = 'Coffee Shop';` near the top of `container/frontend/src/App.jsx` (beside `VERSION`). Replace the header literal `<h1>☕ Coffee Ship</h1>` with `<h1>{`☕ ${APP_NAME}`}</h1>`; add a `useEffect(() => { document.title = APP_NAME; }, [])` (the file already imports `useEffect`); change the `<img>` alt `Coffee Ship architecture diagram` to `` `${APP_NAME} architecture diagram` ``. In `container/frontend/index.html` set `<title>Coffee Shop</title>` as the static fallback. Do NOT touch `container/app.py` `_serve_index` (degraded-mode placeholder, left as-is per Decision 5). This is the one obvious place a later demo flips to "BeanThere Cafe".
+      Files: `container/frontend/src/App.jsx`, `container/frontend/index.html`
+      Verify: `cd container/frontend && npm install && npm run build` produces `dist/`; `grep -rn "Coffee Ship" container/frontend/src container/frontend/index.html` returns nothing (only `APP_NAME = 'Coffee Shop'` remains); `grep -c "APP_NAME" container/frontend/src/App.jsx` shows the single constant used by header + title + alt.
 
-- [ ] 1. Add boto3 dependency and install it in the Docker python runtime stage.
-      Put `boto3` (pinned, e.g. `boto3==1.34.*` or the latest 1.x — pin exact in
-      the file) in requirements.txt; in the Dockerfile python stage add
-      `RUN pip install --no-cache-dir -r requirements.txt` AFTER `COPY requirements.txt ./`
-      and before copying app.py. Keep multi-stage node build, `EXPOSE 8080`,
-      `ENV PORT=8080`, `CMD ["python","app.py"]`, and the
-      `COPY architecture.svg /app/static/architecture.svg` line.
-      Files: `<P>/container/requirements.txt`, `<P>/container/Dockerfile`
-      Verify: `grep -q boto3 <P>/container/requirements.txt` and visually confirm
-      the Dockerfile pip step; real build verified in step 3's docker build.
+- [ ] 2. Replace `container/taskdef.json` with the prod CodeDeploy template.
+      Overwrite with: family `coffee-ship-prod`, `networkMode awsvpc`, `requiresCompatibilities ["FARGATE"]`, cpu `"256"`, memory `"512"`, `runtimePlatform` X86_64/LINUX, `executionRoleArn: "<EXECUTION_ROLE_ARN>"`, `taskRoleArn: "<TASK_ROLE_ARN>"`; one container `name: "web"`, `image: "<IMAGE1_NAME>"`, `essential: true`, portMappings 8080/tcp, environment `ORDERS_QUEUE_URL=<ORDERS_QUEUE_URL>` and `ORDERS_TABLE_NAME=coffee-ship-orders` (hard-coded literal — not substituted), awslogs group `/ecs/coffee-ship-prod`, region `ap-southeast-1`, stream prefix `coffee-ship-prod`. Keep `<IMAGE1_NAME>` for CodeDeploy; the three `<...>` tokens are resolved by the build (item 4).
+      Files: `container/taskdef.json`
+      Verify: `python3 -c "import json;json.load(open('container/taskdef.json'))"` parses; `grep -c '<IMAGE1_NAME>' container/taskdef.json` == 1; `grep -E '<EXECUTION_ROLE_ARN>|<TASK_ROLE_ARN>|<ORDERS_QUEUE_URL>' container/taskdef.json` present.
 
-- [ ] 2. Rewrite container/app.py as the REAL backend (depends on step 1).
-      Region from env `AWS_DEFAULT_REGION`/`AWS_REGION` default `ap-southeast-1`.
-      Table from env `ORDERS_TABLE_NAME` default `coffee-ship-orders`. Loyalty
-      SSM param name from env (default `/coffee-ship/loyalty/points-per-dollar`),
-      cached ~60s TTL, fallback rate 10. Guard boto3 import (try/except) and
-      create clients lazily so py_compile and /health survive without boto3/AWS.
-      Implement:
-      * pure `status_for(created_at, now)` -> RECEIVED (<10s) / BREWING (10–25s)
-        / READY (>=25s).
-      * `GET /health` -> `{"status":"ok","version":APP_VERSION}` (200 even if
-        DynamoDB unreachable).
-      * `POST /order`: accept `{items:[{id,name,qty,price}],total}` OR
-        `{orderId,total}`; generate orderId if absent; `points = floor(total)*rate`;
-        `put_item` with orderId (PK), createdAt (epoch or ISO), total, points,
-        items?, status RECEIVED; return `{orderId,status,points,total,createdAt}`.
-      * `GET /order/{id}` and `GET /order?id=`: `get_item`, recompute
-        `status_for`, 404 if missing. Keep a browsable `GET /order` (no id) as a
-        sample if desired, but `/orders` is the list.
-      * `GET /orders`: `Scan` + sort by createdAt desc, take 10, recompute
-        status each, return `{orders,count}` (comment that Scan is demo-scale).
-      * KEEP all SPA static serving: `/`, `/assets/*` content-types,
-        `/architecture.svg` as image/svg+xml, SPA fallback, 404 for missing
-        assets, path-traversal guard.
-      * Robust error handling: boto3 `ClientError` -> JSON 400/500 logged to
-        stdout, never crash the server.
-      * Bump `APP_VERSION = "v3-realapp"`.
-      Files: `<P>/container/app.py`
-      Verify: `python3 -m py_compile <P>/container/app.py` exits 0; status_for
-      unit test from step 7 passes; runtime smoke from step 8 passes.
+- [ ] 3. Create `container/appspec.yaml` (ECS blue/green appspec — NEW file, distinct from `app/appspec.yaml` which stays untouched).
+      Content: `version: 0.0`; `Resources: - TargetService: Type: AWS::ECS::Service` with `Properties.TaskDefinition: <TASK_DEFINITION>`, `LoadBalancerInfo.ContainerName: "web"`, `ContainerPort: 8080`, `PlatformVersion: "LATEST"`. `<TASK_DEFINITION>` is filled by `CodeDeployEcsDeployAction`.
+      Files: `container/appspec.yaml`
+      Verify: `python3 -c "import yaml,sys" 2>/dev/null || true` (yaml optional); `grep -E 'AWS::ECS::Service|<TASK_DEFINITION>|ContainerName|8080' container/appspec.yaml` all present; confirm `app/appspec.yaml` is unchanged (`git -C /Users/erictole/demo/apcr-dva/.worktrees/bluegreen status --porcelain demo/session4-coffee-ship/app/appspec.yaml` shows nothing).
 
-- [ ] 3. Build the SPA and the container image to confirm steps 1–2 (depends on 2).
-      Files: none (build only).
-      Verify: `cd <P>/container/frontend && npm install && npm run build` →
-      `dist/index.html` + `dist/assets/*` exist; then
-      `cd <P> && docker build -t coffee-ship:realapp-test container/` succeeds
-      (this exercises the new pip install). Clean up the test image afterward
-      (`docker image rm coffee-ship:realapp-test`).
+- [ ] 4. Rewrite `container/buildspec.yml` post_build + artifacts to emit all four files (resolves HIGH finding 1).
+      In `post_build.commands` keep `python -m py_compile container/app.py` (in `build`), keep `docker push :$IMAGE_TAG` and `:latest` (NO `|| true`). After the pushes emit:
+      (a) `printf '[{"name":"web","imageUri":"%s"}]' "$REPO_URI:$IMAGE_TAG" > imagedefinitions.json` (test rolling action, shape `[{name,imageUri}]`);
+      (b) `printf '{"ImageURI":"%s"}' "$REPO_URI:$IMAGE_TAG" > imageDetails.json` (prod CodeDeploy containerImageInputs, shape `{ImageURI}` — Option A from the review);
+      (c) `test -n "$PROD_EXECUTION_ROLE_ARN" && test -n "$PROD_TASK_ROLE_ARN" && test -n "$ORDERS_QUEUE_URL"` (fail loudly on empty var);
+      (d) a `sed` with `#` delimiters rendering `container/taskdef.json` → artifact-root `taskdef.json`, substituting `<EXECUTION_ROLE_ARN>`→`$PROD_EXECUTION_ROLE_ARN`, `<TASK_ROLE_ARN>`→`$PROD_TASK_ROLE_ARN`, `<ORDERS_QUEUE_URL>`→`$ORDERS_QUEUE_URL`, leaving `<IMAGE1_NAME>`;
+      (e) `cp container/appspec.yaml appspec.yaml`;
+      (f) `cat imagedefinitions.json imageDetails.json taskdef.json appspec.yaml`.
+      Set `artifacts.files:` to `imagedefinitions.json`, `imageDetails.json`, `taskdef.json`, `appspec.yaml`.
+      Files: `container/buildspec.yml`
+      Verify: `python3 -c "import yaml,sys;d=yaml.safe_load(open('container/buildspec.yml'));print(d['artifacts']['files'])"` lists all four (install pyyaml if needed, else `grep` for each filename under `artifacts.files`); `grep -n '|| true' container/buildspec.yml` returns nothing; `grep -n 'imageDetails.json' container/buildspec.yml` present.
 
-- [ ] 4. Grant the ECS task role `ssm:GetParameter` on the loyalty parameter.
-      In network-data-stack.ts, store the loyalty `ssm.StringParameter` in a
-      `public readonly loyaltyParam` field (assign the `new ssm.StringParameter`
-      to it). In app-pipeline-stack.ts, add `loyaltyParam: ssm.StringParameter`
-      to `AppPipelineStackProps`, pass it from bin/coffee-ship.ts
-      (`loyaltyParam: networkData.loyaltyParam`), and call
-      `props.loyaltyParam.grantRead(fargateService.taskDefinition.taskRole)`
-      next to the existing `ordersTable.grantReadWriteData(...)`. Change NOTHING
-      else: no CloudFront edits, ALB-SG prefix-list lock intact (no 0.0.0.0/0),
-      VPC still imported (no VPC created), ECR keep-10, EcsDeployAction stages,
-      EventBridge S3 trigger all unchanged.
-      Files: `<P>/infra/lib/network-data-stack.ts`,
-      `<P>/infra/lib/app-pipeline-stack.ts`, `<P>/infra/bin/coffee-ship.ts`
-      Verify: step 9 synth + tsc.
+- [ ] 5. Re-architect `infra/lib/app-pipeline-stack.ts` — TEST service (rolling) + two clusters + imports/alarms rename.
+      Add imports `import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';` and `import * as codedeploy from 'aws-cdk-lib/aws-codedeploy';`. Replace the single `cluster` with `testCluster` (clusterName `coffee-ship-test`) and `prodCluster` (clusterName `coffee-ship-prod`), both in the imported `vpc`. Rename the `ApplicationLoadBalancedFargateService` to `CoffeeShipTestService`: `cluster: testCluster`, `serviceName: 'coffee-ship-test'`, keep cpu/mem/desiredCount/assignPublicIp/publicLoadBalancer/circuitBreaker/grace, and add `containerName: 'web'` explicitly in `taskImageOptions`. Keep the test ALB SG prefix-list override (`cfnAlbSg.addPropertyOverride('SecurityGroupIngress', [...])`) exactly as today, now sourced from `testService.loadBalancer`. Keep test data-plane grants on `testService.taskDefinition.taskRole` (DynamoDB RW, SQS consume, ssm GetParameter) + `repository.grantPull(testService.taskDefinition.obtainExecutionRole())`. Rename the existing `UnhealthyHostAlarm` to the TEST alarm: alarmName `coffee-ship-test-unhealthy-hosts`, metric `testService.targetGroup.metrics.unhealthyHostCount(...)`, keep `evaluationPeriods: 2`, informational only (NIT finding 3 — do NOT normalize). Keep SNS `coffee-ship-approval`, source bucket + `enableEventBridgeNotification()` + `S3Trigger.NONE` + EventBridge rule, CodeBuild privileged project. `deployTestAction` stays `EcsDeployAction` on `testService.service` reading `buildOutput`.
+      Files: `infra/lib/app-pipeline-stack.ts`
+      Verify: `cd infra && npx tsc --noEmit` clean (full build correctness is checked at item 10).
 
-- [ ] 5. Extend the React SPA for live status + recent orders (depends on 2 for API shape).
-      Keep theme/header/version-badge and the architecture `<details>` section
-      and activity log. In App.jsx: on POST /order success, poll `GET /order/{id}`
-      every ~3–4s and show a status badge RECEIVED→BREWING→READY, stopping at
-      READY. Add a "Recent orders (latest 10)" card that calls `GET /orders` on
-      load, after each placed order, and via a manual Refresh button; columns:
-      Placed(time), Order ID, Items/Total, Points, Status badge. Update the "AWS
-      services in this demo" list text (DynamoDB stores orders; SSM supplies the
-      loyalty rate). All fetches stay same-origin relative. In styles.css add
-      three visually distinct status-badge styles (RECEIVED/BREWING/READY) and
-      recent-orders table styling, matching the coffee theme vars.
-      Files: `<P>/container/frontend/src/App.jsx`,
-      `<P>/container/frontend/src/styles.css`
-      Verify: `cd <P>/container/frontend && npm run build` exits 0 (dist/
-      regenerated); runtime smoke in step 8 exercises /orders + /order/{id}.
+- [ ] 6. Add the PROD environment to `infra/lib/app-pipeline-stack.ts` — ALB, 2 TGs, 2 listeners, CODE_DEPLOY service, CodeDeploy group, prod alarm.
+      Create `prodAlb` (`internetFacing: true`, public subnets); `prodBlueTg` + `prodGreenTg` (port 8080, HTTP, targetType IP, healthCheck path `/` 200, deregistrationDelay 10s). Add `prodListener` port 80 `open: false` defaultTargetGroups `[prodBlueTg]` and `prodTestListener` port 8080 `open: false` defaultTargetGroups `[prodGreenTg]` (inline comment: `open` defaults `true` and injects 0.0.0.0/0; set false per requirement). Create `prodTaskDef` (`FargateTaskDefinition` family `coffee-ship-prod`, 256/512), `addContainer('web', ...)` image from ECR `latest`, awslogs streamPrefix `coffee-ship-prod`, env `ORDERS_QUEUE_URL`+`ORDERS_TABLE_NAME`, portMapping 8080. Create `prodService` (`FargateService`, cluster `prodCluster`, serviceName `coffee-ship-prod`, assignPublicIp, public subnets, grace 120s, `deploymentController: { type: CODE_DEPLOY }`); then `prodService.attachToApplicationTargetGroup(prodBlueTg)` with a code comment (NIT finding 4): attach only adds task-SG ingress from the ALB, NOT listener/world ingress; the synth-time no-0.0.0.0/0 assertion on the prod ALB SG covers it. Add prod data-plane grants on `prodTaskDef.taskRole` (DynamoDB RW, SQS consume, ssm GetParameter) + `repository.grantPull(prodTaskDef.obtainExecutionRole())`. Create `prodUnhealthyHostAlarm`: alarmName `coffee-ship-prod-unhealthy-hosts`, metric `prodBlueTg.metrics.unhealthyHostCount(period 1m, MAXIMUM)`, threshold 1, `evaluationPeriods: 1` (NIT finding 3), GTE, treatMissingData NOT_BREACHING. Create `codedeploy.EcsApplication` (`coffee-ship-prod`) and `codedeploy.EcsDeploymentGroup` (`coffee-ship-prod`, service `prodService`, `blueGreenDeploymentConfig` {blue/green TGs, listener, testListener, terminationWaitTime 10m}, `deploymentConfig: EcsDeploymentConfig.CANARY_10PERCENT_5MINUTES`, `autoRollback: { failedDeployment: true, deploymentInAlarm: true }`, `alarms: [prodUnhealthyHostAlarm]`). Add a code comment (NIT finding 5): TG health path `/` returns 200 even in degraded (unbaked SPA) mode — gates process liveness, not SPA correctness; reviewers confirm SPA via browser/TestCloudFrontUrl.
+      Files: `infra/lib/app-pipeline-stack.ts`
+      Verify: `cd infra && npx tsc --noEmit` clean (depends on item 5).
 
-- [ ] 6. Regenerate the architecture diagram from official AWS icons.
-      Add `<P>/container/build_diagram.py` modeled on
-      `/Users/erictole/demo/apcr-dva/demo/session3/build_diagram.py`, but reading
-      from `Architecture-Service-Icons_04302026` and embedding the `*_64.svg`
-      files as `data:image/svg+xml;base64,...`. Icons: CloudFront, Elastic Load
-      Balancing, ECS, Fargate, ECR, DynamoDB, Systems Manager, CodePipeline,
-      CodeBuild, S3, EventBridge. Depict two lanes:
-      runtime (User → CloudFront → ALB [imported VPC, SG locked to CloudFront
-      prefix list] → ECS Fargate task → DynamoDB orders + SSM loyalty rate) and
-      CI/CD (source.zip in S3 → EventBridge → CodePipeline → CodeBuild docker
-      build/push → ECR → EcsDeployAction rolling w/ circuit breaker → ECS
-      service). Run it to overwrite `<P>/container/architecture.svg`. Then
-      regenerate the top-level `<P>/architecture.svg` (copy of the container SVG
-      or a second write) and `<P>/architecture.png` via
-      `rsvg-convert <P>/container/architecture.svg -o <P>/architecture.png`.
-      Files: `<P>/container/build_diagram.py`, `<P>/container/architecture.svg`,
-      `<P>/architecture.svg`, `<P>/architecture.png`
-      Verify: `python3 <P>/container/build_diagram.py` exits 0;
-      `python3 -c "import xml.dom.minidom as m; m.parse('<P>/container/architecture.svg')"`
-      parses; `grep -c "data:image/svg" <P>/container/architecture.svg` ≥ 11;
-      `rsvg-convert <P>/container/architecture.svg -o /tmp/arch-check.png` exits 0.
+- [ ] 7. Wire PROD security, CloudFront, pipeline prod action, build env vars, and outputs in `infra/lib/app-pipeline-stack.ts`.
+      Prod ALB SG: add exactly one ingress via `prodListener.connections.allowDefaultPortFrom(ec2.Peer.prefixList(cloudFrontPrefixList.prefixListId), 'CloudFront prod listener')`; port 8080 gets NO internet ingress. Re-point the EXISTING `CoffeeShipCdn` distribution's default origin to `prodAlb` (replace `fargateService.loadBalancer` with `prodAlb`); `CloudFrontUrl` output continues to point at prod. Add a SECOND distribution `CoffeeShipTestCdn` with origin `testService.loadBalancer` (same `CACHING_DISABLED` + `ALL_VIEWER` + HTTP_ONLY origin config), and `new cdk.CfnOutput(this, 'TestCloudFrontUrl', { value: 'https://'+testCdn.distributionDomainName })` (logical id EXACTLY `TestCloudFrontUrl`). On the CodeBuild project add `environmentVariables`: `PROD_EXECUTION_ROLE_ARN = prodTaskDef.obtainExecutionRole().roleArn`, `PROD_TASK_ROLE_ARN = prodTaskDef.taskRole.roleArn`, `ORDERS_QUEUE_URL = ordersQueue.queueUrl` (keys MUST match the buildspec). Replace the prod `EcsDeployAction` with `codepipeline_actions.CodeDeployEcsDeployAction` (`actionName: 'Deploy_To_Prod'`, `deploymentGroup: prodDeployGroup`, `appSpecTemplateInput: buildOutput`, `taskDefinitionTemplateInput: buildOutput`, `containerImageInputs: [{ input: buildOutput, taskDefinitionPlaceholder: 'IMAGE1_NAME' }]`). Keep the 5-stage pipeline (Source→Build→Deploy-Test→Approval→Deploy-Prod). If synth shows an `iam:PassRole` gap for the prod action/CodeDeploy role, add an explicit `iam.PolicyStatement` granting `iam:PassRole` on `prodTaskDef.taskRole`/`obtainExecutionRole()` (per design IAM section).
+      Files: `infra/lib/app-pipeline-stack.ts`
+      Verify: `cd infra && npx tsc --noEmit` clean; full synth checked at item 10.
 
-- [ ] 7. Add a unit test for `status_for()` thresholds (depends on 2).
-      Add `<P>/container/test_app.py` (pytest-style or a `python -c` script the
-      verify step runs) asserting RECEIVED at ~5s, BREWING at ~15s, READY at
-      ~30s past createdAt. Guard against boto3 so the test imports app.py
-      without AWS.
-      Files: `<P>/container/test_app.py`
-      Verify: `cd <P>/container && python3 -m pytest -q test_app.py` passes (or
-      `python3 test_app.py` exits 0 if written as a script).
+- [ ] 8. Update `container/build_diagram.py` to show the two environments distinctly + add the CodeDeploy icon, then regenerate SVGs/PNG.
+      Add `"codedeploy": "Arch_Developer-Tools/64/Arch_AWS-CodeDeploy_64.svg"` to `ICONS`. Redraw: runtime lane split into User→CloudFront(prod)→prod ALB (two target groups blue/green)→prod ECS (CODE_DEPLOY), and a second edge User→CloudFront(test)→test ALB→test ECS (rolling). CI/CD lane: Build → ECR, then two deploy edges — `EcsDeployAction (rolling)` → test service and `CodeDeployEcsDeployAction (blue/green canary 10%/5m)` → prod service, with the Approval gate between. Relabel nodes "Coffee Shop". Keep the base64-embedded-SVG approach + category color zones. After editing, run the script, then copy `container/architecture.svg` to the top-level `architecture.svg` and rebuild `architecture.png` with rsvg-convert.
+      Files: `container/build_diagram.py`, `container/architecture.svg`, `architecture.svg`, `architecture.png`
+      Verify: `cd container && python3 build_diagram.py` prints the byte count without error; `grep -c 'data:image/svg+xml;base64' container/architecture.svg` ≥ 12 (real embedded icons incl. CodeDeploy); `cp container/architecture.svg architecture.svg && rsvg-convert container/architecture.svg -o architecture.png` succeeds and `architecture.png` is non-empty; `grep -ci 'codedeploy\|blue/green\|Coffee Shop' container/build_diagram.py` > 0.
 
-- [ ] 8. Runtime smoke test the real backend locally (depends on 2, 5, 6).
-      Build the SPA to dist, then run the server against it with env pointing at
-      ap-southeast-1 but tolerate no AWS creds (the server must not crash;
-      /health must still be 200; order endpoints may return a logged 500 if
-      DynamoDB is unreachable — that is acceptable for the smoke, the point is no
-      crash). If AWS creds + the real table are available locally, additionally
-      confirm POST /order persists and GET /orders returns it; otherwise note AWS
-      calls were not exercised.
-      Files: none.
-      Verify: `STATIC_DIR=<P>/container/frontend/dist PORT=8080 python3 <P>/container/app.py &`
-      then curl: `GET /` → text/html 200; `GET /health` → `{"status":"ok","version":"v3-realapp"}`;
-      `GET /architecture.svg` → image/svg+xml 200; `GET /nope.js` → 404;
-      `GET /spa/route` → text/html 200; server did not crash. Kill the server
-      afterward.
+- [ ] 9. Create `DEMO-SCRIPT.md` and `demo/session4-coffee-ship/demo-pipeline.sh`; update `README.md`, `FACILITATOR-RUNBOOK.md`, `deploy.sh`, `destroy.sh` (resolves MEDIUM finding 2).
+      `demo-pipeline.sh` (`#!/usr/bin/env bash`, `set -euo pipefail`, region `ap-southeast-1`): step-by-step narration with `read -p` pauses; resolve `SOURCE_BUCKET`, `CLOUDFRONT_URL` (OutputKey `CloudFrontUrl`), and `TEST_CLOUDFRONT_URL` via `aws cloudformation describe-stacks --stack-name CoffeeShipAppPipeline --query "Stacks[0].Outputs[?OutputKey=='TestCloudFrontUrl'].OutputValue | [0]" --output text`; curl the prod URL; live `sed` edit of `APP_NAME` in `container/frontend/src/App.jsx` and the `index.html` `<title>` from Coffee Shop → BeanThere Cafe (show diff); zip `container/` (same exclusions as deploy.sh) + upload `source.zip` to trigger ONE run; poll `aws codepipeline get-pipeline-state --name coffee-ship` to Approval; verify TEST via `TestCloudFrontUrl` shows "BeanThere Cafe" while prod still shows "Coffee Shop"; approve with `aws codepipeline put-approval-result --pipeline-name coffee-ship --stage-name Approval --action-name Manual_Approval ...`; watch blue/green with `aws deploy list-deployments --application-name coffee-ship-prod` + `aws deploy get-deployment --deployment-id ...` (show canary shift); curl prod to show "BeanThere Cafe"; include rollback instructions. Mirror the same steps copy-pasteable in `DEMO-SCRIPT.md` and in FACILITATOR-RUNBOOK Act 4/5. In `deploy.sh` add the `TestCloudFrontUrl` resolution + a summary line mirroring the prod `CloudFront URL :` line (confirm the existing `AWS::S3::Bucket | [0]` source-bucket lookup is unaffected — CloudFront adds no bucket). In `destroy.sh` note the second CloudFront distribution + CodeDeploy app/group are deleted by `cdk destroy --all`. Update README + FACILITATOR-RUNBOOK: app is "Coffee Shop"; two envs (test = rolling vs prod = CodeDeploy blue/green canary 10%/5min + alarm rollback); state plainly blue/green is NOW demonstrated; two-service + CodeDeploy bootstrap/first-run order with `:latest` seed (Decision 6); replace single-cluster `aws ecs describe-services --cluster coffee-ship` with the two-cluster equivalents.
+      Files: `demo-pipeline.sh`, `DEMO-SCRIPT.md`, `README.md`, `FACILITATOR-RUNBOOK.md`, `deploy.sh`, `destroy.sh`
+      Verify: `bash -n demo-pipeline.sh` and `bash -n deploy.sh` and `bash -n destroy.sh` all pass; `grep -l TestCloudFrontUrl demo-pipeline.sh deploy.sh` both match AND each also references prod `CloudFrontUrl`; `grep -n 'put-approval-result' demo-pipeline.sh` uses `--pipeline-name`; `grep -n 'aws deploy get-deployment' demo-pipeline.sh` present; `grep -ni 'blue/green' README.md FACILITATOR-RUNBOOK.md` present.
 
-- [ ] 9. Synthesize the CDK app and confirm security properties (depends on 4).
-      Files: none; writes `<P>/.agents/tasks/verification.md`.
-      Verify: `cd <P>/infra && npm install && CDK_DEFAULT_ACCOUNT=875692608981 JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 npx cdk synth CoffeeShipAppPipeline`
-      exits 0; `cd <P>/infra && npx tsc --noEmit` clean. Record in
-      `verification.md`: task role now has `ssm:GetParameter` on the loyalty
-      param ARN; ALB SG ingress is ONLY the CloudFront prefix list
-      (`SourcePrefixListId`, no `0.0.0.0/0`); CloudFront distribution present;
-      VPC imported (no `AWS::EC2::VPC` created); EcsDeployAction Deploy-Test /
-      Deploy-Prod stages present; EventBridge `Object Created` rule present.
-      (Grep the synthesized template under `cdk.out/` for these, not the source.)
+- [ ] 10. Final synth/compile gate + record the ten checks in `.agents/tasks/verification.md`.
+      Run the full local verification (NO deploy): `cd infra && npx tsc --noEmit` clean; `CDK_DEFAULT_ACCOUNT=875692608981 JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 npx cdk synth CoffeeShipAppPipeline > /tmp/synth.json` clean. Inspect the synthesized template and record checks (a)–(j) in `.agents/tasks/verification.md`: (a) two `AWS::ECS::Cluster` (coffee-ship-test, coffee-ship-prod); (b) prod service `DeploymentController.Type == CODE_DEPLOY`; (c) two `AWS::ElasticLoadBalancingV2::TargetGroup` for prod (blue+green) on port 8080; (d) two prod listeners (80 + 8080); (e) one `AWS::CodeDeploy::DeploymentGroup` with canary config + autoRollback on failure AND alarm; (f) prod alarm evaluationPeriods 1, test alarm evaluationPeriods 2; (g) NO `CidrIp: 0.0.0.0/0` ingress on EITHER ALB SG (prod SG admits only the prefix list on port 80; 8080 has no internet ingress); (h) build project env vars `PROD_EXECUTION_ROLE_ARN`/`PROD_TASK_ROLE_ARN`/`ORDERS_QUEUE_URL` present; (i) `TestCloudFrontUrl` output present and a second `AWS::CloudFront::Distribution`; (j) prod `CodeDeployEcsDeployAction` wired with taskdef/appspec/containerImageInputs IMAGE1_NAME. Also re-run the per-item verifications (frontend build + single APP_NAME, py_compile container/app.py, diagram embedded icons + png, `bash -n` on both scripts) and record pass/fail for each. Clean up any temp files created during verification.
+      Files: `.agents/tasks/verification.md`
+      Verify: `.agents/tasks/verification.md` exists and records (a)–(j) with the grep/jq evidence used against `/tmp/synth.json`; `cd infra && npx tsc --noEmit` and the `cdk synth` both exit 0; `python3 -m py_compile container/app.py` exits 0.
 
-- [ ] 10. Update docs (depends on 2, 5, 6).
-      Update README.md and FACILITATOR-RUNBOOK.md to describe the real app:
-      order → DynamoDB → status RECEIVED/BREWING/READY → recent-10 list; SSM
-      supplies the loyalty rate; boto3 now runs in the container (no longer
-      stdlib-only); diagram built from official AWS icons. Keep the ap-southeast-1
-      pinning, bootstrap-order and cost sections accurate.
-      Files: `<P>/README.md`, `<P>/FACILITATOR-RUNBOOK.md`
-      Verify: `grep -n "v3-realapp\|RECEIVED\|boto3\|Recent orders" <P>/README.md`
-      shows the new content; prose review for accuracy.
+---
 
-## Constraints (must hold throughout)
+## Mandatory-fix → item map
+- HIGH finding 1 (imageDetails.json + taskdef `<IMAGE1_NAME>` + containerImageInputs, no `|| true`): items 2, 4, 7.
+- MEDIUM finding 2 (both CloudFront URLs in deploy.sh + demo-pipeline.sh; `TestCloudFrontUrl` output): items 7, 9.
+- NIT finding 3 (prod alarm evaluationPeriods 1; test alarm stays 2, informational; test metric from testService.targetGroup): items 5, 6.
+- NIT finding 4 (attachToApplicationTargetGroup comment + synth-time no-0.0.0.0/0 assertion): items 6, 10.
+- NIT finding 5 (health `/` 200 in degraded mode caveat): items 6, 9.
 
-- Region ap-southeast-1 pinned everywhere.
-- Serverless `app/**` untouched.
-- CloudFront, ALB-SG CloudFront-prefix-list lock (no 0.0.0.0/0), imported VPC
-  (no VPC created), ECR keep-10, EcsDeployAction stages, EventBridge S3 trigger:
-  all preserved.
-- boto3 is the ONLY new dependency.
-- NO live AWS: no cdk deploy, no docker push, no AWS-mutating calls.
-- Commit locally on branch `coffee-ship-realapp`; never push.
+## Assumptions / gaps (reasonable, non-blocking)
+- No `aws-cdk-lib/assertions` test harness exists in `infra/` (no test dir, no jest). The design calls the no-0.0.0.0/0 check a "synth-time assertion"; the plan satisfies it by inspecting the synthesized template with grep/jq in item 10 and recording the result in `verification.md`, rather than adding a new test framework. If a reviewer wants a programmatic assertion, that is an additive step, not a blocker.
+- `imagedefinitions.json` + `imageDetails.json` both carry the mutable `$IMAGE_TAG` (which is the commit sha when available). Acceptable for a demo per the review.
+- Prod `FargateService` under CODE_DEPLOY coming up with a usable blue task set after `:latest` seed is the documented flow; not live-verifiable here (synth only).

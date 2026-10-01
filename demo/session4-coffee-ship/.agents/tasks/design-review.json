@@ -1,0 +1,46 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "HIGH",
+      "title": "Prod <IMAGE1_NAME> placeholder is never resolved: buildspec emits imagedefinitions.json but containerImageInputs requires imageDetails.json",
+      "where": "Decision 3 (buildspec outputs + post_build block + container/taskdef.json template); Pipeline wiring for prod (containerImageInputs).",
+      "problem": "CodeDeployEcsContainerImageInput.input requires an imageDetails.json file with an ImageURI property (verified in aws-codedeploy ecs-deploy-action.d.ts @ 2.160.0, and the compiled action sets Image1ArtifactName/Image1ContainerName on the CodeDeployToECS provider which reads ImageURI from imageDetails.json). The build only emits imagedefinitions.json ([{name,imageUri}]), which is for the rolling EcsDeployAction, not imageDetails.json ({ImageURI}). So <IMAGE1_NAME> is never substituted; RegisterTaskDefinition is called with the literal image <IMAGE1_NAME> and every prod CodeDeploy deployment fails.",
+      "fix": "Either (A) add `printf '{\"ImageURI\":\"%s\"}' \"$REPO_URI:$IMAGE_TAG\" > imageDetails.json` to post_build and list imageDetails.json in artifacts.files, keeping containerImageInputs/taskDefinitionPlaceholder='IMAGE1_NAME'; or (B) resolve <IMAGE1_NAME> in the build sed (add -e \"s#<IMAGE1_NAME>#${REPO_URI}:${IMAGE_TAG}#g\") and remove containerImageInputs. State the chosen option explicitly."
+    },
+    {
+      "id": 2,
+      "severity": "MEDIUM",
+      "title": "deploy.sh cannot surface TestCloudFrontUrl with its current single-output resolution; 'both URLs' is unspecified",
+      "where": "Decision 4 (TestCloudFrontUrl output); Diagram/docs/demo-script plan (deploy.sh/DEMO-SCRIPT.md 'prints both CloudFront URLs').",
+      "problem": "Verified deploy.sh step 5 resolves exactly one output (CloudFrontUrl) and prints one URL. The design says the demo script and deploy.sh surface both URLs but never specifies the second describe-stacks query or print line. The demo's headline test/prod difference (test shows BeanThere Cafe, prod still Coffee Shop) depends on the reviewer having the test URL. Also the design does not confirm the second CloudFront distribution leaves the AWS::S3::Bucket count unchanged for the existing `| [0]` source-bucket lookup (it does, but should be stated).",
+      "fix": "Specify the TestCloudFrontUrl resolution (describe-stacks query on OutputKey=='TestCloudFrontUrl') and a matching summary print line; name the CDK output logical id TestCloudFrontUrl; confirm CloudFront adds no S3 bucket so the `[0]` source-bucket lookup is unaffected."
+    },
+    {
+      "id": 3,
+      "severity": "NIT",
+      "title": "Alarm evaluationPeriods mismatch (prod 1 vs renamed test alarm 2) is unexplained",
+      "where": "Decision 2 Prod alarm (evaluationPeriods:1) vs renamed existing test alarm (evaluationPeriods:2).",
+      "problem": "Prod alarm is wired to autoRollback.deploymentInAlarm with evaluationPeriods:1; the test alarm keeps 2. The difference is reasonable but unstated, inviting an accidental 'normalization' that changes rollback timing.",
+      "fix": "Add a sentence: prod uses evaluationPeriods:1 (fast alarm-driven rollback); the test alarm keeps evaluationPeriods:2 and is informational only (not wired to rollback) - do not normalize. Confirm test alarm metric source becomes testService.targetGroup.metrics.unhealthyHostCount(...)."
+    },
+    {
+      "id": 4,
+      "severity": "NIT",
+      "title": "attachToApplicationTargetGroup should be asserted not to re-open the prod ALB SG",
+      "where": "Decision 2: prodService.attachToApplicationTargetGroup(prodBlueTg).",
+      "problem": "The method is valid (base-service.d.ts:498). The finding-1 (prior round) invariant is 'no 0.0.0.0/0 on the prod ALB SG'. The design should assert attach only adds target-group membership + ALB->task ingress, not listener/world ingress, and that the synth-time no-0.0.0.0/0 assertion covers the prod ALB SG after this call.",
+      "fix": "Add a line confirming attachToApplicationTargetGroup does not add listener ingress and that the Testability assertion runs on the fully-synthed template."
+    },
+    {
+      "id": 5,
+      "severity": "NIT",
+      "title": "Prod target-group health check path '/' returns 200 even in degraded (unbaked SPA) mode",
+      "where": "Decision 2 prod TG healthCheck path '/'; claim it is answered 200 by app.py _serve_index.",
+      "problem": "Verified: app.py _serve_index returns 200 even when the SPA failed to bake (fallback <title>coffee-ship</title>). So a green task with a broken frontend can go healthy and be promoted; the health check gates process liveness, not SPA correctness. Accurate for the design's claim but weakens the 'bad build caught' story.",
+      "fix": "Add a one-line caveat in Decision 2/runbook that '/' is 200 in degraded mode (gates liveness, not SPA correctness); SPA correctness is confirmed via the browser/TestCloudFrontUrl step. No code change required."
+    }
+  ],
+  "reviewDoc": "/Users/erictole/demo/apcr-dva/.worktrees/bluegreen/demo/session4-coffee-ship/.agents/tasks/design-review.md"
+}
