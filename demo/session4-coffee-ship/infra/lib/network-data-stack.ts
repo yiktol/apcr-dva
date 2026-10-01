@@ -17,6 +17,7 @@ import * as appconfig from 'aws-cdk-lib/aws-appconfig';
 export class NetworkDataStack extends cdk.Stack {
   public readonly ordersQueue: sqs.Queue;
   public readonly ordersTable: dynamodb.Table;
+  public readonly loyaltyParam: ssm.StringParameter;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -37,7 +38,7 @@ export class NetworkDataStack extends cdk.Stack {
     });
 
     // Non-secret loyalty configuration value (plain SSM parameter).
-    new ssm.StringParameter(this, 'LoyaltyConfigParam', {
+    this.loyaltyParam = new ssm.StringParameter(this, 'LoyaltyConfigParam', {
       parameterName: '/coffee-ship/loyalty/points-per-dollar',
       stringValue: '10',
       description: 'Non-secret loyalty config: loyalty points earned per dollar spent',

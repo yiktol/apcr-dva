@@ -22,6 +22,7 @@ new AppPipelineStack(app, 'CoffeeShipAppPipeline', {
   description: 'coffee-ship demo: ECR, ECS Fargate behind an ALB fronted by CloudFront (ALB SG locked to the CloudFront prefix list), CodePipeline (S3 source) with real CodeBuild (docker) and ECS deploy actions + manual approval. Uses the existing VPC imported from CloudFormation exports.',
   ordersQueue: networkData.ordersQueue,
   ordersTable: networkData.ordersTable,
+  loyaltyParam: networkData.loyaltyParam,
 });
 
 app.synth();

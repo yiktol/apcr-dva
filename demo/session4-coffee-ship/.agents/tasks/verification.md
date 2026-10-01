@@ -1,76 +1,62 @@
-# Verification — Real coffee-ship ECS CI/CD pipeline (container path)
+# FEAT-002 Verification
 
-All work on branch `real-ecs-pipeline` in the worktree
-`/Users/erictole/demo/apcr-dva/.worktrees/real-pipeline/demo/session4-coffee-ship`.
-No live AWS deploy was performed — synth / tsc / inspection only, per the task.
+Grant the ECS task role `ssm:GetParameter` on the loyalty parameter.
 
-## Commands run and results
+## Commands run (local only, no AWS mutation)
 
-### 1. Install infra dependencies
-- `npm ci` in `infra/` — **PASS** (added 28 packages, audited 65; `aws-cdk-lib`
-  present under `node_modules`). `npm ci` succeeded, so `npm install` fallback
-  was not needed.
+```
+cd infra && npm install            # ok
+npx tsc --noEmit                   # exit 0, no type errors (TSC_CLEAN)
+CDK_DEFAULT_ACCOUNT=875692608981 JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 \
+  npx cdk synth CoffeeShipAppPipeline > /dev/null   # exit 0
+```
 
-### 2. TypeScript type-check
-- `npx tsc --noEmit` in `infra/` — **PASS** (exit 0, no diagnostics).
+Grepped: `infra/cdk.out/CoffeeShipAppPipeline.template.json`
 
-### 3. CDK synth (no live AWS)
-- `JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 CDK_DEFAULT_ACCOUNT=875692608981 npx cdk synth CoffeeShipAppPipeline`
-  — **PASS** (exit 0; only informational CDK CLI/notice output on stderr).
-- `... npx cdk synth CoffeeShipNetworkData` — **PASS** (exit 0).
+## Findings
 
-### 4. Buildspec YAML parse
-- `python3 -c "import yaml; yaml.safe_load(open('container/buildspec.yml'))"`
-  — **PASS**. `version: 0.2`, phases pre_build/build/post_build parse cleanly.
-  Shell command blocks reviewed by inspection: ECR login, `python -m py_compile`
-  (no `|| true`), `docker build` of `container/`, `docker push` of both tags,
-  `printf` of imagedefinitions.json. Syntactically sane.
+### (a) ssm:GetParameter on the loyalty param, attached to the ECS task role — PASS
+The synthesized task-role default policy (`PolicyName: CoffeeShipServiceTaskDefTaskRoleDefaultPolicyBAC190E2`, attached to role ref `CoffeeShipServiceTaskDefTaskRole86B28230`) contains a new statement:
 
-### 5. Script syntax
-- `bash -n deploy.sh` — **PASS** (deploy.sh updated to zip `container/` as
-  source.zip and surface the CloudFront URL).
+```
+Action: [ "ssm:GetParameter", "ssm:GetParameterHistory", "ssm:GetParameters" ]
+Effect: Allow
+Resource: Fn::Join [ "", [
+  "arn:aws:ssm:ap-southeast-1:875692608981:parameter",
+  { "Fn::ImportValue": "CoffeeShipNetworkData:ExportsOutputRefLoyaltyConfigParamA2A1FCF2389050AE" }
+] ]
+```
 
-## Required-condition confirmations (from the synthesized CoffeeShipAppPipeline template)
+- Loyalty parameter logical id (NetworkDataStack): `LoyaltyConfigParam` (CDK logical id suffix `A2A1FCF2`).
+- Cross-stack export consumed by the pipeline stack: `CoffeeShipNetworkData:ExportsOutputRefLoyaltyConfigParamA2A1FCF2389050AE`.
+- ARN form resolved at deploy time: `arn:aws:ssm:ap-southeast-1:875692608981:parameter/coffee-ship/loyalty/points-per-dollar` (the parameter name begins with `/`, so the join yields `.../parameter/coffee-ship/...`).
 
-Checked against `infra/cdk.out/CoffeeShipAppPipeline.template.json`:
+### (b) ALB SG ingress is SourcePrefixListId only, no 0.0.0.0/0 — PASS
+The ALB security group ingress block:
 
-- **(a) CodeBuild privileged/Docker referencing container/buildspec.yml** — CONFIRMED.
-  `AWS::CodeBuild::Project` with `PrivilegedMode: true`,
-  `BuildSpec: container/buildspec.yml` (via `BuildSpec.fromSourceFilename`).
-- **(b) EcsDeployAction(s) present, NO S3 deploy actions** — CONFIRMED.
-  Two pipeline actions with `"Provider": "ECS"` (Deploy_To_Test, Deploy_To_Prod);
-  the only `"Provider": "S3"` action is `Category: Source` (the S3 source).
-  `grep 'deploy/test|deploy/prod'` → 0; `ecs:UpdateService` present (×2, auto-granted
-  by EcsDeployAction).
-- **(c) ECS task image references the ECR repo (not nginx) on port 8080** — CONFIRMED.
-  `image: ecs.ContainerImage.fromEcrRepository(repository, 'latest')`;
-  `"ContainerPort": 8080` present; `grep nginx` → 0; `grep amazonlinux` → 0.
-- **(d) ALB SG ingress ONLY the CloudFront prefix list, no 0.0.0.0/0** — CONFIRMED.
-  ALB SG ingress is a single rule: HTTP 80 with `SourcePrefixListId` =
-  `{ "Ref": "CloudFrontPrefixListId" }` (default `pl-31a34658`). The only
-  `0.0.0.0/0` in the template is a `SecurityGroupEgress` on the ECS *task* SG
-  (default allow-all egress) — NOT an ALB ingress.
-- **(e) CloudFront distribution present with the ALB as origin** — CONFIRMED.
-  `AWS::CloudFront::Distribution` ×1, origin = `LoadBalancerV2Origin` (HTTP_ONLY,
-  httpPort 80) over the Fargate ALB; outputs `CloudFrontUrl` + `CloudFrontDistributionId`.
-- **(f) VPC still imported via Fn::ImportValue, no AWS::EC2::VPC created** — CONFIRMED.
-  `Fn::ImportValue` appears 13× (VpcId/VpcCidrBlock/PublicSubnetOne-Two-Three);
-  `AWS::EC2::VPC` count = 0 in BOTH templates (pipeline and network-data).
-- **(g) imagedefinitions.json containerName matches the ECS container name** — CONFIRMED.
-  ECS container name is the pattern default `"web"` (synth shows `"Name": "web"`,
-  no `containerName` override). buildspec writes
-  `[{"name":"web","imageUri":"$REPO_URI:$IMAGE_TAG"}]` — names match.
+```
+SecurityGroupIngress:
+  - Description: "Allow HTTP only from the CloudFront origin-facing prefix list"
+    IpProtocol: tcp, FromPort: 80, ToPort: 80
+    SourcePrefixListId: { Ref: CloudFrontPrefixListId }
+```
 
-## Notes
+`grep -c '"CidrIp": "0.0.0.0/0"'` returns 1, and that single match is the ECS **Service** SG default `SecurityGroupEgress` ("Allow all outbound traffic by default", IpProtocol -1) — a CDK default, NOT an ALB ingress rule. No `0.0.0.0/0` appears in any `SecurityGroupIngress`.
 
-- `review.json` in `.agents/tasks/` is from the PRIOR standalone-scaffold task
-  (`task-session4-coffee-ship`, status completed) and describes the pre-rewrite
-  baseline (nginx/S3 deploy/created-VPC); its findings are not against this
-  real-pipeline change. The worktree held the pre-live-session state, so this is
-  effectively the first real-pipeline iteration — implemented per plan.md.
-- `app/**` (serverless path) and `app/buildspec.yml` left untouched; the pipeline
-  no longer references `app/buildspec.yml` (grep in `infra/lib`,`infra/bin` → none).
-- deploy.sh (outside the named scope but required for the documented real flow)
-  now zips `container/` as source.zip and prints the CloudFront URL; it still
-  seeds ECR `:latest` once so the service can stabilize before the first
-  pipeline run (bootstrap), after which the pipeline owns all image builds.
+### (c) CloudFront distribution present — PASS
+`grep -c 'AWS::CloudFront::Distribution'` = 1 (`CoffeeShipCdn`).
+
+### (d) No VPC created — PASS
+`grep -c 'AWS::EC2::VPC"'` = 0. VPC is imported via `Fn::ImportValue: VpcId`.
+
+### (e) Both EcsDeployAction stages present — PASS
+Actions `Deploy_To_Test` and `Deploy_To_Prod` both present in the pipeline (stages Deploy-Test and Deploy-Prod).
+
+### (f) EventBridge S3 Object Created rule for source.zip — PASS
+EventBridge rule present with detailType `Object Created` and object key `source.zip`.
+
+### (g) tsc --noEmit clean — PASS
+`npx tsc --noEmit` exits 0 with no type errors.
+
+## Preserved (unchanged) security properties
+CloudFront distribution, ALB-SG CloudFront-prefix-list lock (no 0.0.0.0/0 ingress), imported VPC (no VPC created), ECR keep-10 lifecycle, both EcsDeployAction stages, and the EventBridge S3 Object Created trigger are all intact. Only the three FEAT-002 edits were made.

@@ -6,6 +6,7 @@ import * as ecs_patterns from 'aws-cdk-lib/aws-ecs-patterns';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
@@ -20,6 +21,7 @@ import * as events_targets from 'aws-cdk-lib/aws-events-targets';
 export interface AppPipelineStackProps extends cdk.StackProps {
   readonly ordersQueue: sqs.Queue;
   readonly ordersTable: dynamodb.Table;
+  readonly loyaltyParam: ssm.StringParameter;
 }
 
 /**
@@ -141,6 +143,7 @@ export class AppPipelineStack extends cdk.Stack {
     // Let the task read/write the orders data plane.
     ordersQueue.grantConsumeMessages(fargateService.taskDefinition.taskRole);
     ordersTable.grantReadWriteData(fargateService.taskDefinition.taskRole);
+    props.loyaltyParam.grantRead(fargateService.taskDefinition.taskRole);
     repository.grantPull(fargateService.taskDefinition.obtainExecutionRole());
 
     // ---------------------------------------------------------------------
