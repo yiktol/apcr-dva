@@ -41,6 +41,7 @@ import mimetypes
 import os
 import time
 import uuid
+from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # boto3 is guarded so py_compile and /health work without it installed. Clients
@@ -250,6 +251,22 @@ def create_order(payload):
     }
 
 
+def _jsonable(value):
+    """Recursively convert DynamoDB resource-API types to JSON-safe types.
+
+    The DynamoDB resource API returns numbers as decimal.Decimal, which
+    json.dumps cannot serialize. Convert Decimals to int when integral else
+    float, and recurse into dicts/lists (e.g. the nested ``items`` list).
+    """
+    if isinstance(value, Decimal):
+        return int(value) if value % 1 == 0 else float(value)
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return value
+
+
 def _to_public_order(record):
     """Convert a stored DynamoDB record into the public order shape."""
     created_at = int(record.get("createdAt", 0))
@@ -261,7 +278,9 @@ def _to_public_order(record):
         "createdAt": created_at,
     }
     if "items" in record:
-        public["items"] = record["items"]
+        # Convert any Decimal (e.g. item qty stored as a Number) to a JSON-safe
+        # type so json.dumps does not raise and crash the request thread.
+        public["items"] = _jsonable(record["items"])
     return public
 
 
@@ -352,7 +371,7 @@ class OrderHandler(BaseHTTPRequestHandler):
         if path == "/orders":
             try:
                 orders = list_recent_orders(10)
-            except (ClientError, BotoCoreError, RuntimeError) as exc:
+            except (ClientError, BotoCoreError, RuntimeError, TypeError, ValueError) as exc:
                 print("GET /orders failed: %s" % exc)
                 self._send_json(500, {"error": "could not list orders"})
                 return
@@ -385,7 +404,7 @@ class OrderHandler(BaseHTTPRequestHandler):
                 return
             try:
                 order = get_order(order_id)
-            except (ClientError, BotoCoreError, RuntimeError) as exc:
+            except (ClientError, BotoCoreError, RuntimeError, TypeError, ValueError) as exc:
                 print("GET /order/%s failed: %s" % (order_id, exc))
                 self._send_json(500, {"error": "could not fetch order"})
                 return
