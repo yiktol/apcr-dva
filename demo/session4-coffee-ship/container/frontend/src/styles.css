@@ -36,4 +36,39 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .log li { font-family: ui-monospace, Menlo, monospace; font-size: 13px; padding: 3px 0; color: #e4d6c4; }
 .log .ts { color: var(--muted); margin-right: 8px; }
 .ok { color: var(--ok); } .warn { color: var(--warn); } .hint { color: var(--muted); font-size: 13px; }
+
+/* Status badges — three visually distinct states driven by order lifecycle. */
+.status-badge { display: inline-block; padding: 2px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  border: 1px solid transparent; white-space: nowrap; }
+.status-badge.received { background: rgba(201, 138, 60, .18); color: var(--accent);
+  border-color: var(--accent); }
+.status-badge.brewing { background: rgba(224, 164, 88, .20); color: var(--warn);
+  border-color: var(--warn); }
+.status-badge.ready { background: rgba(127, 176, 105, .20); color: var(--ok);
+  border-color: var(--ok); }
+
+/* Current-order panel under the Place order button. */
+.current-order { margin-top: 14px; padding: 12px; border: 1px solid var(--line);
+  border-radius: 10px; background: rgba(0, 0, 0, .15); }
+.current-order-head { display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; }
+.current-order code { font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+  color: var(--muted); }
+.current-order .hint { margin: 8px 0 0; }
+
+/* Recent orders card + table. */
+.recent { margin-top: 16px; }
+.recent-head { display: flex; justify-content: space-between; align-items: center; }
+.recent-head .refresh { margin: 0; padding: 4px 12px; font-size: 13px; }
+.recent-scroll { overflow-x: auto; }
+.recent-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.recent-table th, .recent-table td { text-align: left; padding: 8px 10px;
+  border-bottom: 1px solid var(--line); white-space: nowrap; }
+.recent-table th { color: var(--muted); font-weight: 600; font-size: 12px;
+  text-transform: uppercase; letter-spacing: .03em; }
+.recent-table td code { font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+  color: var(--muted); }
+.recent-table tbody tr:last-child td { border-bottom: 0; }
+
 @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }

@@ -1,7 +1,7 @@
 {
-  "task_id": "task-coffee-ship-frontend",
-  "task_description": "Add a REAL React (Vite) frontend to the coffee-ship demo, baked into and served by the existing stdlib-Python ECS/Fargate container (Option A). Keep the CloudFront -> ALB -> ECS architecture and the real CI/CD pipeline exactly as-is: do not break CloudFront, the ALB-SG CloudFront prefix-list lock, the imported-from-exports VPC, ECR keep-10, or the EcsDeployAction stages. Container name stays 'web'; ALB health check 'GET /' must still return 200. Multi-stage Dockerfile builds the SPA (node) and serves it from python:3.12-slim at /app/static. SPA source lives under container/frontend/ and the diagram at container/architecture.svg so the docker build context (container/) has everything. Verify by local build + cdk synth only; NO live AWS deploy. Region stays ap-southeast-1. Do NOT touch app/** or (preferably) infra/**.",
+  "task_id": "task-coffee-ship-realapp",
+  "task_description": "Turn the coffee-ship demo into a REAL AWS-backed coffee-ordering app: boto3 backend writing orders to DynamoDB with an SSM-driven loyalty rate and a pure time-based order status (RECEIVED/BREWING/READY); a React SPA that polls live order status and lists the 10 most recent orders; an IAM grant adding ssm:GetParameter on the loyalty parameter to the ECS task role; and an architecture diagram rebuilt from the official AWS icon set. Region pinned ap-southeast-1. Verify LOCAL ONLY (SPA build, docker build, py_compile, status_for unit test, runtime smoke, cdk synth, tsc). No live AWS, no docker push, no cdk deploy. All work inside the worktree /Users/erictole/demo/apcr-dva/.worktrees/realapp (branch coffee-ship-realapp); commit locally, never push.",
   "status": "pending",
-  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
   "blocked_reason": null
 }
