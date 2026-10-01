@@ -96,9 +96,12 @@ echo "==> [3b/6] Deploying the app/pipeline stack (${PIPELINE_STACK})"
 # diagram at container/architecture.svg (local node_modules/ and dist/ are
 # excluded below — the multi-stage image rebuilds the SPA fresh).
 echo "==> [4/6] Packaging container source and triggering the pipeline"
+# The stack has TWO buckets (pipeline source + pipeline artifacts). Pick the
+# SOURCE bucket (logical id starts with 'SourceBucket'); uploading source.zip to
+# the artifacts bucket would not trigger the pipeline.
 SOURCE_BUCKET="$(aws cloudformation describe-stack-resources \
   --stack-name "${PIPELINE_STACK}" \
-  --query "StackResources[?ResourceType=='AWS::S3::Bucket'].PhysicalResourceId | [0]" \
+  --query "StackResources[?ResourceType=='AWS::S3::Bucket' && starts_with(LogicalResourceId, 'SourceBucket')].PhysicalResourceId | [0]" \
   --output text)"
 
 if [[ -z "${SOURCE_BUCKET}" || "${SOURCE_BUCKET}" == "None" ]]; then
