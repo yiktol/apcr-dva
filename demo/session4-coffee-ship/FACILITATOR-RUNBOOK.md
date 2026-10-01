@@ -8,6 +8,22 @@ to this folder (`demo/session4-coffee-ship`).
 Fargate/ALB provisioning). Deploy ahead of the session, or deploy during Act 1
 and let it run while you talk. Keep this file open on screen.
 
+**Prerequisite — Docker with buildx:** the container image is a multi-stage
+build, and the seed step builds for **linux/amd64** (Fargate's architecture).
+On Apple Silicon you need Docker **buildx** available (Docker Desktop ships it;
+with colima, install the `docker-buildx` CLI plugin into `~/.docker/cli-plugins/`
+and `docker buildx create --use`). Without buildx the cross-architecture build
+fails and the seed image never lands in ECR.
+
+**What `deploy.sh` stands up:** the **container path only** — the two ECS
+environments (test + prod), the pipeline, ECR, DynamoDB, SQS, SSM, Secrets, and
+AppConfig. The serverless **SAM app under `app/`** (Lambda + API Gateway) is a
+separate, optional path used only for the "same thing declared more than one way"
+teaching point; `deploy.sh` does **not** deploy it. Commands below that target a
+Lambda function or `sam local` only apply if you have separately deployed the SAM
+app (`cd app && sam deploy --guided`); otherwise treat those as read-only
+walkthroughs of the template.
+
 > Teardown reminder: this stack bills by the hour (Fargate + ALB + pipeline).
 > Run `./destroy.sh` the moment the session ends — see the Teardown section.
 
@@ -73,25 +89,26 @@ CodeBuild, Kiro agent hook, the headless review gate.
 and a published Lambda version.
 
 ```bash
-# Container image: build, tag, push to ECR. The repo keeps the 10 newest images
-# (lifecycle policy) so storage never grows unbounded.
+# Container image: build (linux/amd64, multi-stage) and push to ECR. The repo
+# keeps the 10 newest images (lifecycle policy) so storage never grows unbounded.
+# This is also exactly how deploy.sh seeds ECR before the ECS services come up.
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ECR_URI=${ACCOUNT_ID}.dkr.ecr.ap-southeast-1.amazonaws.com/coffee-shop
 aws ecr get-login-password --region ap-southeast-1 \
   | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.ap-southeast-1.amazonaws.com
-docker build -t coffee-shop:latest container/
-docker tag coffee-shop:latest ${ECR_URI}:latest
-docker push ${ECR_URI}:latest
+# buildx builds for the Fargate architecture and pushes in one step.
+docker buildx build --platform linux/amd64 -t ${ECR_URI}:latest --push container/
 aws ecr describe-images --repository-name coffee-shop --region ap-southeast-1
 
+# (Optional, SAM path only — skip unless you deployed the app/ SAM stack.)
 # Lambda version + alias: SAM's AutoPublishAlias ('live') publishes an immutable
 # version and moves the 'live' alias — CodeDeploy shifts traffic to that alias.
-aws lambda list-versions-by-function --function-name coffee-shop-loyalty --region ap-southeast-1
-aws lambda get-alias --function-name coffee-shop-loyalty --name live --region ap-southeast-1
+#   aws lambda list-versions-by-function --function-name <fn> --region ap-southeast-1
+#   aws lambda get-alias --function-name <fn> --name live --region ap-southeast-1
 ```
 
-**Services demonstrated:** Amazon ECR (build/push/tag + lifecycle policy),
-Lambda versions and aliases.
+**Services demonstrated:** Amazon ECR (build/push + lifecycle policy); Lambda
+versions and aliases (in the optional SAM path).
 
 ---
 
@@ -120,13 +137,13 @@ and Deploy-Prod is a real `CodeDeployEcsDeployAction` (blue/green).
 > (`coffee-shop-test` and `coffee-shop-prod`) so the difference is real, not
 > cosmetic. For a fully guided run, use `./demo-pipeline.sh` (or `DEMO-SCRIPT.md`).
 
-**Bootstrap note:** the ECR repo is empty right after `cdk deploy`, so **both**
-ECS services stay unhealthy until this pipeline runs its first build. The build
-emits the rolling artifact (`imagedefinitions.json`) **and** the CodeDeploy
-artifacts (`imageDetails.json`, `taskdef.json`, `appspec.yaml`). The first run's
-Deploy-Test makes `coffee-shop-test` healthy; the first approved Deploy-Prod runs
-the initial blue/green and makes `coffee-shop-prod` healthy. Subsequent runs roll
-TEST and blue/green PROD to new images.
+**Bootstrap note:** `deploy.sh` seeds ECR with a first image before creating the
+ECS services, so they come up healthy on the initial deploy. Each pipeline run's
+Build emits the rolling artifact (`imagedefinitions.json`) **and** the CodeDeploy
+artifacts (**`imageDetail.json`** — singular, the exact name the CodeDeploy ECS
+blue/green action requires — plus `taskdef.json`, `appspec.yaml`). Deploy-Test
+rolls `coffee-shop-test`; the approved Deploy-Prod runs the blue/green canary on
+`coffee-shop-prod`.
 
 ```bash
 # 0) Resolve the pipeline's auto-named S3 source bucket and BOTH CloudFront URLs.
@@ -150,11 +167,13 @@ open "$CLOUDFRONT_URL/"              # the Coffee Shop web page in a browser
 curl -s "$CLOUDFRONT_URL/health"    # -> {"status": "ok", "version": "v3"}
 
 #    Place an order and watch it move through the states, then list recent orders.
-#    POST /order writes to DynamoDB and returns the order id + loyalty points
+#    POST /order writes to DynamoDB and returns the orderId + loyalty points
 #    (points = floor(total) * the SSM loyalty rate /coffee-shop/loyalty/points-per-dollar).
+#    The body is {items:[{id,name,qty,price}], total} (or {orderId, total}).
 ORDER_ID=$(curl -s -X POST "$CLOUDFRONT_URL/order" \
   -H 'content-type: application/json' \
-  -d '{"item":"flat white","total":12.5}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+  -d '{"items":[{"id":"flat-white","name":"Flat White","qty":1,"price":12.5}],"total":12.5}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["orderId"])')
 curl -s "$CLOUDFRONT_URL/order/$ORDER_ID"   # status RECEIVED (<10s)
 sleep 12 ; curl -s "$CLOUDFRONT_URL/order/$ORDER_ID"   # status BREWING (10-25s)
 sleep 15 ; curl -s "$CLOUDFRONT_URL/order/$ORDER_ID"   # status READY (>=25s)
@@ -180,7 +199,7 @@ aws s3 cp /tmp/source.zip s3://${SOURCE_BUCKET}/source.zip --region ap-southeast
 
 # 4) Watch the stages: Source -> Build -> Deploy-Test -> Approval -> Deploy-Prod.
 #    Build does the docker build + push to ECR and emits imagedefinitions.json
-#    (rolling) + imageDetails.json/taskdef.json/appspec.yaml (CodeDeploy);
+#    (rolling) + imageDetail.json/taskdef.json/appspec.yaml (CodeDeploy);
 #    Deploy-Test is a real ECS rolling deploy to the coffee-shop-test service.
 watch -n 10 "aws codepipeline get-pipeline-state --name coffee-shop --region ap-southeast-1 \
   --query 'stageStates[].{stage:stageName,status:latestExecution.status}' --output table"
@@ -232,12 +251,11 @@ ECS **blue/green** canary to PROD via CodeDeploy, and config/flag changes kept
 out of code.
 
 ```bash
-# 1) Lambda canary via CodeDeploy: 10% of traffic for 5 minutes, watched by a
-#    CloudWatch alarm; if 'coffee-shop-loyalty-errors' fires, CodeDeploy rolls
-#    back automatically. Point this out in the SAM template.
+# 1) Lambda canary via CodeDeploy (SAM path — the template, not a live resource
+#    unless you deployed app/). SAM's DeploymentPreference shifts 10% for 5
+#    minutes watched by a CloudWatch alarm, rolling back automatically on alarm.
+#    Show it in the template:
 grep -n "DeploymentPreference" -A4 app/template.yaml
-aws deploy list-deployments --region ap-southeast-1 \
-  --query 'deployments' --output text   # watch the active canary deployment
 
 # 2) TEST — ECS ROLLING update with a deployment circuit breaker, on the
 #    coffee-shop-test cluster/service. A bad image fails health checks and ECS
