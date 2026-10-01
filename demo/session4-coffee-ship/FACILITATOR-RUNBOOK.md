@@ -99,9 +99,13 @@ Lambda versions and aliases.
 
 **Story:** a student edits the container app, pushes a new `source.zip`, and the
 pipeline really rebuilds the Docker image, pushes it to ECR, and rolls the live
-ECS service — the webpage served through CloudFront visibly changes. There is no
-simulation and no placeholder: Build runs `docker build`/`docker push`, and
-Deploy-Test / Deploy-Prod are real `EcsDeployAction`s.
+ECS service — the **Coffee Ship web page** served through CloudFront visibly
+changes. The image is a **multi-stage build**: a node stage runs `npm ci && npm
+run build` on the React (Vite) SPA at `container/frontend/`, then a python stage
+bakes `frontend/dist` + `container/architecture.svg` into `/app/static` and runs
+the stdlib `app.py` that serves both the SPA and the same-origin `/order` API.
+There is no simulation and no placeholder: Build runs `docker build`/`docker
+push`, and Deploy-Test / Deploy-Prod are real `EcsDeployAction`s.
 
 **Bootstrap note:** the ECR repo is empty right after `cdk deploy`, so the ECS
 service stays unhealthy until this pipeline runs its first build. The first run
@@ -118,18 +122,25 @@ CLOUDFRONT_URL=$(aws cloudformation describe-stacks \
 echo "Source bucket: $SOURCE_BUCKET"
 echo "CloudFront URL: $CLOUDFRONT_URL"
 
-# 1) See the current live response (served through CloudFront, NOT the ALB —
-#    the ALB SG only admits the CloudFront prefix list).
-curl -s "$CLOUDFRONT_URL/"      # -> {"status": "ok"}
+# 1) See the current live page (served through CloudFront, NOT the ALB — the
+#    ALB SG only admits the CloudFront prefix list). GET / returns the rendered
+#    Coffee Ship SPA (text/html 200); /health reports the running version.
+open "$CLOUDFRONT_URL/"              # the Coffee Ship web page in a browser
+curl -s "$CLOUDFRONT_URL/health"    # -> {"status": "ok", "version": "v1"}
 
-# 2) STUDENT EDIT: change what the app returns. For example, edit the GET "/"
-#    body in container/app.py from {"status": "ok"} to include a marker, e.g.
-#    self._send_json(200, {"status": "ok", "build": "act4-demo"})
-$EDITOR container/app.py
+# 2) STUDENT EDIT: make a visible change the browser will show. The simplest is
+#    to bump APP_VERSION in container/app.py (the SPA reads it from /health and
+#    shows it in the header), e.g. change  APP_VERSION = "v1"  to  "v2".
+#    You can also edit the React UI under container/frontend/src/ (menu, copy,
+#    styling) — the node build stage rebuilds the SPA inside the image.
+$EDITOR container/app.py            # bump APP_VERSION, or edit frontend/src/*
 
-# 3) Package container/ (with its buildspec) as source.zip and upload it. This
-#    triggers the pipeline.
-( zip -r /tmp/source.zip container/ -x '*__pycache__*' >/dev/null )
+# 3) Package container/ (with its buildspec, the frontend/ SPA source and
+#    architecture.svg) as source.zip and upload it. This triggers the pipeline.
+#    cd into this folder first so the zip is rooted at container/ (parity with
+#    deploy.sh); node_modules/ and dist/ are excluded — the image rebuilds them.
+cd demo/session4-coffee-ship   # (skip if you are already in this folder)
+( zip -r /tmp/source.zip container -x '*.pyc' -x '*__pycache__*' -x '*/node_modules/*' -x '*/dist/*' >/dev/null )
 aws s3 cp /tmp/source.zip s3://${SOURCE_BUCKET}/source.zip --region ap-southeast-1
 
 # 4) Watch the stages: Source -> Build -> Deploy-Test -> Approval -> Deploy-Prod.
@@ -145,16 +156,19 @@ watch -n 10 "aws codepipeline get-pipeline-state --name coffee-ship --region ap-
 #        --stage-name Approval --action-name Manual_Approval --region ap-southeast-1 \
 #        --result summary="approved",status=Approved --token <TOKEN>
 
-# 6) After Deploy-Prod succeeds, curl the SAME CloudFront URL and SEE the change
-#    the student made in step 2 (CloudFront caching is disabled, so it is
-#    immediate once the rolling deploy finishes).
-curl -s "$CLOUDFRONT_URL/"      # -> {"status": "ok", "build": "act4-demo"}
+# 6) After Deploy-Prod succeeds, reload the SAME CloudFront URL and SEE the
+#    change the student made in step 2 (CloudFront caching is disabled, so it is
+#    immediate once the rolling deploy finishes). The web page now shows the
+#    bumped version in its header, confirmed by /health.
+open "$CLOUDFRONT_URL/"              # reload: the Coffee Ship page shows v2
+curl -s "$CLOUDFRONT_URL/health"    # -> {"status": "ok", "version": "v2"}
 ```
 
 **Services demonstrated:** CodePipeline (S3 source, no GitHub/CodeCommit),
-CodeBuild (privileged Docker build + ECR push), Amazon ECR, real ECS deploy
-actions (rolling update), SNS manual-approval notification, CloudFront as the
-single public entry point in front of a locked-down ALB.
+CodeBuild (privileged multi-stage Docker build — React/Vite SPA + python
+runtime — then ECR push), Amazon ECR, real ECS deploy actions (rolling update),
+SNS manual-approval notification, CloudFront as the single public entry point in
+front of a locked-down ALB, serving the rendered Coffee Ship web page.
 
 ---
 

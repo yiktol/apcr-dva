@@ -1,7 +1,7 @@
 {
-  "task_id": "task-session4-coffee-ship",
-  "task_description": "Scaffold a fully deployable, standalone AWS DVA-C03 Testing-and-Deployment demo (coffee-shop ordering app) under <ROOT>=/Users/erictole/demo/apcr-dva/.worktrees/session4-demo/demo/session4-coffee-ship. Pipeline-centric: CDK (TS) infra + pipeline, SAM serverless app with Lambda canary via CodeDeploy, ECS/Fargate+ALB container path with circuit breaker, ECR+lifecycle, AppConfig/SSM/Secrets Manager, Kiro hook, tests, scripts, docs. Region ap-southeast-1 everywhere. Self-contained; no reads/imports from applications or demo/session3. Verification is local only (synth/pytest/bash -n/parse); never cdk deploy.",
-  "status": "completed",
-  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005"],
+  "task_id": "task-coffee-ship-frontend",
+  "task_description": "Add a REAL React (Vite) frontend to the coffee-ship demo, baked into and served by the existing stdlib-Python ECS/Fargate container (Option A). Keep the CloudFront -> ALB -> ECS architecture and the real CI/CD pipeline exactly as-is: do not break CloudFront, the ALB-SG CloudFront prefix-list lock, the imported-from-exports VPC, ECR keep-10, or the EcsDeployAction stages. Container name stays 'web'; ALB health check 'GET /' must still return 200. Multi-stage Dockerfile builds the SPA (node) and serves it from python:3.12-slim at /app/static. SPA source lives under container/frontend/ and the diagram at container/architecture.svg so the docker build context (container/) has everything. Verify by local build + cdk synth only; NO live AWS deploy. Region stays ap-southeast-1. Do NOT touch app/** or (preferably) infra/**.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
   "blocked_reason": null
 }

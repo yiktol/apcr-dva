@@ -8,8 +8,13 @@ version: 0.2
 # emits imagedefinitions.json (containerName "web") for the ECS deploy actions.
 #
 # The source.zip fed to the pipeline must contain the container/ directory
-# (app.py, Dockerfile, requirements.txt) and this buildspec at
-# container/buildspec.yml.
+# (app.py, Dockerfile, requirements.txt), the React SPA source at
+# container/frontend/ (package.json, vite.config.js, index.html, src/) and the
+# diagram at container/architecture.svg, plus this buildspec at
+# container/buildspec.yml. The multi-stage Dockerfile runs `npm ci && npm run
+# build` INSIDE the docker build (CodeBuild is privileged), so no npm step is
+# needed here; a developer's local frontend/node_modules and frontend/dist are
+# excluded from source.zip (see deploy.sh) and rebuilt fresh in the image.
 
 phases:
   pre_build:
