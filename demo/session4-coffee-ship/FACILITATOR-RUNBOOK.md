@@ -102,8 +102,10 @@ pipeline really rebuilds the Docker image, pushes it to ECR, and rolls the live
 ECS service — the **Coffee Ship web page** served through CloudFront visibly
 changes. The image is a **multi-stage build**: a node stage runs `npm ci && npm
 run build` on the React (Vite) SPA at `container/frontend/`, then a python stage
-bakes `frontend/dist` + `container/architecture.svg` into `/app/static` and runs
-the stdlib `app.py` that serves both the SPA and the same-origin `/order` API.
+runs `pip install -r requirements.txt` (boto3), bakes `frontend/dist` +
+`container/architecture.svg` into `/app/static`, and runs the **boto3** `app.py`
+that serves both the SPA and the same-origin order API — placing orders in the
+**DynamoDB `coffee-ship-orders`** table and reading the **SSM** loyalty rate.
 There is no simulation and no placeholder: Build runs `docker build`/`docker
 push`, and Deploy-Test / Deploy-Prod are real `EcsDeployAction`s.
 
@@ -126,11 +128,24 @@ echo "CloudFront URL: $CLOUDFRONT_URL"
 #    ALB SG only admits the CloudFront prefix list). GET / returns the rendered
 #    Coffee Ship SPA (text/html 200); /health reports the running version.
 open "$CLOUDFRONT_URL/"              # the Coffee Ship web page in a browser
-curl -s "$CLOUDFRONT_URL/health"    # -> {"status": "ok", "version": "v1"}
+curl -s "$CLOUDFRONT_URL/health"    # -> {"status": "ok", "version": "v3-realapp"}
+
+#    Place an order and watch it move through the states, then list recent orders.
+#    POST /order writes to DynamoDB and returns the order id + loyalty points
+#    (points = floor(total) * the SSM loyalty rate /coffee-ship/loyalty/points-per-dollar).
+ORDER_ID=$(curl -s -X POST "$CLOUDFRONT_URL/order" \
+  -H 'content-type: application/json' \
+  -d '{"item":"flat white","total":12.5}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+curl -s "$CLOUDFRONT_URL/order/$ORDER_ID"   # status RECEIVED (<10s)
+sleep 12 ; curl -s "$CLOUDFRONT_URL/order/$ORDER_ID"   # status BREWING (10-25s)
+sleep 15 ; curl -s "$CLOUDFRONT_URL/order/$ORDER_ID"   # status READY (>=25s)
+curl -s "$CLOUDFRONT_URL/orders"            # the 10 most recent orders, newest first
+#    In the browser the UI polls /order/{id} so the badge moves RECEIVED ->
+#    BREWING -> READY on its own, and the recent-orders list updates live.
 
 # 2) STUDENT EDIT: make a visible change the browser will show. The simplest is
 #    to bump APP_VERSION in container/app.py (the SPA reads it from /health and
-#    shows it in the header), e.g. change  APP_VERSION = "v1"  to  "v2".
+#    shows it in the header), e.g. change  APP_VERSION = "v3-realapp"  to  "v4".
 #    You can also edit the React UI under container/frontend/src/ (menu, copy,
 #    styling) — the node build stage rebuilds the SPA inside the image.
 $EDITOR container/app.py            # bump APP_VERSION, or edit frontend/src/*
@@ -160,15 +175,16 @@ watch -n 10 "aws codepipeline get-pipeline-state --name coffee-ship --region ap-
 #    change the student made in step 2 (CloudFront caching is disabled, so it is
 #    immediate once the rolling deploy finishes). The web page now shows the
 #    bumped version in its header, confirmed by /health.
-open "$CLOUDFRONT_URL/"              # reload: the Coffee Ship page shows v2
-curl -s "$CLOUDFRONT_URL/health"    # -> {"status": "ok", "version": "v2"}
+open "$CLOUDFRONT_URL/"              # reload: the Coffee Ship page shows v4
+curl -s "$CLOUDFRONT_URL/health"    # -> {"status": "ok", "version": "v4"}
 ```
 
 **Services demonstrated:** CodePipeline (S3 source, no GitHub/CodeCommit),
 CodeBuild (privileged multi-stage Docker build — React/Vite SPA + python
 runtime — then ECR push), Amazon ECR, real ECS deploy actions (rolling update),
 SNS manual-approval notification, CloudFront as the single public entry point in
-front of a locked-down ALB, serving the rendered Coffee Ship web page.
+front of a locked-down ALB, serving the rendered Coffee Ship web page backed by
+DynamoDB orders (RECEIVED -> BREWING -> READY) and the SSM loyalty rate.
 
 ---
 

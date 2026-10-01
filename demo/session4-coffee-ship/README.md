@@ -14,7 +14,7 @@ Everything lives under this one folder. Region is pinned to **ap-southeast-1**.
 | --- | --- |
 | `infra/` | AWS CDK v2 (TypeScript) app — `CoffeeShipNetworkData` + `CoffeeShipAppPipeline` stacks |
 | `app/` | AWS SAM serverless app (Python 3.12 Lambda, API Gateway, SQS, DynamoDB, CodeDeploy canary) |
-| `container/` | ECS/Fargate container path: React (Vite) SPA at `container/frontend/`, stdlib Python HTTP service (`app.py`) that serves the baked SPA + same-origin `/order` API, the `container/architecture.svg` diagram, and a multi-stage `Dockerfile` (node build stage + python runtime) |
+| `container/` | ECS/Fargate container path: React (Vite) SPA at `container/frontend/`, a **boto3** Python HTTP service (`app.py`) that serves the baked SPA + same-origin order API (DynamoDB orders, SSM loyalty rate), the `container/architecture.svg` diagram (built by `container/build_diagram.py` from official AWS icons), and a multi-stage `Dockerfile` (node build stage + python runtime that `pip install`s boto3) |
 | `events/` | Lambda test events (happy + malformed) for replay / `sam local` |
 | `reference/` | "Same SQS queue three ways" teaching artifacts (CloudFormation / CDK / SAM) |
 | `.kiro/hooks/` | Kiro hook that generates unit tests on Python file save |
@@ -41,7 +41,9 @@ Everything lives under this one folder. Region is pinned to **ap-southeast-1**.
         Browser --> CloudFront --> ALB (SG = CloudFront prefix list only)
        (Coffee Ship              --> ECS Fargate service (circuit breaker)
         web app, SPA)                  ^ image pulled from ECR "coffee-ship"
-                                       serves the baked SPA + same-origin /order API
+                                       serves the baked SPA + same-origin order API
+                                       (boto3) --> DynamoDB "coffee-ship-orders"
+                                               --> SSM loyalty points-per-dollar
 
   Serverless path (separate, SAM-managed, out of this pipeline):
      API Gateway --> Lambda (alias "live", CodeDeploy canary 10%/5min) --> DynamoDB "coffee-ship-orders"
@@ -61,19 +63,43 @@ Everything lives under this one folder. Region is pinned to **ap-southeast-1**.
 
 CloudFront serves the **Coffee Ship web app** — a React (Vite) single-page app
 baked into the container image. The browser loads HTML/JS from `GET /`, and the
-app calls the **same-origin** JSON API at `/order` (POST an order, get loyalty
-points back). The Python container (`container/app.py`, stdlib `http.server`)
-serves both: the built SPA from `/app/static` and the `/order` + `/health`
-endpoints. `GET /` now returns the SPA `index.html` as `text/html` **200**, so
-the ALB health check (which targets `GET /`) still passes. `GET /health` returns
-`{"status":"ok","version":APP_VERSION}`, and the SPA shows that version in its
-header.
+app calls the **same-origin** JSON API (no CORS, no base URL):
+
+- `POST /order` places an order in the **DynamoDB `coffee-ship-orders`** table and
+  returns the new order (id + loyalty points earned).
+- `GET /order/{id}` returns one order with its **current status**, computed from
+  how long ago it was placed: `RECEIVED` (< 10s), `BREWING` (10–25s), `READY`
+  (≥ 25s). The SPA polls this so you watch an order move through the three states.
+- `GET /orders` returns the **10 most recent orders** (newest first) for the
+  recent-orders list in the UI.
+- `GET /health` returns `{"status":"ok","version":APP_VERSION}` and is always
+  **200** (even with no AWS credentials or DynamoDB unreachable), so the ALB
+  health check — which targets `GET /` — stays green. The SPA shows the version
+  in its header.
+
+Loyalty points are `floor(total) * rate`, where the **rate comes from the SSM
+Parameter** `/coffee-ship/loyalty/points-per-dollar` (cached in-process, default
+`10` if SSM is unavailable). The container uses **boto3** to reach DynamoDB and
+SSM; `boto3` is imported under a guard so `python3 -m py_compile` and `/health`
+still work without it.
 
 The image is built by a **multi-stage `Dockerfile`**: a `node` stage runs
 `npm ci && npm run build` on `container/frontend/` to produce `dist/`, then a
-`python:3.12-slim` runtime stage copies `frontend/dist` and
-`container/architecture.svg` into `/app/static` and runs `app.py`. The runtime
-stays **stdlib-only** (no pip deps); npm never runs in the final image.
+`python:3.12-slim` runtime stage runs `pip install -r requirements.txt` (boto3,
+the one runtime dependency), copies `frontend/dist` and `container/architecture.svg`
+into `/app/static`, and runs `app.py`. npm never runs in the final image.
+
+### The architecture diagram
+
+`container/architecture.svg` is **generated** by `container/build_diagram.py`,
+which base64-embeds the official AWS service icons (the `*_64.svg` files under
+the repo's `aws-icons/` set) so the SVG is fully self-contained. It draws two
+lanes — the runtime path (User → CloudFront → ALB → ECS Fargate → DynamoDB + SSM)
+and the CI/CD path (S3 `source.zip` → EventBridge → CodePipeline → CodeBuild →
+ECR → `EcsDeployAction`). Regenerate it with
+`python3 container/build_diagram.py`, then copy it to the top-level
+`architecture.svg` and run `rsvg-convert container/architecture.svg -o
+architecture.png` to refresh the PNG.
 
 The container release pipeline is **real end to end**: the Build stage runs that
 multi-stage `docker build` of `container/` (so `npm run build` happens inside the
