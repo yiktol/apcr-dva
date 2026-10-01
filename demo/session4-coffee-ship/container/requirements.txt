@@ -1,0 +1,2 @@
+# coffee-ship container service is stdlib-only (http.server) — no runtime deps.
+# Kept intentionally empty to keep the image small. Pin any additions here.
