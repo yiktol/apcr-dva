@@ -1,7 +1,7 @@
 {
   "task_id": "task-session4-coffee-ship",
   "task_description": "Scaffold a fully deployable, standalone AWS DVA-C03 Testing-and-Deployment demo (coffee-shop ordering app) under <ROOT>=/Users/erictole/demo/apcr-dva/.worktrees/session4-demo/demo/session4-coffee-ship. Pipeline-centric: CDK (TS) infra + pipeline, SAM serverless app with Lambda canary via CodeDeploy, ECS/Fargate+ALB container path with circuit breaker, ECR+lifecycle, AppConfig/SSM/Secrets Manager, Kiro hook, tests, scripts, docs. Region ap-southeast-1 everywhere. Self-contained; no reads/imports from applications or demo/session3. Verification is local only (synth/pytest/bash -n/parse); never cdk deploy.",
-  "status": "in_progress",
+  "status": "completed",
   "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005"],
   "blocked_reason": null
 }
