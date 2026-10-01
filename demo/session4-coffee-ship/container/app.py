@@ -1,20 +1,39 @@
 """coffee-ship container HTTP service.
 
 The image source the ECS/Fargate service runs. A tiny stdlib-only HTTP server
-(no external dependencies) exposing:
+(no external dependencies) that serves both the baked React (Vite) SPA and the
+JSON API:
 
-* ``GET /``       -> health check, returns ``{"status": "ok"}``.
-* ``GET /order``  -> echoes a sample order with computed loyalty points.
-* ``POST /order`` -> echoes the posted order with computed loyalty points.
+* ``GET /``                -> serves the SPA ``index.html`` (``text/html`` 200).
+                              This preserves the ALB health check which targets
+                              ``GET /`` expecting HTTP 200.
+* ``GET /health``          -> ``{"status": "ok", "version": APP_VERSION}``.
+* ``GET /order``           -> echoes a sample order with computed loyalty points.
+* ``POST /order``          -> echoes the posted order with computed loyalty points.
+* ``GET /architecture.svg``-> the baked architecture diagram (``image/svg+xml``).
+* ``GET /assets/...`` etc. -> static files from the baked SPA, Content-Type via
+                              ``mimetypes``.
+* unknown asset-looking path (a dot in its last segment) -> 404.
+* any other unknown non-API path -> SPA fallback: serves ``index.html`` 200 so
+                              client-side routing works.
+
+Static files are served from ``STATIC_DIR`` (default ``/app/static``, the dir the
+multi-stage Dockerfile bakes ``frontend/dist`` + ``architecture.svg`` into),
+overridable via env for local runs.
 
 Loyalty points mirror the Lambda path: points = floor(total) * POINTS_PER_DOLLAR
 (default 10, overridable via env). The service listens on ``PORT`` (default 8080),
-matching the ECS taskdef / ALB container port.
+matching the ECS taskdef / ALB container port. Runtime is stdlib-only.
 """
 
 import json
+import mimetypes
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Application version, surfaced by GET /health and shown by the SPA header. Bump
+# this to see a real rolling deploy change in the browser.
+APP_VERSION = "v1"
 
 # Points awarded per whole dollar of order total. Overridable via env; the
 # default matches the Lambda handler and the SSM loyalty config.
@@ -22,6 +41,10 @@ POINTS_PER_DOLLAR = int(os.environ.get("POINTS_PER_DOLLAR", "10"))
 
 # Service port, kept configurable but defaulting to the taskdef container port.
 PORT = int(os.environ.get("PORT", "8080"))
+
+# Directory holding the baked SPA (frontend/dist) + architecture.svg. The
+# multi-stage Dockerfile copies both into /app/static; overridable for local runs.
+STATIC_DIR = os.environ.get("STATIC_DIR", "/app/static")
 
 
 def compute_points(order):
@@ -40,7 +63,7 @@ def compute_points(order):
 
 
 class OrderHandler(BaseHTTPRequestHandler):
-    """Routes GET / (health) and GET|POST /order (loyalty echo)."""
+    """Serves the JSON API plus the baked SPA static files."""
 
     def _send_json(self, status_code, body):
         payload = json.dumps(body).encode("utf-8")
@@ -50,18 +73,91 @@ class OrderHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def do_GET(self):
-        if self.path == "/" or self.path == "/health":
-            self._send_json(200, {"status": "ok"})
+    def _resolve_static(self, rel_path):
+        """Resolve ``rel_path`` under STATIC_DIR, guarding against traversal.
+
+        Returns an absolute path inside STATIC_DIR, or None if the request
+        escapes the static root (e.g. ``../etc/passwd``).
+        """
+        static_root = os.path.realpath(STATIC_DIR)
+        candidate = os.path.realpath(os.path.join(static_root, rel_path.lstrip("/")))
+        if candidate != static_root and not candidate.startswith(
+            static_root + os.sep
+        ):
+            return None
+        return candidate
+
+    def _send_file(self, abs_path, content_type):
+        """Send a file with the given Content-Type. Returns True if sent."""
+        try:
+            with open(abs_path, "rb") as fh:
+                payload = fh.read()
+        except (FileNotFoundError, IsADirectoryError, OSError):
+            return False
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+        return True
+
+    def _serve_index(self):
+        """Serve the SPA index.html as text/html 200. Falls back to a tiny
+        placeholder page if the SPA has not been baked (keeps '/' a 200 for the
+        ALB health check even without a built dist)."""
+        index_path = self._resolve_static("index.html")
+        if index_path and self._send_file(index_path, "text/html; charset=utf-8"):
             return
-        if self.path.startswith("/order"):
+        body = b"<!doctype html><title>coffee-ship</title><h1>coffee-ship</h1>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0].split("#", 1)[0]
+
+        # --- JSON API (byte-for-byte unchanged shape) ---
+        if path == "/health":
+            self._send_json(200, {"status": "ok", "version": APP_VERSION})
+            return
+        if path.startswith("/order"):
             # Sample order so the demo endpoint is browsable without a body.
             order = {"orderId": "sample-order", "total": 12.50}
             self._send_json(
                 200, {"orderId": order["orderId"], "points": compute_points(order)}
             )
             return
-        self._send_json(404, {"error": "not found"})
+
+        # --- SPA + static assets ---
+        if path == "/":
+            self._serve_index()
+            return
+
+        if path == "/architecture.svg":
+            svg_path = self._resolve_static("architecture.svg")
+            if svg_path and self._send_file(svg_path, "image/svg+xml"):
+                return
+            self._send_json(404, {"error": "not found"})
+            return
+
+        resolved = self._resolve_static(path)
+        if resolved and os.path.isfile(resolved):
+            content_type = (
+                mimetypes.guess_type(resolved)[0] or "application/octet-stream"
+            )
+            if self._send_file(resolved, content_type):
+                return
+
+        # Asset-looking path (a dot in the last segment) that was not found -> 404.
+        last_segment = path.rsplit("/", 1)[-1]
+        if "." in last_segment:
+            self._send_json(404, {"error": "not found"})
+            return
+
+        # Any other unknown non-API path -> SPA client-side route fallback.
+        self._serve_index()
 
     def do_POST(self):
         if not self.path.startswith("/order"):
