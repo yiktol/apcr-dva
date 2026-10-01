@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# destroy.sh — tear down the coffee-ship demo so nothing keeps billing.
+# destroy.sh — tear down the coffee-shop resources so nothing keeps billing.
 #
 # Deletes the CDK stacks, empties & removes the pipeline source/artifact
 # buckets, and clears the ECR images. This is DESTRUCTIVE and irreversible,
@@ -15,16 +15,16 @@ export AWS_DEFAULT_REGION="ap-southeast-1"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-NETWORK_STACK="CoffeeShipNetworkData"
-PIPELINE_STACK="CoffeeShipAppPipeline"
-SAM_STACK="coffee-ship-app"
-ECR_REPO="coffee-ship"
+NETWORK_STACK="CoffeeShopNetworkData"
+PIPELINE_STACK="CoffeeShopAppPipeline"
+SAM_STACK="coffee-shop-app"
+ECR_REPO="coffee-shop"
 
-echo "==> coffee-ship destroy (region: ${AWS_REGION})"
+echo "==> coffee-shop destroy (region: ${AWS_REGION})"
 
 # --- Confirmation prompt guarding all destructive steps ----------------------
 cat <<WARN
-WARNING: this will PERMANENTLY DELETE the coffee-ship demo in ${AWS_REGION}:
+WARNING: this will PERMANENTLY DELETE the coffee-shop resources in ${AWS_REGION}:
   - CDK stacks: ${PIPELINE_STACK}, ${NETWORK_STACK}
   - SAM stack (if present): ${SAM_STACK}
   - all objects in the pipeline source & artifact S3 buckets
@@ -98,7 +98,7 @@ fi
 # --- 4. Destroy the CDK stacks -----------------------------------------------
 # NOTE: the two-environment resources — the SECOND CloudFront distribution
 # (TestCloudFrontUrl, test ALB origin) and the CodeDeploy application +
-# deployment group 'coffee-ship-prod' (prod blue/green) — are all declared
+# deployment group 'coffee-shop-prod' (prod blue/green) — are all declared
 # in-stack, so `cdk destroy --all` removes them automatically. No extra manual
 # deletion is needed for them beyond emptying the buckets/ECR done above.
 echo "==> [4/5] Destroying CDK stacks (${PIPELINE_STACK}, ${NETWORK_STACK})"
@@ -112,7 +112,7 @@ echo "==> [4/5] Destroying CDK stacks (${PIPELINE_STACK}, ${NETWORK_STACK})"
 echo "==> [5/5] Teardown complete"
 echo ""
 echo "============================================================"
-echo " coffee-ship demo destroyed in ${AWS_REGION}."
+echo " coffee-shop app destroyed in ${AWS_REGION}."
 echo " Verify in the AWS console that no CloudFormation stacks,"
 echo " ALBs, Fargate tasks, or NAT/EIP resources remain."
 echo "============================================================"

@@ -8,17 +8,16 @@ import * as appconfig from 'aws-cdk-lib/aws-appconfig';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 
 /**
- * Data layer for the coffee-ship demo.
+ * Data layer for the coffee-shop app.
  *
- * Cost-light by design: on-demand DynamoDB and no networking of its own. The
- * VPC is NOT created here — the pipeline stack imports the existing VPC from
- * the account's CloudFormation exports. Exposes the orders queue, table, the
- * loyalty parameter, and the ECR repository so the pipeline stack can wire the
- * ECS services and app to them.
+ * Cost-light by design: on-demand DynamoDB and no networking of its own.
+ * Networking is handled by the pipeline stack. Exposes the orders queue, table,
+ * the loyalty parameter, and the ECR repository so the pipeline stack can wire
+ * the ECS services and app to them.
  *
  * The ECR repository lives HERE (not in the pipeline stack) on purpose: it must
  * exist and be seeded with an image BEFORE the pipeline stack's ECS services
- * (which pull 'coffee-ship:latest') are created, or those services cannot
+ * (which pull 'coffee-shop:latest') are created, or those services cannot
  * stabilize on a fresh deploy. deploy.sh deploys this stack, seeds ECR, then
  * deploys the pipeline stack.
  */
@@ -34,8 +33,8 @@ export class NetworkDataStack extends cdk.Stack {
     // ECR repository with a lifecycle rule keeping the 10 most recent images.
     // Defined here so it exists (and can be seeded) before the pipeline stack's
     // ECS services that pull from it.
-    this.repository = new ecr.Repository(this, 'CoffeeShipRepo', {
-      repositoryName: 'coffee-ship',
+    this.repository = new ecr.Repository(this, 'CoffeeShopRepo', {
+      repositoryName: 'coffee-shop',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
       lifecycleRules: [
@@ -48,7 +47,7 @@ export class NetworkDataStack extends cdk.Stack {
 
     // Orders table: on-demand billing, orderId partition key.
     this.ordersTable = new dynamodb.Table(this, 'OrdersTable', {
-      tableName: 'coffee-ship-orders',
+      tableName: 'coffee-shop-orders',
       partitionKey: { name: 'orderId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -56,22 +55,22 @@ export class NetworkDataStack extends cdk.Stack {
 
     // Orders queue consumed by the serverless app.
     this.ordersQueue = new sqs.Queue(this, 'OrdersQueue', {
-      queueName: 'coffee-ship-orders',
+      queueName: 'coffee-shop-orders',
       visibilityTimeout: cdk.Duration.seconds(60),
       retentionPeriod: cdk.Duration.days(4),
     });
 
     // Non-secret loyalty configuration value (plain SSM parameter).
     this.loyaltyParam = new ssm.StringParameter(this, 'LoyaltyConfigParam', {
-      parameterName: '/coffee-ship/loyalty/points-per-dollar',
+      parameterName: '/coffee-shop/loyalty/points-per-dollar',
       stringValue: '10',
       description: 'Non-secret loyalty config: loyalty points earned per dollar spent',
     });
 
     // Placeholder payment-provider API key stored in Secrets Manager.
     new secretsmanager.Secret(this, 'PaymentProviderApiKey', {
-      secretName: 'coffee-ship/payment-provider-api-key',
-      description: 'Placeholder payment-provider API key for the coffee-ship demo',
+      secretName: 'coffee-shop/payment-provider-api-key',
+      description: 'Placeholder payment-provider API key for the coffee-shop app',
       generateSecretString: {
         secretStringTemplate: JSON.stringify({ provider: 'demo-payments' }),
         generateStringKey: 'apiKey',
@@ -83,15 +82,15 @@ export class NetworkDataStack extends cdk.Stack {
     // AppConfig: application + environment + freeform hosted configuration
     // profile for the "loyalty points" feature flag, plus a staged
     // deployment strategy.
-    const appConfigApp = new appconfig.Application(this, 'CoffeeShipAppConfig', {
-      applicationName: 'coffee-ship',
-      description: 'AppConfig application for coffee-ship feature flags',
+    const appConfigApp = new appconfig.Application(this, 'CoffeeShopAppConfig', {
+      applicationName: 'coffee-shop',
+      description: 'AppConfig application for coffee-shop feature flags',
     });
 
-    new appconfig.Environment(this, 'CoffeeShipAppConfigEnv', {
+    new appconfig.Environment(this, 'CoffeeShopAppConfigEnv', {
       application: appConfigApp,
       environmentName: 'production',
-      description: 'Production environment for coffee-ship feature flags',
+      description: 'Production environment for coffee-shop feature flags',
     });
 
     new appconfig.HostedConfiguration(this, 'LoyaltyPointsConfig', {
@@ -102,7 +101,7 @@ export class NetworkDataStack extends cdk.Stack {
         JSON.stringify({ loyaltyPointsEnabled: true }),
       ),
       deploymentStrategy: new appconfig.DeploymentStrategy(this, 'StagedDeploymentStrategy', {
-        deploymentStrategyName: 'coffee-ship-staged',
+        deploymentStrategyName: 'coffee-shop-staged',
         rolloutStrategy: appconfig.RolloutStrategy.linear({
           growthFactor: 20,
           deploymentDuration: cdk.Duration.minutes(10),

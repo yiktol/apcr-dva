@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  coffee-ship serverless app (FEAT-002). Python 3.12 Lambda behind API Gateway,
+  coffee-shop serverless app (FEAT-002). Python 3.12 Lambda behind API Gateway,
   consuming the orders SQS queue and writing to the orders DynamoDB table.
   Ships via CodeDeploy with a 10%/5min canary and CloudWatch-alarm rollback.
 
@@ -14,11 +14,11 @@ Globals:
 Parameters:
   OrdersTableName:
     Type: String
-    Default: coffee-ship-orders
+    Default: coffee-shop-orders
     Description: DynamoDB orders table name (matches the CDK NetworkDataStack table).
   OrdersQueueName:
     Type: String
-    Default: coffee-ship-orders
+    Default: coffee-shop-orders
     Description: SQS orders queue name (matches the CDK NetworkDataStack queue).
 
 Resources:
@@ -44,7 +44,7 @@ Resources:
   LoyaltyErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: coffee-ship-loyalty-errors
+      AlarmName: coffee-shop-loyalty-errors
       AlarmDescription: >
         Rolls back the Lambda canary if the loyalty function errors spike during deployment.
       Namespace: AWS/Lambda
@@ -64,7 +64,7 @@ Resources:
   LoyaltyFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: coffee-ship-loyalty
+      FunctionName: coffee-shop-loyalty
       CodeUri: src/
       Handler: app.handler
       AutoPublishAlias: live

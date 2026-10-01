@@ -1,6 +1,6 @@
 version: 0.2
 
-# CodeBuild buildspec for the coffee-ship serverless app.
+# CodeBuild buildspec for the coffee-shop serverless app.
 # Referenced by the CDK pipeline as 'app/buildspec.yml'.
 phases:
   install:
@@ -25,14 +25,14 @@ phases:
       - echo "Running unit tests"
       - python -m pytest -q
       # Headless validation gate. This is a DOCUMENTED NO-OP PLACEHOLDER that
-      # exits 0 by default so it never blocks the demo pipeline. In a real
+      # exits 0 by default so it never blocks the pipeline. In a real
       # deployment this would invoke an automated review of the deploy log; a
       # NON-ZERO exit here FAILS the build stage and stops the deployment.
       - |
         echo "Headless validation gate (placeholder)"
         kiro --headless --prompt "review the deploy log" || true
         # The '|| true' keeps the placeholder non-blocking because the 'kiro'
-        # binary is not present in this demo environment. Remove the '|| true'
+        # binary is not present in this environment. Remove the '|| true'
         # to make a non-zero exit fail the stage in a real pipeline.
         exit 0
 

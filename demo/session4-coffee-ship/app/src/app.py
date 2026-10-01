@@ -1,4 +1,4 @@
-"""coffee-ship loyalty Lambda handler.
+"""coffee-shop loyalty Lambda handler.
 
 Handles two event sources:
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# demo-pipeline.sh — a guided, step-by-step live demo of the Coffee Shop
+# demo-pipeline.sh — a guided, step-by-step walkthrough of the Coffee Shop
 # release pipeline. Shows a REAL code change ("Coffee Shop" -> "BeanThere Cafe")
 # flowing through ONE pipeline run: rolling deploy to TEST, a manual approval
 # gate verified against the TEST CloudFront URL, then a CodeDeploy blue/green
 # canary to PROD, ending with the PROD page showing the new name.
 #
 # Nothing here is simulated. Every step runs a real AWS CLI call against the
-# deployed CoffeeShipAppPipeline stack. Each step pauses with `read -p` so you
+# deployed CoffeeShopAppPipeline stack. Each step pauses with `read -p` so you
 # can narrate and let the class watch the console in parallel.
 #
 # Prereq: ./deploy.sh has already stood the stack up and the first pipeline run
@@ -20,9 +20,9 @@ export AWS_DEFAULT_REGION="ap-southeast-1"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-PIPELINE_STACK="CoffeeShipAppPipeline"
-PIPELINE_NAME="coffee-ship"
-CODEDEPLOY_APP="coffee-ship-prod"       # CodeDeploy application name (prod)
+PIPELINE_STACK="CoffeeShopAppPipeline"
+PIPELINE_NAME="coffee-shop"
+CODEDEPLOY_APP="coffee-shop-prod"       # CodeDeploy application name (prod)
 SOURCE_KEY="source.zip"
 
 APP_JSX="${ROOT}/container/frontend/src/App.jsx"
@@ -35,7 +35,7 @@ pause() { read -r -p "
 >>> ${1:-Press Enter to continue...} "; }
 
 echo "============================================================"
-echo " Coffee Shop — guided pipeline demo (region: ${AWS_REGION})"
+echo " Coffee Shop — guided pipeline walkthrough (region: ${AWS_REGION})"
 echo " One run: edit the app name, roll TEST, approve, blue/green PROD."
 echo "============================================================"
 
@@ -92,7 +92,7 @@ echo "    We change the APP_NAME constant in App.jsx and the <title> in"
 echo "    index.html. This is a real source edit the pipeline will ship."
 pause "Apply the sed edits and show the diff"
 
-# macOS/BSD and GNU sed differ on -i; detect and branch so the demo is portable.
+# macOS/BSD and GNU sed differ on -i; detect and branch so this is portable.
 if sed --version >/dev/null 2>&1; then
   SED_INPLACE=(sed -i)          # GNU sed
 else
@@ -111,7 +111,7 @@ echo "    Excludes *.pyc, __pycache__, node_modules/, dist/ — the multi-stage"
 echo "    image rebuilds the SPA fresh. The upload triggers the pipeline."
 pause "Zip and upload to s3://${SOURCE_BUCKET}/${SOURCE_KEY}"
 
-TMP_ZIP="$(mktemp -t coffee-ship-source.XXXXXX).zip"
+TMP_ZIP="$(mktemp -t coffee-shop-source.XXXXXX).zip"
 trap 'rm -f "${TMP_ZIP}"' EXIT
 (
   cd "${ROOT}"
@@ -124,7 +124,7 @@ echo "    Deploy-Test -> Approval -> Deploy-Prod)."
 # --- Step 5: poll the pipeline until it reaches the Approval stage -----------
 echo ""
 echo "### Step 5 — Watch the pipeline until it reaches the Approval gate"
-echo "    Source -> Build -> Deploy-Test (rolling to coffee-ship-test) run first."
+echo "    Source -> Build -> Deploy-Test (rolling to coffee-shop-test) run first."
 pause "Poll get-pipeline-state until Approval is InProgress"
 
 APPROVAL_TOKEN=""
@@ -159,7 +159,7 @@ done
 # --- Step 6: verify TEST shows the NEW name while PROD still shows the OLD ---
 echo ""
 echo "### Step 6 — Verify on TEST before approving"
-echo "    Deploy-Test has already rolled coffee-ship-test. TEST should now show"
+echo "    Deploy-Test has already rolled coffee-shop-test. TEST should now show"
 echo "    '${NEW_NAME}' while PROD still shows '${OLD_NAME}' (prod deploy not run)."
 pause "curl TEST and PROD and compare"
 
@@ -186,7 +186,7 @@ aws codepipeline put-approval-result \
   --result summary=approved,status=Approved \
   --token "${APPROVAL_TOKEN}"
 echo "    Approved. Deploy-Prod (CodeDeployEcsDeployAction) now starts the"
-echo "    blue/green deployment on the coffee-ship-prod service."
+echo "    blue/green deployment on the coffee-shop-prod service."
 
 # --- Step 8: watch the CodeDeploy blue/green deployment ----------------------
 echo ""
@@ -248,7 +248,7 @@ echo "### Step 10 — Rollback (how PROD protects itself)"
 cat <<ROLLBACK
     The prod CodeDeploy deployment group has automatic rollback enabled on:
       - DEPLOYMENT_FAILURE  (a failed deployment), and
-      - DEPLOYMENT_STOP_ON_ALARM (the 'coffee-ship-prod-unhealthy-hosts' alarm,
+      - DEPLOYMENT_STOP_ON_ALARM (the 'coffee-shop-prod-unhealthy-hosts' alarm,
         evaluationPeriods 1 on the blue target group).
     If the green task set is unhealthy or the alarm fires during the canary,
     CodeDeploy keeps traffic on blue (or shifts it back) — no manual step.
@@ -264,7 +264,7 @@ ROLLBACK
 
 echo ""
 echo "============================================================"
-echo " Demo complete. TEST got the change first (rolling), you verified it,"
+echo " Walkthrough complete. TEST got the change first (rolling), you verified it,"
 echo " approved, and PROD took it via a CodeDeploy blue/green canary."
 echo " Remember: './destroy.sh' when the session is over."
 echo "============================================================"

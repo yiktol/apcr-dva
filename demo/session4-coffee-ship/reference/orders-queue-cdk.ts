@@ -1,4 +1,4 @@
-// The coffee-ship orders queue declared with AWS CDK (TypeScript).
+// The coffee-shop orders queue declared with AWS CDK (TypeScript).
 // Teaching artifact only - not deployed. This snippet mirrors the OrdersQueue
 // construct defined in infra/lib/network-data-stack.ts: same queue name,
 // visibility timeout and retention period.
@@ -14,7 +14,7 @@ export class OrdersQueueExample extends Construct {
 
     // Orders queue consumed by the serverless app.
     this.ordersQueue = new sqs.Queue(this, 'OrdersQueue', {
-      queueName: 'coffee-ship-orders',
+      queueName: 'coffee-shop-orders',
       visibilityTimeout: cdk.Duration.seconds(60),
       retentionPeriod: cdk.Duration.days(4),
     });

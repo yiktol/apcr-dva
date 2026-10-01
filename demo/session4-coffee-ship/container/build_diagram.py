@@ -2,7 +2,7 @@
 """Generate a self-contained architecture SVG for the Coffee Shop REAL app.
 
 Embeds the official AWS service icons (base64) from the repo's aws-icons set so
-the SVG needs no external files. Modeled on demo/session3/build_diagram.py:
+the SVG needs no external files. Uses
 color-coded group zones (AWS category colors), curved bezier flow arrows,
 numbered steps, drop shadows, a legend. Unlike session3 (which embeds PNGs),
 this embeds the vector ``*_64.svg`` icons as ``data:image/svg+xml;base64``.
@@ -16,8 +16,8 @@ Two deploy environments are drawn distinctly:
     automatic alarm rollback.
 
 Lanes:
-  * Runtime  — User -> CloudFront(prod/test) -> ALB (imported VPC, SG locked to
-    the CloudFront prefix list) -> ECS Fargate -> DynamoDB orders + SSM rate.
+  * Runtime  — User -> CloudFront(prod/test) -> ALB -> ECS Fargate ->
+    DynamoDB orders + SSM rate.
   * CI/CD    — source.zip in S3 -> EventBridge -> CodePipeline -> CodeBuild
     (docker build/push) -> ECR -> EcsDeployAction (rolling) to TEST, then a
     manual Approval gate, then CodeDeployEcsDeployAction (blue/green) to PROD.
@@ -166,8 +166,8 @@ p.append(f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" font-
 ''')
 
 # Zones (behind nodes). TEST env on top, PROD env below, data plane right.
-p.append(zone(300, 100, 620, 130, "TEST env &#8212; coffee-ship-test (rolling)", "test"))
-p.append(zone(300, 270, 620, 130, "PROD env &#8212; coffee-ship-prod (blue/green)", "prod"))
+p.append(zone(300, 100, 620, 130, "TEST env &#8212; coffee-shop-test (rolling)", "test"))
+p.append(zone(300, 270, 620, 130, "PROD env &#8212; coffee-shop-prod (blue/green)", "prod"))
 p.append(zone(970, 120, 160, 290, "Data plane", "data"))
 p.append(zone(120, 610, 1130, 180, "CI/CD lane &#8212; one pipeline, two deploy actions", "cicd"))
 
@@ -176,28 +176,28 @@ p.append(user_node(*USER))
 
 # TEST runtime lane nodes
 p.append(icon(*N["cf_test"], "cloudfront", "CloudFront", "TestCloudFrontUrl"))
-p.append(icon(*N["alb_test"], "alb", "test ALB", "SG = CF prefix list"))
-p.append(icon(*N["ecs_test"], "ecs", "test ECS", "coffee-ship-test"))
+p.append(icon(*N["alb_test"], "alb", "test ALB", "HTTP"))
+p.append(icon(*N["ecs_test"], "ecs", "test ECS", "coffee-shop-test"))
 
 # PROD runtime lane nodes
 p.append(icon(*N["cf_prod"], "cloudfront", "CloudFront", "CloudFrontUrl"))
 p.append(icon(*N["alb_prod"], "alb", "prod ALB", "blue/green TGs"))
-p.append(icon(*N["ecs_prod"], "ecs", "prod ECS", "coffee-ship-prod"))
+p.append(icon(*N["ecs_prod"], "ecs", "prod ECS", "coffee-shop-prod"))
 
 # Data plane nodes
-p.append(icon(*N["dynamodb"], "dynamodb", "DynamoDB", "coffee-ship-orders"))
+p.append(icon(*N["dynamodb"], "dynamodb", "DynamoDB", "coffee-shop-orders"))
 p.append(icon(*N["ssm"], "ssm", "SSM Parameter", "loyalty rate"))
 
 # CI/CD lane nodes
 p.append(icon(*N["s3"], "s3", "S3 source", "source.zip"))
 p.append(icon(*N["eventbridge"], "eventbridge", "EventBridge", "Object Created"))
-p.append(icon(*N["pipeline"], "pipeline", "CodePipeline", "coffee-ship"))
+p.append(icon(*N["pipeline"], "pipeline", "CodePipeline", "coffee-shop"))
 p.append(icon(*N["codebuild"], "codebuild", "CodeBuild", "docker build/push"))
-p.append(icon(*N["ecr"], "ecr", "ECR", "coffee-ship repo"))
+p.append(icon(*N["ecr"], "ecr", "ECR", "coffee-shop repo"))
 p.append(icon(*N["codedeploy"], "codedeploy", "CodeDeploy", "blue/green canary"))
 
-# Imported-VPC note under the PROD lane.
-p.append('<text x="316" y="420" class="note">Both ALBs run in the imported VPC (public subnets, no NAT); only CloudFront can reach them.</text>')
+# VPC note under the PROD lane.
+p.append('<text x="316" y="420" class="note">Both ALBs run in the VPC (public subnets, no NAT).</text>')
 
 GREEN, ORANGE, BLUE, PURPLE = "#1f9d55", "#ed7100", "#4d72d6", "#8c4fff"
 

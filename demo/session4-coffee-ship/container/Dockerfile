@@ -1,4 +1,4 @@
-# coffee-ship container image: multi-stage build.
+# coffee-shop container image: multi-stage build.
 #
 # Build context is this directory (`container/`) — both `deploy.sh` and
 # `buildspec.yml` run `docker build container/`, so everything the build needs

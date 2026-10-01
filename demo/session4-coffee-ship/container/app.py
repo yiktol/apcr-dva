@@ -1,4 +1,4 @@
-"""coffee-ship container HTTP service — the REAL boto3 backend.
+"""coffee-shop container HTTP service — the REAL boto3 backend.
 
 The image source the ECS/Fargate service runs. A stdlib ``http.server`` app that
 serves both the baked React (Vite) SPA and a real JSON API backed by AWS:
@@ -20,10 +20,10 @@ serves both the baked React (Vite) SPA and a real JSON API backed by AWS:
 
 Data plane:
 * Orders live in DynamoDB table ``ORDERS_TABLE_NAME`` (default
-  ``coffee-ship-orders``), partitioned on ``orderId``. Only ``createdAt`` drives
+  ``coffee-shop-orders``), partitioned on ``orderId``. Only ``createdAt`` drives
   status, so order rows are immutable after the initial ``put_item``.
 * The loyalty rate (points per whole dollar) is read from SSM parameter
-  ``LOYALTY_PARAM_NAME`` (default ``/coffee-ship/loyalty/points-per-dollar``),
+  ``LOYALTY_PARAM_NAME`` (default ``/coffee-shop/loyalty/points-per-dollar``),
   cached ~60s in-process, falling back to ``10`` on any error / missing param.
 * Order ``status`` is a PURE function of time via ``status_for(created_at, now)``:
   RECEIVED (< 10s), BREWING (10–25s), READY (>= 25s).
@@ -61,9 +61,9 @@ except ImportError:  # boto3 not installed (e.g. local py_compile / unit test)
 
 # Application version, surfaced by GET /health and shown by the SPA header. Bump
 # this to see a real rolling deploy change in the browser.
-APP_VERSION = "v3-realapp"
+APP_VERSION = "v3"
 
-# AWS region — pinned to ap-southeast-1 everywhere in this demo.
+# AWS region — pinned to ap-southeast-1 everywhere.
 AWS_REGION = (
     os.environ.get("AWS_DEFAULT_REGION")
     or os.environ.get("AWS_REGION")
@@ -71,11 +71,11 @@ AWS_REGION = (
 )
 
 # DynamoDB orders table (partition key: orderId).
-ORDERS_TABLE_NAME = os.environ.get("ORDERS_TABLE_NAME", "coffee-ship-orders")
+ORDERS_TABLE_NAME = os.environ.get("ORDERS_TABLE_NAME", "coffee-shop-orders")
 
 # SSM parameter holding the loyalty rate (points per whole dollar).
 LOYALTY_PARAM_NAME = os.environ.get(
-    "LOYALTY_PARAM_NAME", "/coffee-ship/loyalty/points-per-dollar"
+    "LOYALTY_PARAM_NAME", "/coffee-shop/loyalty/points-per-dollar"
 )
 
 # Fallback loyalty rate when SSM is unavailable or the param is missing. Matches
@@ -296,7 +296,7 @@ def get_order(order_id):
 def list_recent_orders(limit=10):
     """Return the ``limit`` most recent orders, newest first.
 
-    A Scan + in-memory sort is acceptable at this demo's scale (tiny table, no
+    A Scan + in-memory sort is acceptable at this scale (tiny table, no
     GSI). The partition key is orderId, so there is no range key to query on.
     """
     resp = _dynamodb_table().scan()
@@ -351,7 +351,7 @@ class OrderHandler(BaseHTTPRequestHandler):
         index_path = self._resolve_static("index.html")
         if index_path and self._send_file(index_path, "text/html; charset=utf-8"):
             return
-        body = b"<!doctype html><title>coffee-ship</title><h1>coffee-ship</h1>"
+        body = b"<!doctype html><title>coffee-shop</title><h1>coffee-shop</h1>"
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -472,7 +472,7 @@ class OrderHandler(BaseHTTPRequestHandler):
 
 def main():
     server = ThreadingHTTPServer(("0.0.0.0", PORT), OrderHandler)
-    print("coffee-ship container listening on port %d" % PORT)
+    print("coffee-shop container listening on port %d" % PORT)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

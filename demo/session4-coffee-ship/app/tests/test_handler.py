@@ -1,4 +1,4 @@
-"""Unit tests for the coffee-ship loyalty Lambda handler."""
+"""Unit tests for the coffee-shop loyalty Lambda handler."""
 
 import json
 import os

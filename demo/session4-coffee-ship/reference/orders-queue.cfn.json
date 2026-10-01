@@ -1,11 +1,11 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "The coffee-ship orders queue declared as raw CloudFormation. Teaching artifact only - not deployed. Mirrors the OrdersQueue construct in infra/lib/network-data-stack.ts.",
+  "Description": "The coffee-shop orders queue declared as raw CloudFormation. Teaching artifact only - not deployed. Mirrors the OrdersQueue construct in infra/lib/network-data-stack.ts.",
   "Resources": {
     "OrdersQueue": {
       "Type": "AWS::SQS::Queue",
       "Properties": {
-        "QueueName": "coffee-ship-orders",
+        "QueueName": "coffee-shop-orders",
         "VisibilityTimeout": 60,
         "MessageRetentionPeriod": 345600
       }
@@ -13,11 +13,11 @@
   },
   "Outputs": {
     "OrdersQueueUrl": {
-      "Description": "URL of the coffee-ship orders queue",
+      "Description": "URL of the coffee-shop orders queue",
       "Value": { "Ref": "OrdersQueue" }
     },
     "OrdersQueueArn": {
-      "Description": "ARN of the coffee-ship orders queue",
+      "Description": "ARN of the coffee-shop orders queue",
       "Value": { "Fn::GetAtt": ["OrdersQueue", "Arn"] }
     }
   }

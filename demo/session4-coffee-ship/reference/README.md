@@ -1,6 +1,6 @@
 # Reference: declare the same queue three ways
 
-This folder is a teaching artifact. It declares the **same** coffee-ship orders
+This folder is a teaching artifact. It declares the **same** coffee-shop orders
 SQS queue in three different formats so you can compare the authoring experience
 side by side:
 
@@ -12,13 +12,13 @@ side by side:
 
 All three describe one queue with identical settings:
 
-- **Queue name:** `coffee-ship-orders`
+- **Queue name:** `coffee-shop-orders`
 - **Visibility timeout:** 60 seconds
 - **Message retention:** 4 days (345600 seconds)
 
 These settings mirror the real `OrdersQueue` construct in
 [`../infra/lib/network-data-stack.ts`](../infra/lib/network-data-stack.ts),
-which is the queue the demo actually deploys.
+which is the queue that actually gets deployed.
 
 ## Not deployed
 

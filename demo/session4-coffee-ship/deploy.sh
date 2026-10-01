@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# deploy.sh — stand up the coffee-ship DVA-C03 testing-and-deployment demo.
+# deploy.sh — stand up the coffee-shop DVA-C03 testing-and-deployment project.
 #
 # This creates REAL, BILLABLE AWS resources (ECS Fargate + ALB + CodePipeline +
 # CodeBuild + ECR + DynamoDB + SQS + AppConfig). Run it in a throwaway sandbox
@@ -15,16 +15,16 @@ export AWS_DEFAULT_REGION="ap-southeast-1"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# CloudFormation stack names (= CDK construct ids from infra/bin/coffee-ship.ts).
-NETWORK_STACK="CoffeeShipNetworkData"
-PIPELINE_STACK="CoffeeShipAppPipeline"
+# CloudFormation stack names (= CDK construct ids from infra/bin/coffee-shop.ts).
+NETWORK_STACK="CoffeeShopNetworkData"
+PIPELINE_STACK="CoffeeShopAppPipeline"
 
 # Fixed resource names declared in the CDK stacks.
-ECR_REPO="coffee-ship"
-PIPELINE_NAME="coffee-ship"
+ECR_REPO="coffee-shop"
+PIPELINE_NAME="coffee-shop"
 SOURCE_KEY="source.zip"
 
-echo "==> coffee-ship deploy (region: ${AWS_REGION})"
+echo "==> coffee-shop deploy (region: ${AWS_REGION})"
 
 # --- Preflight ---------------------------------------------------------------
 echo "==> [0/6] Checking prerequisites"
@@ -49,12 +49,12 @@ echo "==> [1/6] Bootstrapping CDK environment (idempotent)"
 
 # --- 2a. Deploy the data/network stack FIRST (creates the ECR repo) ----------
 # ORDERING MATTERS: both the test ECS service and the CODE_DEPLOY prod service
-# reference 'coffee-ship:latest'. If we deployed the pipeline stack (which
+# reference 'coffee-shop:latest'. If we deployed the pipeline stack (which
 # creates those services) before any image exists in ECR, the services could
 # not pull an image and would never stabilize (ECS circuit breaker trips). So
 # we deploy the network/data stack first (it is what the AppPipeline stack
 # imports), THEN seed ECR, THEN deploy the pipeline stack whose services now
-# find 'coffee-ship:latest' already present.
+# find 'coffee-shop:latest' already present.
 echo "==> [2/6] Deploying the data/network stack (${NETWORK_STACK}) — creates ECR"
 (
   cd "${ROOT}/infra"
@@ -62,9 +62,9 @@ echo "==> [2/6] Deploying the data/network stack (${NETWORK_STACK}) — creates 
     npx cdk deploy "${NETWORK_STACK}" --require-approval never
 )
 
-# The ECR repository 'coffee-ship' is created by the network stack above, so it
+# The ECR repository 'coffee-shop' is created by the network stack above, so it
 # now exists and can be seeded before the pipeline stack's ECS services (which
-# pull 'coffee-ship:latest') are created.
+# pull 'coffee-shop:latest') are created.
 
 # --- 2b. Seed ECR with an initial image BEFORE the services are created ------
 # Build for linux/amd64 explicitly: AWS Fargate runs X86_64 by default, and on
@@ -107,7 +107,7 @@ if [[ -z "${SOURCE_BUCKET}" || "${SOURCE_BUCKET}" == "None" ]]; then
 fi
 echo "    Source bucket: ${SOURCE_BUCKET}"
 
-TMP_ZIP="$(mktemp -t coffee-ship-source.XXXXXX).zip"
+TMP_ZIP="$(mktemp -t coffee-shop-source.XXXXXX).zip"
 trap 'rm -f "${TMP_ZIP}"' EXIT
 (
   cd "${ROOT}"
@@ -120,9 +120,8 @@ trap 'rm -f "${TMP_ZIP}"' EXIT
 aws s3 cp "${TMP_ZIP}" "s3://${SOURCE_BUCKET}/${SOURCE_KEY}"
 echo "    Uploaded s3://${SOURCE_BUCKET}/${SOURCE_KEY} (pipeline '${PIPELINE_NAME}' will start)"
 
-# --- 5. Resolve the CloudFront URLs (the public entry points) ----------------
-# Neither ALB is publicly reachable (each SG only admits the CloudFront prefix
-# list), so the student-facing URLs are CloudFront, from the stack outputs.
+# --- 5. Resolve the CloudFront URLs (the entry points) -----------------------
+# Resolve the CloudFront URLs from the stack outputs.
 # PROD = CloudFrontUrl (prod ALB origin); TEST = TestCloudFrontUrl (test ALB
 # origin). The second distribution adds no S3 bucket, so the AWS::S3::Bucket
 # | [0] source-bucket lookup above is unaffected.
@@ -139,17 +138,17 @@ TEST_CLOUDFRONT_URL="$(aws cloudformation describe-stacks \
 # --- 6. Resolve the SAM API endpoint (if the SAM app stack is deployed) ------
 echo "==> [6/6] Resolving the API endpoint"
 API_ENDPOINT="$(aws cloudformation describe-stacks \
-  --stack-name coffee-ship-app \
+  --stack-name coffee-shop-app \
   --query "Stacks[0].Outputs[?OutputKey=='OrdersApiEndpoint'].OutputValue | [0]" \
   --output text 2>/dev/null || true)"
 
 # --- Summary -----------------------------------------------------------------
 echo ""
 echo "============================================================"
-echo " coffee-ship demo deployed in ${AWS_REGION}"
+echo " coffee-shop app deployed in ${AWS_REGION}"
 echo "------------------------------------------------------------"
 if [[ -n "${CLOUDFRONT_URL}" && "${CLOUDFRONT_URL}" != "None" ]]; then
-  echo " CloudFront URL : ${CLOUDFRONT_URL}  (PROD — use this; the ALB is not public)"
+  echo " CloudFront URL : ${CLOUDFRONT_URL}  (PROD)"
 else
   echo " CloudFront URL : (not available yet — distribution may still deploy)"
 fi
@@ -162,14 +161,14 @@ if [[ -n "${API_ENDPOINT}" && "${API_ENDPOINT}" != "None" ]]; then
   echo " API endpoint   : ${API_ENDPOINT}"
 else
   echo " API endpoint   : (serverless path is separate; deploy the SAM app and"
-  echo "                  re-check the 'coffee-ship-app' output 'OrdersApiEndpoint')"
+  echo "                  re-check the 'coffee-shop-app' output 'OrdersApiEndpoint')"
 fi
 echo "------------------------------------------------------------"
 echo " The container pipeline rebuilds container/ on every source.zip upload"
 echo " (multi-stage image: it runs 'npm run build' for the SPA, then serves it"
 echo " from the python runtime). It deploys to TWO environments: a rolling"
-echo " EcsDeployAction to coffee-ship-test, then — after the manual approval —"
-echo " a CodeDeploy blue/green canary to coffee-ship-prod. Edit"
+echo " EcsDeployAction to coffee-shop-test, then — after the manual approval —"
+echo " a CodeDeploy blue/green canary to coffee-shop-prod. Edit"
 echo " container/frontend/src/* or container/app.py, run ./demo-pipeline.sh,"
 echo " verify on the Test CloudFront URL, approve, and watch the Coffee Shop"
 echo " web page served through the PROD CloudFront URL change."

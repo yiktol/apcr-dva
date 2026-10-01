@@ -1,7 +1,7 @@
 {
-  "name": "coffee-ship-infra",
+  "name": "coffee-shop-infra",
   "version": "0.1.0",
-  "description": "CDK v2 infra + pipeline for the session4 coffee-ship demo (ap-southeast-1)",
+  "description": "CDK v2 infra + pipeline for the session4 coffee-shop app (ap-southeast-1)",
   "private": true,
   "bin": {
     "coffee-ship": "bin/coffee-ship.ts"

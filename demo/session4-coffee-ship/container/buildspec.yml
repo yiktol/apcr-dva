@@ -1,10 +1,10 @@
 version: 0.2
 
-# Real container build for the coffee-ship ECS/Fargate service.
+# Real container build for the coffee-shop ECS/Fargate service.
 #
 # Runs in a CodeBuild project with privileged:true so Docker is available.
 # Builds container/ via container/Dockerfile, tags BOTH :latest and a unique
-# per-build tag, pushes BOTH to the coffee-ship ECR repo, runs real checks, and
+# per-build tag, pushes BOTH to the coffee-shop ECR repo, runs real checks, and
 # emits imagedefinitions.json (containerName "web") for the ECS deploy actions.
 #
 # The source.zip fed to the pipeline must contain the container/ directory
@@ -21,7 +21,7 @@ phases:
     commands:
       - echo "Resolving account/region and logging in to ECR..."
       - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-      - 'REPO_URI=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/coffee-ship'
+      - 'REPO_URI=${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/coffee-shop'
       # Unique, immutable tag per build (commit sha when available, else build number).
       - 'IMAGE_TAG=${CODEBUILD_RESOLVED_SOURCE_VERSION:-$CODEBUILD_BUILD_NUMBER}'
       - echo "Repo URI = $REPO_URI  Image tag = $IMAGE_TAG"

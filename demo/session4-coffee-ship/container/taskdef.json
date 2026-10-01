@@ -1,5 +1,5 @@
 {
-  "family": "coffee-ship-prod",
+  "family": "coffee-shop-prod",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "256",
@@ -28,15 +28,15 @@
         },
         {
           "name": "ORDERS_TABLE_NAME",
-          "value": "coffee-ship-orders"
+          "value": "coffee-shop-orders"
         }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/coffee-ship-prod",
+          "awslogs-group": "/ecs/coffee-shop-prod",
           "awslogs-region": "ap-southeast-1",
-          "awslogs-stream-prefix": "coffee-ship-prod"
+          "awslogs-stream-prefix": "coffee-shop-prod"
         }
       }
     }

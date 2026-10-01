@@ -1,9 +1,9 @@
-# SAM CLI configuration for the coffee-ship serverless app.
+# SAM CLI configuration for the coffee-shop serverless app.
 # Region is pinned to ap-southeast-1 to match the CDK infra and deploy scripts.
 version = 0.1
 
 [default.deploy.parameters]
-stack_name = "coffee-ship-app"
+stack_name = "coffee-shop-app"
 region = "ap-southeast-1"
 capabilities = "CAPABILITY_IAM"
 confirm_changeset = true
