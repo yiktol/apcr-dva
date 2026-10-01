@@ -14,6 +14,8 @@ import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 import * as codepipeline_actions from 'aws-cdk-lib/aws-codepipeline-actions';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as events_targets from 'aws-cdk-lib/aws-events-targets';
 
 export interface AppPipelineStackProps extends cdk.StackProps {
   readonly ordersQueue: sqs.Queue;
@@ -247,12 +249,22 @@ export class AppPipelineStack extends cdk.Stack {
     const sourceOutput = new codepipeline.Artifact('SourceArtifact');
     const buildOutput = new codepipeline.Artifact('BuildArtifact');
 
+    // Trigger exactly ONCE per source.zip write via the native S3 -> EventBridge
+    // "Object Created" notification (wired explicitly below). We deliberately do
+    // NOT use S3Trigger.POLL (polling can start a second, overlapping execution
+    // that races the first on the single ECS service — one wins, the other
+    // fails its ECS deploy) and NOT S3Trigger.EVENTS (that builds a CloudTrail
+    // "AWS API Call" rule which needs S3 data-event logging to exist). Using
+    // S3Trigger.NONE + an explicit EventBridge rule is deterministic and needs
+    // no CloudTrail: one upload => one execution.
+    sourceBucket.enableEventBridgeNotification();
+
     const sourceAction = new codepipeline_actions.S3SourceAction({
       actionName: 'S3_Source',
       bucket: sourceBucket,
       bucketKey: 'source.zip',
       output: sourceOutput,
-      trigger: codepipeline_actions.S3Trigger.POLL,
+      trigger: codepipeline_actions.S3Trigger.NONE,
     });
 
     // CodeBuild project driven by the container buildspec. privileged:true so
@@ -301,7 +313,7 @@ export class AppPipelineStack extends cdk.Stack {
       input: buildOutput,
     });
 
-    new codepipeline.Pipeline(this, 'CoffeeShipPipeline', {
+    const pipeline = new codepipeline.Pipeline(this, 'CoffeeShipPipeline', {
       pipelineName: 'coffee-ship',
       stages: [
         { stageName: 'Source', actions: [sourceAction] },
@@ -310,6 +322,21 @@ export class AppPipelineStack extends cdk.Stack {
         { stageName: 'Approval', actions: [manualApprovalAction] },
         { stageName: 'Deploy-Prod', actions: [deployProdAction] },
       ],
+    });
+
+    // Start the pipeline on the native S3 "Object Created" event for source.zip.
+    // One write => one event => one execution. No CloudTrail, no polling.
+    new events.Rule(this, 'SourceZipCreatedRule', {
+      description: 'Start the coffee-ship pipeline when source.zip is created in the source bucket',
+      eventPattern: {
+        source: ['aws.s3'],
+        detailType: ['Object Created'],
+        detail: {
+          bucket: { name: [sourceBucket.bucketName] },
+          object: { key: ['source.zip'] },
+        },
+      },
+      targets: [new events_targets.CodePipeline(pipeline)],
     });
   }
 }
