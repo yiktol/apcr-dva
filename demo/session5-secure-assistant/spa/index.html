@@ -3,15 +3,210 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Coffee Shop — Secure Assistant</title>
+    <meta name="description" content="Coffee — Makes you Love. Order with our secure assistant." />
+    <title>Coffee — Makes you Love</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main class="app">
-      <header class="hdr">
-        <h1>Coffee Shop Assistant</h1>
-        <p class="sub">Ask about an order, download a receipt, or request a refund.</p>
-      </header>
+    <!-- ==== NAVBAR ==== -->
+    <header class="site-nav">
+      <div class="nav-inner">
+        <a class="brand" href="#home" aria-label="Coffee shop home">
+          <svg class="brand-icon" viewBox="0 0 32 32" width="28" height="28" aria-hidden="true" focusable="false">
+            <path d="M5 11h18v8a7 7 0 0 1-7 7H12a7 7 0 0 1-7-7v-8z" fill="currentColor" />
+            <path d="M23 12h3a4 4 0 0 1 0 8h-3" fill="none" stroke="currentColor" stroke-width="2.2" />
+            <path d="M10 3c-1 1.5-1 2.5 0 4M15 3c-1 1.5-1 2.5 0 4M20 3c-1 1.5-1 2.5 0 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          </svg>
+          <span class="brand-name">Café Nova</span>
+        </a>
+        <nav class="nav-links" aria-label="Primary">
+          <a href="#offer">We Offer</a>
+          <a href="#menu">Menu</a>
+          <a href="#contact">Contact</a>
+          <button
+            type="button"
+            id="openChat"
+            class="btn-order"
+            data-open-chat
+            aria-haspopup="dialog"
+            aria-controls="chatPanel"
+            aria-expanded="false"
+          >
+            Order with Assistant
+          </button>
+        </nav>
+      </div>
+    </header>
+
+    <!-- ==== HERO ==== -->
+    <section class="hero" id="home">
+      <div class="hero-inner">
+        <svg class="hero-heart" viewBox="0 0 24 24" width="40" height="40" aria-hidden="true" focusable="false">
+          <path d="M12 21s-7.5-4.8-10-9.3C.6 9 1.7 5.6 4.8 4.8 7 4.2 9 5.3 10 7c1-1.7 3-2.8 5.2-2.2C18.3 5.6 19.4 9 18 11.7 15.5 16.2 12 21 12 21z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+        </svg>
+        <h1>Coffee — Makes you Love</h1>
+        <p class="hero-tag">A lot can happen over a cup of coffee. It's AWSome.</p>
+        <button
+          type="button"
+          class="btn-order btn-hero"
+          data-open-chat
+          aria-haspopup="dialog"
+          aria-controls="chatPanel"
+          aria-expanded="false"
+        >
+          Order Here
+        </button>
+      </div>
+    </section>
+
+    <!-- ==== WHAT WE OFFER ==== -->
+    <section id="offer" class="section">
+      <div class="section-inner">
+        <h2 class="section-title">What We Offer</h2>
+        <p class="section-lead">
+          Freshly roasted beans, loose-leaf teas, and small-batch bakes — made
+          to order and served with a smile.
+        </p>
+        <div class="cards">
+          <article class="card">
+            <svg class="card-icon" viewBox="0 0 32 32" width="44" height="44" aria-hidden="true" focusable="false">
+              <path d="M5 11h18v8a7 7 0 0 1-7 7H12a7 7 0 0 1-7-7v-8z" fill="none" stroke="currentColor" stroke-width="2" />
+              <path d="M23 12h3a4 4 0 0 1 0 8h-3" fill="none" stroke="currentColor" stroke-width="2" />
+              <path d="M10 3c-1 1.5-1 2.5 0 4M15 3c-1 1.5-1 2.5 0 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <h3>Coffee</h3>
+            <p>
+              Espresso, flat whites, and pour-overs pulled from single-origin
+              beans roasted in small batches.
+            </p>
+          </article>
+          <article class="card">
+            <svg class="card-icon" viewBox="0 0 32 32" width="44" height="44" aria-hidden="true" focusable="false">
+              <path d="M8 13h14v6a7 7 0 0 1-7 7h0a7 7 0 0 1-7-7v-6z" fill="none" stroke="currentColor" stroke-width="2" />
+              <path d="M15 4c-1.5 1.5-1.5 3 0 4.5M11 6c-1 1-1 2 0 3M19 6c-1 1-1 2 0 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <h3>Tea</h3>
+            <p>
+              Loose-leaf greens, bold blacks, and calming herbals steeped to
+              order for the perfect cup.
+            </p>
+          </article>
+          <article class="card">
+            <svg class="card-icon" viewBox="0 0 32 32" width="44" height="44" aria-hidden="true" focusable="false">
+              <path d="M5 16h22v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-9z" fill="none" stroke="currentColor" stroke-width="2" />
+              <path d="M5 16c0-3 3-5 11-5s11 2 11 5" fill="none" stroke="currentColor" stroke-width="2" />
+              <path d="M16 5v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              <circle cx="16" cy="4" r="1.4" fill="currentColor" />
+            </svg>
+            <h3>Cakes</h3>
+            <p>
+              Croissants, coco cakes, and seasonal bakes made fresh in-house
+              every morning.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==== MENU / SPECIALS ==== -->
+    <section id="menu" class="section section-alt">
+      <div class="section-inner">
+        <h2 class="section-title">Today's Specials</h2>
+        <p class="section-lead">A few favourites from the counter.</p>
+        <ul class="menu-list">
+          <li class="menu-item">
+            <div class="menu-text">
+              <span class="menu-name">Flat White</span>
+              <span class="menu-desc">Double ristretto, silky steamed milk.</span>
+            </div>
+            <span class="menu-price">$4.50</span>
+          </li>
+          <li class="menu-item">
+            <div class="menu-text">
+              <span class="menu-name">Latte</span>
+              <span class="menu-desc">Smooth espresso with velvety micro-foam.</span>
+            </div>
+            <span class="menu-price">$4.75</span>
+          </li>
+          <li class="menu-item">
+            <div class="menu-text">
+              <span class="menu-name">Croissant</span>
+              <span class="menu-desc">Buttery, flaky, baked this morning.</span>
+            </div>
+            <span class="menu-price">$3.00</span>
+          </li>
+          <li class="menu-item">
+            <div class="menu-text">
+              <span class="menu-name">Coco Cake</span>
+              <span class="menu-desc">Rich coconut sponge with cream.</span>
+            </div>
+            <span class="menu-price">$5.25</span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ==== RECENT ORDERS ==== -->
+    <section id="recent" class="section">
+      <div class="section-inner">
+        <h2 class="section-title">Recent Orders</h2>
+        <p class="section-lead">Live from the counter — refreshes automatically.</p>
+        <ul id="recentOrders" class="orders-list" aria-live="polite"></ul>
+      </div>
+    </section>
+
+    <!-- ==== FOOTER ==== -->
+    <footer class="site-footer" id="contact">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <span class="brand-name">Café Nova</span>
+          <p>321 Awesome Street, New York, NY 12345</p>
+        </div>
+        <div class="footer-contact">
+          <p>info@cafenova.example</p>
+          <p>+1 235 123 1234</p>
+        </div>
+      </div>
+      <div class="footer-note">Copyright &copy; 2024 Café Nova. All rights reserved.</div>
+    </footer>
+
+    <!-- ==== FLOATING CHAT BUTTON ==== -->
+    <button
+      type="button"
+      id="openChatFab"
+      class="chat-fab btn-order"
+      data-open-chat
+      aria-haspopup="dialog"
+      aria-controls="chatPanel"
+      aria-expanded="false"
+      aria-label="Chat with us to order coffee"
+    >
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+        <path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-5 4V6a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+        <circle cx="9" cy="11" r="1.2" fill="currentColor" />
+        <circle cx="12.5" cy="11" r="1.2" fill="currentColor" />
+        <circle cx="16" cy="11" r="1.2" fill="currentColor" />
+      </svg>
+      <span class="chat-fab-label">Chat with us</span>
+    </button>
+
+    <!-- ==== CHAT PANEL OVERLAY ==== -->
+    <div
+      id="chatPanel"
+      class="chat-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="chatPanelTitle"
+      hidden
+    >
+      <div class="chat-panel-header">
+        <h2 id="chatPanelTitle">Order with our assistant</h2>
+        <button type="button" id="closeChat" class="chat-close" aria-label="Close chat">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
+            <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
 
       <section id="log" class="log" aria-live="polite"></section>
 
@@ -34,7 +229,10 @@
         />
         <button type="submit">Send</button>
       </form>
-    </main>
+    </div>
+
     <script src="app.js"></script>
+    <script src="ui.js"></script>
+    <script src="orders.js"></script>
   </body>
 </html>

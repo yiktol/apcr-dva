@@ -57,6 +57,16 @@ async function sendMessage(text) {
     if (data.pendingRefund && data.pendingRefund.token) {
       renderPendingRefund(data.pendingRefund);
     }
+    if (data.placedOrder && data.placedOrder.orderId) {
+      append(
+        "sys",
+        "Order placed: " +
+          data.placedOrder.orderId +
+          " — " +
+          data.placedOrder.summary
+      );
+      if (window.refreshRecentOrders) window.refreshRecentOrders();
+    }
   } catch (e) {
     append("sys", "Network error. Please try again.");
   }
