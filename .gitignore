@@ -220,3 +220,7 @@ ppt/
 # the ignore for any infra/lib directory and its contents.
 !**/infra/lib/
 !**/infra/lib/**
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
