@@ -15,6 +15,9 @@ Flow:
   assistant Lambda -> PrivateLink bedrock-runtime endpoint -> Bedrock
                       Nova Micro (inference profile + Guardrail)
   assistant Lambda -> DynamoDB orders/pending-refunds (CMK) + Secrets + SSM
+                      (place_order writes orders; look_up_order reads them)
+  orders-list Lambda (read-only) -> DynamoDB byCreatedAt GSI -> GET /api/orders
+                      (storefront "Recent Orders" panel polls this)
   refund-confirm (human confirmation) -> executes the pending refund
   presign Lambda   -> receipts S3 (CMK, TLS-only)
   Bedrock invocation logs -> CMK CloudWatch
@@ -81,6 +84,7 @@ N = {
     "secrets":    (640, 560),
     "ssm":        (790, 620),
     "refund":     (560, 440),
+    "orderslist": (790, 90),
     "presign":    (360, 470),
     "receipts":   (360, 630),
     "kms":        (170, 630),
@@ -168,8 +172,8 @@ p.append(f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" font-
   .note {{ fill:#7a8aa0; font-size:10.5px; }}
 </style>
 <rect x="0" y="0" width="{W}" height="{H}" fill="url(#bg)"/>
-<text x="34" y="44" class="title">Secure Coffee-Shop AI Assistant &#8212; Strands + Nova Micro, four security acts</text>
-<text x="34" y="66" class="cap">CloudFront+WAF+OAC &#8594; API &#8594; private-subnet Strands assistant &#8594; Bedrock (Nova Micro inference profile + Guardrail) via PrivateLink. Region ap-southeast-1.</text>
+<text x="34" y="44" class="title">Secure Coffee-Shop AI Assistant &#8212; Strands + Nova Micro, ordering + four security acts</text>
+<text x="34" y="66" class="cap">CloudFront+WAF+OAC &#8594; API &#8594; private-subnet Strands assistant (place / look-up / refund) &#8594; Bedrock (Nova Micro + Guardrail) via PrivateLink. Read-only orders list feeds the Recent Orders panel. Region ap-southeast-1.</text>
 ''')
 
 # Act zones (behind nodes).
@@ -187,6 +191,7 @@ p.append(icon(*N["cloudfront"], "cloudfront", "CloudFront", "default domain + OA
 p.append(icon(*N["spa"], "s3", "S3 SPA", "private via OAC"))
 p.append(icon(*N["waf"], "waf", "WAF (REGIONAL)", "common + rate (COUNT)"))
 p.append(icon(*N["apigw"], "apigw", "API Gateway", "/api/* (X-Ray on)"))
+p.append(icon(*N["orderslist"], "lambda", "Orders list", "read-only GET /api/orders"))
 p.append(icon(*N["lambda"], "lambda", "Assistant", "VPC private subnets"))
 p.append(icon(*N["privatelink"], "privatelink", "PrivateLink", "bedrock-runtime EP"))
 p.append(icon(*N["bedrock"], "bedrock", "Bedrock", "Nova Micro + Guardrail"))
@@ -210,22 +215,24 @@ p.append(edge("waf", "apigw", "allow/count", color=ORANGE, bend=20, num=4))
 p.append(edge("apigw", "lambda", "invoke", color=ORANGE, bend=20, num=5))
 p.append(edge("lambda", "privatelink", "InvokeModel", color=PURPLE, bend=30, num=6))
 p.append(edge("privatelink", "bedrock", "Nova + Guardrail", color=PURPLE, bend=20, num=7))
-p.append(edge("lambda", "dynamodb", "orders / pending", color=BLUE, bend=40, num=8))
+p.append(edge("lambda", "dynamodb", "place / look-up order", color=BLUE, bend=40, num=8))
 p.append(edge("lambda", "secrets", "payment key", dash=True, color=BLUE, bend=40, num=9))
 p.append(edge("lambda", "ssm", "config", dash=True, color=BLUE, bend=60, num=10))
-p.append(edge("refund", "dynamodb", "confirm (human)", color=ORANGE, bend=30, num=11))
-p.append(edge("presign", "receipts", "presigned GET", color=BLUE, bend=24, num=12))
-p.append(edge("receipts", "kms", "SSE-KMS", dash=True, color=BLUE, bend=20, num=13))
-p.append(edge("bedrock", "cloudwatch", "invocation logs", dash=True, color=GREEN, bend=22, num=14))
-p.append(edge("xray", "lambda", "trace", dash=True, color=GREEN, bend=30, num=15))
+p.append(edge("apigw", "orderslist", "GET /api/orders", color=ORANGE, bend=28, num=11))
+p.append(edge("orderslist", "dynamodb", "query GSI", color=BLUE, bend=36, num=12))
+p.append(edge("refund", "dynamodb", "confirm (human)", color=ORANGE, bend=30, num=13))
+p.append(edge("presign", "receipts", "presigned GET", color=BLUE, bend=24, num=14))
+p.append(edge("receipts", "kms", "SSE-KMS", dash=True, color=BLUE, bend=20, num=15))
+p.append(edge("bedrock", "cloudwatch", "invocation logs", dash=True, color=GREEN, bend=22, num=16))
+p.append(edge("xray", "lambda", "trace", dash=True, color=GREEN, bend=30, num=17))
 
 # Legend.
-lg_x, lg_y = 1300, 120
+lg_x, lg_y = 1250, 120
 p.append(f'<text x="{lg_x}" y="{lg_y}" class="lgd">Flow legend</text>')
-legend = [(BLUE, "1-2, 8-13  edge / data"),
-          (ORANGE, "3-5, 11  WAF / API / refund"),
-          (PURPLE, "6-7  Strands &#8594; Bedrock"),
-          (GREEN, "14-15  observability")]
+legend = [(BLUE, "edge / data"),
+          (ORANGE, "WAF / API / orders / refund"),
+          (PURPLE, "Strands &#8594; Bedrock"),
+          (GREEN, "observability")]
 for i, (c, t) in enumerate(legend):
     yy = lg_y + 20 + i * 22
     p.append(f'<line x1="{lg_x-6}" y1="{yy-4}" x2="{lg_x+20}" y2="{yy-4}" stroke="{c}" stroke-width="3"/>')
