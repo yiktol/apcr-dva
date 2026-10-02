@@ -44,7 +44,7 @@ except Exception:  # pragma: no cover
     _STRANDS = False
 
 from . import pii
-from .tools import look_up_order, make_initiate_refund
+from .tools import make_initiate_refund, make_look_up_order, make_place_order
 
 MAX_MESSAGE_LEN = 2000
 
@@ -93,15 +93,26 @@ def build_response(reply_text: str, req_ctx: dict) -> dict:
             "amountMasked": latest["amountMasked"],
             "orderMasked": latest["orderMasked"],
         }
+    placed = req_ctx.get("placed_orders") or []
+    if placed:
+        latest = placed[-1]
+        body["placedOrder"] = {
+            "orderId": latest["orderId"],
+            "summary": latest["summary"],
+            "total": latest["total"],
+            "status": latest["status"],
+        }
     return body
 
 
 def _build_agent(req_ctx: dict):  # pragma: no cover - requires strands + boto3
     """Construct the Strands Agent with Nova Micro + the guardrail."""
-    table = None
+    orders_table = None
+    pending_table = None
     if boto3 is not None:
         ddb = boto3.resource("dynamodb")
-        table = ddb.Table(os.environ["PENDING_REFUNDS_TABLE"])
+        orders_table = ddb.Table(os.environ["ORDERS_TABLE"])
+        pending_table = ddb.Table(os.environ["PENDING_REFUNDS_TABLE"])
 
     model = BedrockModel(
         model_id=os.environ.get("NOVA_MODEL_ID", "apac.amazon.nova-micro-v1:0"),
@@ -115,9 +126,11 @@ def _build_agent(req_ctx: dict):  # pragma: no cover - requires strands + boto3
         guardrail_trace="enabled",
     )
     initiate_refund = make_initiate_refund(
-        table, req_ctx, max_refund=_max_refund()
+        pending_table, req_ctx, max_refund=_max_refund()
     )
-    return Agent(model=model, tools=[look_up_order, initiate_refund])
+    look_up_order = make_look_up_order(orders_table)
+    place_order = make_place_order(orders_table, req_ctx)
+    return Agent(model=model, tools=[look_up_order, place_order, initiate_refund])
 
 
 def _max_refund() -> float:  # pragma: no cover - requires boto3 at runtime
@@ -143,7 +156,7 @@ def handler(event, _context):  # pragma: no cover - exercised live only
         # Defensive: should never happen in the deployed container.
         return _response(502, {"error": "assistant unavailable"})
 
-    req_ctx = {"pending_refunds": []}
+    req_ctx = {"pending_refunds": [], "placed_orders": []}
     try:
         agent = _build_agent(req_ctx)
         with xray_recorder.in_subsegment("bedrock-invoke"):
