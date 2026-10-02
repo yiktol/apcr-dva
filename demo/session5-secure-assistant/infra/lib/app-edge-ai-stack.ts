@@ -10,6 +10,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
@@ -179,14 +180,29 @@ export class AppEdgeAIStack extends cdk.Stack {
     // ---- Lambda functions --------------------------------------------------
     const appRoot = path.join(__dirname, '..', '..', 'app');
 
-    // Assistant: container-image Lambda in the private subnets. At `cdk synth`
-    // this only STAGES the build context and emits an image-asset manifest; the
-    // real `docker build` is deferred to deploy time by cdk-assets (no Docker at
-    // synth).
+    // Assistant: container-image Lambda in the private subnets.
+    //
+    // The image is published to a DEDICATED ECR repo (not a CDK asset) and
+    // referenced here by a fixed tag. This is deliberate: CDK's fromImageAsset
+    // builds via the local buildx/colima toolchain, which on this host emits an
+    // OCI image index with provenance/attestation manifests that AWS Lambda
+    // REJECTS ("image manifest ... media type ... is not supported"). deploy.sh
+    // builds + pushes a Lambda-compatible single Docker-schema2 image to this
+    // repo (buildx --provenance=false --sbom=false) BEFORE deploying this stack.
+    // The repo is created + populated by deploy.sh BEFORE this stack deploys,
+    // so we IMPORT it by name here (CDK does not own its lifecycle; destroy.sh
+    // deletes it).
+    const assistantRepo = ecr.Repository.fromRepositoryName(
+      this,
+      'AssistantRepo',
+      'session5-secure-assistant',
+    );
     const assistantFn = new lambda.DockerImageFunction(this, 'AssistantFn', {
-      code: lambda.DockerImageCode.fromImageAsset(appRoot, {
-        file: 'Dockerfile',
+      code: lambda.DockerImageCode.fromEcr(assistantRepo, {
+        tagOrDigest: 'latest',
       }),
+      // Match the image platform; Lambda default architecture is x86_64.
+      architecture: lambda.Architecture.X86_64,
       vpc,
       vpcSubnets: privateSubnets,
       securityGroups: [assistantSg],

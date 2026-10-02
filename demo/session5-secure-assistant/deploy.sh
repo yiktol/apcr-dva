@@ -69,10 +69,30 @@ echo "==> [3/6] Deploying ${SECURITY_STACK} (CMK, tables, guardrail, logging)"
     npx cdk deploy "${SECURITY_STACK}" --require-approval never
 )
 
+# --- 3b. Build + push the assistant image to a dedicated ECR repo -----------
+# The assistant Lambda is a container image. We build + push it OURSELVES (not
+# via a CDK image asset) because the local buildx/colima toolchain emits an OCI
+# image index with provenance attestations that AWS Lambda rejects. buildx with
+# --provenance=false --sbom=false produces a single Docker-schema2 manifest that
+# Lambda accepts. The AppEdgeAI stack imports this repo by name and references
+# the :latest tag.
+echo "==> [3b/6] Building + pushing the assistant image (Lambda-compatible)"
+ASSISTANT_REPO="session5-secure-assistant"
+ASSISTANT_ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ASSISTANT_REPO}"
+aws ecr describe-repositories --repository-names "${ASSISTANT_REPO}" --region "${AWS_REGION}" >/dev/null 2>&1 \
+  || aws ecr create-repository --repository-name "${ASSISTANT_REPO}" --region "${AWS_REGION}" >/dev/null
+aws ecr get-login-password --region "${AWS_REGION}" \
+  | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+# BUILDX_NO_DEFAULT_ATTESTATIONS + --provenance=false --sbom=false => no OCI
+# index / attestation manifests; --platform linux/amd64 matches Lambda x86_64.
+BUILDX_NO_DEFAULT_ATTESTATIONS=1 docker buildx build \
+  --platform linux/amd64 --provenance=false --sbom=false \
+  -t "${ASSISTANT_ECR_URI}:latest" --push "${ROOT}/app"
+echo "    Pushed ${ASSISTANT_ECR_URI}:latest"
+
 # --- 4. Deploy the AppEdgeAI stack ------------------------------------------
-# This builds + pushes the assistant container image (the real docker build) and
-# stands up CloudFront, WAF, API Gateway, the Lambdas, and the Bedrock interface
-# endpoints.
+# Stands up CloudFront, WAF, API Gateway, the Lambdas (the assistant references
+# the ECR image pushed above), and the Bedrock interface endpoints.
 echo "==> [4/6] Deploying ${APP_STACK} (edge + compute + observability)"
 (
   cd "${ROOT}/infra"

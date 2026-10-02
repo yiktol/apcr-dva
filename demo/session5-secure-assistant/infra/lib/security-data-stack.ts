@@ -8,6 +8,11 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as bedrock from 'aws-cdk-lib/aws-bedrock';
+import {
+  AwsCustomResource,
+  AwsCustomResourcePolicy,
+  PhysicalResourceId,
+} from 'aws-cdk-lib/custom-resources';
 
 /**
  * SecurityData stack — the security + data substrate that must exist first and
@@ -46,6 +51,34 @@ export class SecurityDataStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY, // demo only
     });
     this.kmsKey = key;
+
+    // Allow CloudWatch Logs in THIS region to use the CMK so a log group can be
+    // encrypted with it. CloudWatch Logs requires the regional service
+    // principal logs.<region>.amazonaws.com on the key policy, scoped by the
+    // ArnLike encryption-context condition to this account's log groups.
+    // Without this, creating a CMK-encrypted log group fails with
+    // "The specified KMS key does not exist or is not allowed to be used".
+    key.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'AllowCloudWatchLogsUseOfTheKey',
+        principals: [
+          new iam.ServicePrincipal(`logs.${this.region}.amazonaws.com`),
+        ],
+        actions: [
+          'kms:Encrypt*',
+          'kms:Decrypt*',
+          'kms:ReEncrypt*',
+          'kms:GenerateDataKey*',
+          'kms:Describe*',
+        ],
+        resources: ['*'],
+        conditions: {
+          ArnLike: {
+            'kms:EncryptionContext:aws:logs:arn': `arn:aws:logs:${this.region}:${this.account}:log-group:*`,
+          },
+        },
+      }),
+    );
 
     // ---- DynamoDB tables (CMK-encrypted) ----------------------------------
     const ordersTable = new dynamodb.Table(this, 'OrdersTable', {
@@ -176,6 +209,28 @@ export class SecurityDataStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY, // demo only
       autoDeleteObjects: true,
     });
+    // Bedrock validates (when PutModelInvocationLoggingConfiguration runs) that
+    // the bucket policy lets the Bedrock SERVICE write delivery objects. Grant
+    // bedrock.amazonaws.com s3:PutObject, scoped to this account/this logging
+    // config via aws:SourceAccount + aws:SourceArn. Without this the custom
+    // resource fails with "Failed to validate permissions for bucket".
+    invokeLogBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'AllowBedrockModelInvocationLoggingWrite',
+        principals: [new iam.ServicePrincipal('bedrock.amazonaws.com')],
+        actions: ['s3:PutObject'],
+        resources: [invokeLogBucket.arnForObjects('bedrock/*')],
+        conditions: {
+          StringEquals: {
+            'aws:SourceAccount': this.account,
+            's3:x-amz-acl': 'bucket-owner-full-control',
+          },
+          ArnLike: {
+            'aws:SourceArn': `arn:aws:bedrock:${this.region}:${this.account}:*`,
+          },
+        },
+      }),
+    );
 
     // Role Bedrock assumes to write the CloudWatch invocation logs.
     const bedrockLoggingRole = new iam.Role(this, 'BedrockLoggingRole', {
@@ -195,30 +250,80 @@ export class SecurityDataStack extends cdk.Stack {
     );
     // The Bedrock logging role must be able to encrypt what it writes.
     key.grantEncryptDecrypt(bedrockLoggingRole);
-
-    // AWS::Bedrock::ModelInvocationLoggingConfiguration has NO L1/L2 construct
-    // in aws-cdk-lib@2.160.0 (the aws-bedrock module ships only
-    // CfnAgent/.../CfnGuardrail/CfnGuardrailVersion/CfnKnowledgeBase/CfnPrompt*).
-    // Provision it with an escape-hatch raw CfnResource. This is a per-account/
-    // region singleton that destroy.sh tears down before stack delete so the
-    // CMK is not pinned.
-    const invokeLogging = new cdk.CfnResource(this, 'BedrockInvokeLogging', {
-      type: 'AWS::Bedrock::ModelInvocationLoggingConfiguration',
-      properties: {
-        LoggingConfig: {
-          CloudWatchConfig: {
-            LogGroupName: invokeLogGroup.logGroupName,
-            RoleArn: bedrockLoggingRole.roleArn,
-          },
-          S3Config: {
-            BucketName: invokeLogBucket.bucketName,
-            KeyPrefix: 'bedrock/',
-          },
-          TextDataDeliveryEnabled: true,
-          EmbeddingDataDeliveryEnabled: false,
-          ImageDataDeliveryEnabled: false,
+    // Bedrock also writes S3 delivery objects as the SERVICE, so the CMK must
+    // let bedrock.amazonaws.com generate a data key for the CMK-encrypted
+    // destination bucket (scoped to this account).
+    key.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'AllowBedrockServiceUseOfTheKeyForLogDelivery',
+        principals: [new iam.ServicePrincipal('bedrock.amazonaws.com')],
+        actions: ['kms:GenerateDataKey*', 'kms:Decrypt'],
+        resources: ['*'],
+        conditions: {
+          StringEquals: { 'aws:SourceAccount': this.account },
         },
+      }),
+    );
+
+    // Bedrock model-invocation logging is NOT a CloudFormation resource type
+    // (there is no AWS::Bedrock::ModelInvocationLoggingConfiguration, and no
+    // L1/L2 in aws-cdk-lib@2.160.0). It is an account/Region SINGLETON set via
+    // the Bedrock control-plane API PutModelInvocationLoggingConfiguration.
+    // Provision it with an AwsCustomResource that calls that API on
+    // create/update and DeleteModelInvocationLoggingConfiguration on delete, so
+    // the CMK destinations are not pinned when the stack is torn down.
+    const loggingConfig = {
+      cloudWatchConfig: {
+        logGroupName: invokeLogGroup.logGroupName,
+        roleArn: bedrockLoggingRole.roleArn,
       },
+      s3Config: {
+        bucketName: invokeLogBucket.bucketName,
+        keyPrefix: 'bedrock/',
+      },
+      textDataDeliveryEnabled: true,
+      embeddingDataDeliveryEnabled: false,
+      imageDataDeliveryEnabled: false,
+    };
+    const invokeLogging = new AwsCustomResource(this, 'BedrockInvokeLogging', {
+      resourceType: 'Custom::BedrockModelInvocationLogging',
+      onCreate: {
+        service: 'Bedrock',
+        action: 'putModelInvocationLoggingConfiguration',
+        parameters: { loggingConfig },
+        physicalResourceId: PhysicalResourceId.of(
+          `bedrock-invocation-logging-${this.region}`,
+        ),
+      },
+      onUpdate: {
+        service: 'Bedrock',
+        action: 'putModelInvocationLoggingConfiguration',
+        parameters: { loggingConfig },
+        physicalResourceId: PhysicalResourceId.of(
+          `bedrock-invocation-logging-${this.region}`,
+        ),
+      },
+      onDelete: {
+        service: 'Bedrock',
+        action: 'deleteModelInvocationLoggingConfiguration',
+      },
+      policy: AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          actions: [
+            'bedrock:PutModelInvocationLoggingConfiguration',
+            'bedrock:DeleteModelInvocationLoggingConfiguration',
+            'bedrock:GetModelInvocationLoggingConfiguration',
+          ],
+          resources: ['*'], // these actions do not support resource scoping
+        }),
+        // The custom-resource Lambda must pass the Bedrock logging role to the
+        // Bedrock service when configuring CloudWatch delivery.
+        new iam.PolicyStatement({
+          actions: ['iam:PassRole'],
+          resources: [bedrockLoggingRole.roleArn],
+        }),
+      ]),
+      installLatestAwsSdk: false,
     });
     // Ensure the destinations + grants exist before the logging config is made.
     invokeLogging.node.addDependency(invokeLogGroup);
