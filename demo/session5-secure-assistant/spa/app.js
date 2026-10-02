@@ -5,8 +5,6 @@
 const log = document.getElementById("log");
 const chatForm = document.getElementById("chatForm");
 const messageInput = document.getElementById("message");
-const orderIdInput = document.getElementById("orderId");
-const receiptBtn = document.getElementById("receiptBtn");
 
 function append(cls, text) {
   const el = document.createElement("div");
@@ -93,35 +91,10 @@ async function confirmRefund(token, btn) {
   }
 }
 
-async function downloadReceipt(orderId) {
-  if (!orderId) {
-    append("sys", "Enter an order id first (e.g. ORD-000123).");
-    return;
-  }
-  try {
-    const res = await fetch(
-      "/api/receipts/" + encodeURIComponent(orderId) + "/url"
-    );
-    const data = await res.json();
-    if (res.ok && data.url) {
-      // Open the short-lived presigned URL in a new tab.
-      window.open(data.url, "_blank", "noopener");
-    } else {
-      append("sys", data.error || "Could not get a receipt URL.");
-    }
-  } catch (e) {
-    append("sys", "Network error getting the receipt URL.");
-  }
-}
-
 chatForm.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = messageInput.value.trim();
   if (!text) return;
   messageInput.value = "";
   sendMessage(text);
-});
-
-receiptBtn.addEventListener("click", () => {
-  downloadReceipt(orderIdInput.value.trim());
 });
