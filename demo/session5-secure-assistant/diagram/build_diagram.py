@@ -154,10 +154,33 @@ def zone(x, y, w, h, title, kind):
     return s
 
 
+# Half-extent of a node's clickable/padded box, plus clearance kept around it
+# so connectors never graze an icon or its label.
+BOX_HALF = ICON // 2 + 4          # white padding rect half-size
+CLEAR = 20                        # keep lines this far from any icon box
+
+
+def node_box(key):
+    """Padded (x0, y0, x1, y1) obstacle box for a node. We guard the ICON box
+    (plus a small clearance) only — the two-line label strip below the icon is
+    intentionally NOT reserved, so horizontal lanes can still pass through the
+    label gutter between rows without being pushed into other icons."""
+    cx, cy = NODE[key]
+    return (
+        cx - BOX_HALF - CLEAR,
+        cy - BOX_HALF - CLEAR,
+        cx + BOX_HALF + CLEAR,
+        cy + BOX_HALF + CLEAR,
+    )
+
+
+ALL_BOXES = None  # filled once all NODE entries are known (see build section)
+
+
 # Anchor points on a node's bounding box by side.
 def anchor(key, side):
     cx, cy = NODE[key]
-    h = ICON // 2 + 4  # include the white padding rect
+    h = BOX_HALF
     if side == "r":
         return cx + h, cy
     if side == "l":
@@ -167,6 +190,49 @@ def anchor(key, side):
     if side == "b":
         return cx, cy + h
     return cx, cy
+
+
+def _seg_hits_box(x1, y1, x2, y2, box, endpoints):
+    """True if the axis-aligned segment crosses `box` (expanded) — ignoring the
+    two endpoint nodes the edge legitimately touches."""
+    bx0, by0, bx1, by1 = box
+    if x1 == x2:  # vertical segment
+        lo, hi = sorted((y1, y2))
+        return bx0 < x1 < bx1 and not (hi < by0 or lo > by1)
+    else:         # horizontal segment
+        lo, hi = sorted((x1, x2))
+        return by0 < y1 < by1 and not (hi < bx0 or lo > bx1)
+
+
+LANE_STEP = 6  # lane search granularity (px)
+ROUTED = []    # (exclude_set, [points]) per edge, for the no-crossing check
+
+
+def _lane_is_clear(fixed_is_x, cand, lo, hi, exclude):
+    for key, box in ALL_BOXES.items():
+        if key in exclude:
+            continue
+        if fixed_is_x:
+            if _seg_hits_box(cand, lo, cand, hi, box, exclude):
+                return False
+        else:
+            if _seg_hits_box(lo, cand, hi, cand, box, exclude):
+                return False
+    return True
+
+
+def _clear_lane(fixed_is_x, lane, lo, hi, exclude):
+    """Nudge a candidate lane (x if fixed_is_x else y) outward from `lane` until
+    the swept segment from lo..hi clears every node box except `exclude`."""
+    shifts = [0]
+    for k in range(1, 80):
+        shifts.append(k * LANE_STEP)
+        shifts.append(-k * LANE_STEP)
+    for shift in shifts:
+        cand = lane + shift
+        if _lane_is_clear(fixed_is_x, cand, lo, hi, exclude):
+            return cand
+    return lane
 
 
 def _label(x, y, text, color, num):
@@ -183,28 +249,34 @@ def orth(a, sa, b, sb, label="", color=GREY, dash=False, num=None,
          lx=None, ly=None, mid=None):
     """Orthogonal (elbow) connector from node `a` side `sa` to node `b` side `sb`.
 
-    `mid` optionally forces the x (for vertical-first) or y (for horizontal-
-    first) of the elbow. The label is centred at (lx, ly) if given, else on the
-    connector's longest leg.
+    The shared middle leg is auto-routed into the nearest gutter that clears
+    every OTHER node box (the two endpoints are excluded), so a connector never
+    crosses an icon. `mid` seeds the preferred lane; the router nudges it clear.
+    The label is centred at (lx, ly) if given, else on the longest leg.
     """
     ax, ay = anchor(a, sa)
     bx, by = anchor(b, sb)
     d = ' stroke-dasharray="6 5"' if dash else ""
+    exclude = {a, b}
 
-    # Decide routing: if exit side is horizontal (l/r) go horizontal-first;
-    # if vertical (t/b) go vertical-first.
-    pts = [(ax, ay)]
+    # Decide routing: if exit side is horizontal (l/r) go horizontal-first (the
+    # shared leg is a VERTICAL at x=midx); if vertical (t/b) go vertical-first
+    # (the shared leg is a HORIZONTAL at y=midy).
     if sa in ("l", "r"):
-        midx = mid if mid is not None else (ax + bx) / 2
-        pts += [(midx, ay), (midx, by), (bx, by)]
+        seed = mid if mid is not None else (ax + bx) / 2
+        midx = _clear_lane(True, seed, ay, by, exclude)
+        pts = [(ax, ay), (midx, ay), (midx, by), (bx, by)]
     else:
-        midy = mid if mid is not None else (ay + by) / 2
-        pts += [(ax, midy), (bx, midy), (bx, by)]
+        seed = mid if mid is not None else (ay + by) / 2
+        midy = _clear_lane(False, seed, ax, bx, exclude)
+        pts = [(ax, ay), (ax, midy), (bx, midy), (bx, by)]
     # Drop zero-length duplicate points.
     clean = [pts[0]]
     for pt in pts[1:]:
         if pt != clean[-1]:
             clean.append(pt)
+    # Record routed segments (for the no-crossing self-check at the end).
+    ROUTED.append((exclude, clean))
     dpath = "M " + " L ".join(f"{x} {y}" for x, y in clean)
     s = f'<path d="{dpath}" fill="none" stroke="{color}" stroke-width="2.4" marker-end="url(#arw)"{d} opacity="0.92"/>'
 
@@ -299,46 +371,40 @@ p.append(icon("cloudwatch", "cloudwatch", "CloudWatch", "invocation logs (CMK)")
 p.append(icon("xray", "xray", "X-Ray", "traces"))
 
 # ---- Edges (orthogonal, routed in gutters/bands) --------------------------
-# TOP request path (horizontal spine).
+# All node boxes are now known: build the obstacle map the router avoids.
+ALL_BOXES = {k: node_box(k) for k in NODE}
+
+# TOP request path (the horizontal spine). Each hop is node-to-adjacent-node so
+# no leg skips over a node that sits between the endpoints.
 p.append(orth("viewer", "r", "cloudfront", "l", "https", BLUE, num=1))
 p.append(orth("cloudfront", "t", "spa", "b", "SPA (OAC)", BLUE, num=2))
-p.append(orth("cloudfront", "r", "waf", "b", "/api/*", ORANGE, num=3, mid=COL["api"]))
+p.append(orth("cloudfront", "r", "waf", "b", "/api/*", ORANGE, num=3))
 p.append(orth("waf", "b", "apigw", "t", "allow / count", ORANGE, num=4))
 p.append(orth("apigw", "r", "assistant", "l", "invoke", ORANGE, num=5))
-# API GW -> Orders list: up into the satellite row, elbow at a dedicated x so it
-# does not sit on top of the invoke/place labels.
-p.append(orth("apigw", "t", "orderslist", "l", "GET /api/orders", ORANGE, num=11,
-              mid=COL["api"], lx=(COL["api"] + COL["compute"]) / 2, ly=ROW["sat"]))
+p.append(orth("apigw", "t", "orderslist", "b", "GET /api/orders", ORANGE, num=11))
 
-# Assistant -> PrivateLink -> Bedrock. Horizontal-first: leave Assistant on the
-# RIGHT, run along a clear lane, then drop into PrivateLink's column.
-p.append(orth("assistant", "r", "privatelink", "t", "InvokeModel", PURPLE, num=6,
-              mid=COL["ai"]))
+# Assistant -> PrivateLink -> Bedrock.
+p.append(orth("assistant", "r", "privatelink", "t", "InvokeModel", PURPLE, num=6))
 p.append(orth("privatelink", "r", "bedrock", "l", "Nova + Guardrail", PURPLE, num=7))
 
-# Compute -> data plane (downward connectors into the data band).
-p.append(orth("assistant", "b", "dynamodb", "t", "place / look-up", BLUE, num=8,
-              lx=COL["compute"], ly=ROW["top"] + 95))
-p.append(orth("secrets", "t", "assistant", "b", "payment key", BLUE, dash=True, num=9,
-              mid=COL["api"], lx=(COL["api"] + COL["compute"]) / 2, ly=ROW["top"] + 150))
-p.append(orth("ssm", "t", "assistant", "b", "config", BLUE, dash=True, num=10,
-              mid=COL["edge"], lx=COL["api"] - 40, ly=ROW["top"] - 60))
-# Orders list -> DynamoDB: own column gutter to the left of the assistant spine.
-p.append(orth("orderslist", "b", "dynamodb", "l", "query GSI", BLUE, num=12,
-              mid=COL["compute"] - 110,
-              lx=COL["compute"] - 110, ly=ROW["top"] + 40))
+# Compute -> data plane (downward connectors into the data band). The router
+# auto-selects a clear vertical gutter for each.
+p.append(orth("assistant", "b", "dynamodb", "t", "place / look-up", BLUE, num=8))
+p.append(orth("assistant", "b", "secrets", "t", "payment key", BLUE, dash=True, num=9))
+p.append(orth("assistant", "b", "ssm", "t", "config", BLUE, dash=True, num=10))
+# Orders list and DynamoDB share the compute column with the Assistant sitting
+# between them, so exit LEFT and let the router find a clear gutter down to
+# DynamoDB's left side (avoids crossing the Assistant icon).
+p.append(orth("orderslist", "l", "dynamodb", "l", "query GSI", BLUE, num=12))
 p.append(orth("refund", "l", "dynamodb", "r", "confirm (human)", ORANGE, num=13))
 
 # Presign -> receipts -> KMS (store band).
-p.append(orth("presign", "b", "receipts", "t", "presigned GET", BLUE, num=14, mid=COL["api"]))
+p.append(orth("presign", "b", "receipts", "t", "presigned GET", BLUE, num=14))
 p.append(orth("receipts", "l", "kms", "r", "SSE-KMS", BLUE, dash=True, num=15))
 
 # Observability (own right-hand lane; never crosses the request spine).
 p.append(orth("bedrock", "b", "cloudwatch", "t", "invocation logs", GREEN, dash=True, num=16))
-# X-Ray -> Assistant trace: drop straight down X-Ray's column, then left into the
-# assistant's TOP along the satellite/ spine gutter.
-p.append(orth("xray", "l", "assistant", "t", "trace", GREEN, dash=True, num=17,
-              lx=(COL["compute"] + COL["ai"]) / 2, ly=ROW["sat"] + 40))
+p.append(orth("xray", "b", "assistant", "t", "trace", GREEN, dash=True, num=17))
 
 # ---- Legend ---------------------------------------------------------------
 lg_x, lg_y = 1370, 470
@@ -360,6 +426,27 @@ p.append(f'<text x="{lg_x}" y="{yy + 46}" class="note">Refunds need human confir
 
 p.append('</svg>')
 
+# ---- Self-check: no routed segment may cross a non-endpoint icon box -------
+# This makes "arrows don't cross icons" a verified invariant rather than a
+# visual hope: if a future edit moves a node into a line's path, the build
+# fails loudly instead of silently producing an overlapping diagram.
+crossings = []
+for exclude, clean in ROUTED:
+    for (x1, y1), (x2, y2) in zip(clean, clean[1:]):
+        for key, box in ALL_BOXES.items():
+            if key in exclude:
+                continue
+            if _seg_hits_box(x1, y1, x2, y2, box, exclude):
+                crossings.append((key, (x1, y1, x2, y2)))
+if crossings:
+    for key, seg in crossings:
+        print(f"  WARNING: a connector crosses the '{key}' icon box at {seg}")
+    raise SystemExit(
+        f"ERROR: {len(crossings)} connector/icon crossing(s) detected — "
+        "adjust node placement or the edge's seed lane."
+    )
+
 with open(OUT, "w") as f:
     f.write("\n".join(p))
 print("wrote", OUT, os.path.getsize(OUT), "bytes")
+print(f"self-check OK: {len(ROUTED)} connectors, 0 icon crossings")
