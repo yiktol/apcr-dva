@@ -30,6 +30,26 @@ _ACCOUNT_RE = re.compile(r"\b\d{10,12}\b")  # US bank account: 10-12 digits
 _SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _EMAIL_RE = re.compile(r"\b[\w.%+-]+@[\w.-]+\.[A-Za-z]{2,}\b")
 
+# Model-reasoning tags Nova (and some tool-using models) sometimes emit inline
+# in the completion. These are internal chain-of-thought, not user-facing text,
+# so we strip whole paired blocks before showing the reply. A lone unmatched
+# OPENING tag with no close is also stripped to end-of-text so a truncated
+# reasoning block never leaks. Matching is DOTALL + case-insensitive.
+_REASONING_TAGS = ("thinking", "reasoning", "scratchpad")
+_REASONING_BLOCK_RE = re.compile(
+    r"<(?P<tag>%s)\b[^>]*>.*?</(?P=tag)>" % "|".join(_REASONING_TAGS),
+    re.IGNORECASE | re.DOTALL,
+)
+_REASONING_OPEN_TO_END_RE = re.compile(
+    r"<(?:%s)\b[^>]*>.*\Z" % "|".join(_REASONING_TAGS),
+    re.IGNORECASE | re.DOTALL,
+)
+# A dangling CLOSING tag left over (e.g. the model emitted only </thinking>).
+_REASONING_STRAY_CLOSE_RE = re.compile(
+    r"</(?:%s)\s*>" % "|".join(_REASONING_TAGS),
+    re.IGNORECASE,
+)
+
 
 def mask_account(value: str) -> str:
     """Mask all but the last 4 digits of an account-like number."""
@@ -69,6 +89,24 @@ def mask_pii(text: str) -> str:
     text = _EMAIL_RE.sub(lambda m: mask_email(m.group(0)), text)
     text = _ACCOUNT_RE.sub(lambda m: mask_account(m.group(0)), text)
     return text
+
+
+def strip_reasoning(text: str) -> str:
+    """Remove model chain-of-thought tags from a reply before showing it.
+
+    Strips paired <thinking>/<reasoning>/<scratchpad> blocks, a dangling opening
+    tag through end-of-text, and any stray closing tag, then tidies the
+    whitespace the removals leave behind. Pure (no I/O) so it is unit-testable.
+    """
+    if not text:
+        return text
+    text = _REASONING_BLOCK_RE.sub("", text)
+    text = _REASONING_OPEN_TO_END_RE.sub("", text)
+    text = _REASONING_STRAY_CLOSE_RE.sub("", text)
+    # Collapse the blank lines / leading-trailing space the stripped blocks
+    # leave behind, without disturbing intentional internal single newlines.
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def validate_order_id(order_id: str) -> bool:

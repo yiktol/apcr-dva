@@ -161,7 +161,9 @@ def handler(event, _context):  # pragma: no cover - exercised live only
         agent = _build_agent(req_ctx)
         with xray_recorder.in_subsegment("bedrock-invoke"):
             result = agent(message)
-        reply_text = pii.mask_pii(str(result))
+        # Strip the model's internal <thinking> reasoning BEFORE masking so only
+        # the user-facing reply (with PII masked) is returned.
+        reply_text = pii.mask_pii(pii.strip_reasoning(str(result)))
     except Exception:
         # Never leak prompt/PII in the error surface.
         return _response(502, {"error": "assistant unavailable"})

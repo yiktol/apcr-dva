@@ -14,8 +14,10 @@ import re
 
 try:
     import boto3  # type: ignore
+    from botocore.config import Config  # type: ignore
 except Exception:  # pragma: no cover
     boto3 = None  # type: ignore
+    Config = None  # type: ignore
 
 try:
     from aws_xray_sdk.core import patch_all  # type: ignore
@@ -56,7 +58,18 @@ def handler(event, _context):  # pragma: no cover - exercised live only
     params = event.get("pathParameters") or {}
     order_id = params.get("orderId")
     bucket = os.environ["RECEIPTS_BUCKET"]
-    s3_client = boto3.client("s3")
+    # Force SigV4 + the regional endpoint. The receipts bucket is CMK-encrypted
+    # in ap-southeast-1, which REQUIRES SigV4; a default (SigV2) presigned URL
+    # fails the KMS/regional-redirect signature check when the browser follows
+    # S3's 307. s3v4 + region_name + regional addressing produces a URL that
+    # resolves and validates directly against the regional endpoint.
+    region = os.environ.get("AWS_REGION_PINNED", "ap-southeast-1")
+    s3_client = boto3.client(
+        "s3",
+        region_name=region,
+        endpoint_url=f"https://s3.{region}.amazonaws.com",
+        config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+    )
     try:
         url, err = generate_url(s3_client, bucket, order_id)
     except Exception:
