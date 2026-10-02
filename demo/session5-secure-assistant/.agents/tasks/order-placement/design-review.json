@@ -1,0 +1,20 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "NIT",
+      "location": "design.md Section 9 (SPA fetch logic / window.refreshRecentOrders)",
+      "problem": "The design states that spa/app.js's sendMessage 'already guards with if (window.refreshRecentOrders)'. Verified against spa/app.js: no such guard or reference exists today; the guard is introduced by this design's own coupling edit. It is a wrong assumption about current code, but the design's own snippet supplies the guard so no wrong implementation results.",
+      "fix": "Reword to say the guard is added by this change: 'The new coupling edit in sendMessage calls refreshRecentOrders behind an if (window.refreshRecentOrders) guard; assigning the hook at top-level evaluation removes the race.'"
+    },
+    {
+      "id": 2,
+      "severity": "NIT",
+      "location": "design.md Section 12 (test seams, final bullet)",
+      "problem": "The design says 'No JS test runner exists in the repo today'. Narrowly true for the SPA, but infra/package.json defines npm test -> ts-node test/template.test.ts, an existing infra assertion harness. The design adds a GSI, a new OrdersListFn Lambda, and a GET /api/orders route without mentioning npm test or extending template.test.ts. Verified the existing assertions still pass (table count is ==2 and a GSI adds no table; Lambda count assertion is >=3 so a 4th Lambda still passes), so this is a coverage gap, not a regression.",
+      "fix": "Correct the statement to 'no JS/SPA unit-test runner exists; the infra harness is npm test -> test/template.test.ts', and add assertions for the byCreatedAt GSI and the /api/orders GET method to template.test.ts, running npm test during verification."
+    }
+  ],
+  "reviewDoc": "/Users/erictole/demo/apcr-dva/demo/session5-secure-assistant/.agents/tasks/order-placement/design-review.md"
+}

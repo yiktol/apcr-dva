@@ -1,85 +1,115 @@
-# Verification — Session 5 Secure Assistant (final local-only record)
+# Verification — Session 5 Storefront Frontend
 
-Scope: the approved Session 5 "Secure Coffee-Shop AI Assistant" demo in
-`demo/session5-secure-assistant` on branch `session5-secure-assistant`
-(worktree `/Users/erictole/demo/apcr-dva/.worktrees/session5`).
+Iteration: FIRST (no `.agents/tasks/review.json` present at start).
 
-**LOCAL-ONLY. NO live AWS resources were created.** No `cdk deploy`, no
-`cdk bootstrap`, no `docker build`/`docker push`, no `aws` API calls, and no
-Bedrock / Guardrail invocation were run at any point. Everything below is `cdk
-synth` (offline template generation), TypeScript/Python compile, unit tests,
-and static inspection of the synthesized CloudFormation templates in
-`infra/cdk.out/` (a local directory, git-ignored).
+Scope shipped: FRONTEND ONLY. Changed files, all under
+`demo/session5-secure-assistant/spa/`:
+- `index.html` — rewritten into a coffee-shop storefront (navbar, hero, "What
+  We Offer" cards, menu/specials, footer) with the chat as a floating widget +
+  overlay panel.
+- `styles.css` — rewritten self-authored stylesheet (coffee palette + accent
+  `#8c4fff`); retains every class `app.js` depends on (`.msg`, `.msg.user`,
+  `.msg.bot`, `.msg.sys`, `.pending`, `.receipt`, `.row`, `.chat`).
+- `ui.js` — NEW: panel open/close + Esc + focus logic, bound only to the new
+  opener/close elements. Does not touch the five chat ids or the chat logic.
+- `app.js` — UNCHANGED (git diff empty). All chat/refund/receipt logic and
+  fetch calls byte-for-byte intact; the five required ids
+  (`log`/`chatForm`/`message`/`orderId`/`receiptBtn`) are present in the panel
+  markup before the `<script src="app.js">` tag.
 
-## Environment
-- node v25.6.1, npm, Python 3.13.3, pytest 8.3.2, rsvg-convert present.
-- `aws-cdk-lib` pinned to exactly `2.160.0` (confirmed in `infra/package.json`).
+No backend/API/infra/Lambda/SecurityData changes. `destroy.sh` was NOT run.
+Changes left staged on disk (not committed per instructions — see note).
 
-## Commands run and results
+## Local checks
+- `node --check spa/app.js` → OK
+- `node --check spa/ui.js` → OK
+- `git status` confirms only `index.html`, `styles.css` modified and `ui.js`
+  added under `spa/`; `git diff spa/app.js` is empty (app.js untouched).
 
-| # | Command (cwd) | Result |
-|---|---------------|--------|
-| 1 | `npm install` (infra) | OK — dependencies installed, no errors. |
-| 2 | `npx tsc --noEmit` (infra) | **Clean** — exit 0, no type errors. |
-| 3 | `CDK_DEFAULT_ACCOUNT=875692608981 JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 npx cdk synth --all` (infra) | **PASS** — both stacks synthesize. Only CDK CLI telemetry/version notices (no errors). Produced `SecureAssistantSecurityData.template.json` + `SecureAssistantAppEdgeAI.template.json`. The assistant `DockerImageFunction` is only STAGED (image-asset manifest); no `docker build` runs at synth. |
-| 4 | `npm test` (infra; ts-node `Template.fromStack` assertions) | **PASS** — all 20 assertions passed. |
-| 5 | `python3 -m py_compile` on all `app/**/*.py` (sources + tests) | **Clean**. |
-| 6 | `python3 -m pytest app/tests -q` | **PASS** — 16 passed (strands imports guarded; run without strands installed). |
-| 7 | `python3 build_diagram.py` + `rsvg-convert -o architecture.png architecture.svg` (diagram) | **PASS** — `architecture.svg` (87,282 bytes) + `architecture.png` (239,396 bytes) produced; 16 real icons embedded as `data:image/svg+xml;base64`; external `href="http"`/`href="file"` count = 0. |
-| 8 | `bash -n deploy.sh` / `bash -n destroy.sh` | **PASS** — both parse clean. |
+## Redeploy (app stack only)
+Command run from `demo/session5-secure-assistant/infra`:
+```
+AWS_REGION=ap-southeast-1 AWS_DEFAULT_REGION=ap-southeast-1 \
+CDK_DEFAULT_ACCOUNT=875692608981 CDK_DEFAULT_REGION=ap-southeast-1 \
+npx cdk deploy SecureAssistantAppEdgeAI --require-approval never
+```
+Result: deploy succeeded (Total time ~87s). Re-ran the `SpaDeployment`
+BucketDeployment + CloudFront `/*` invalidation; did NOT rebuild the Lambda
+image. Stack outputs confirmed:
+- CloudFrontUrl = https://d1o0u6nv8iqp83.cloudfront.net
+- AssistantApiEndpoint = https://6y7dnxp43k.execute-api.ap-southeast-1.amazonaws.com/prod/
 
-No check failed, so no fixes were required.
+`aws sts get-caller-identity` succeeded (account 875692608981, ap-southeast-1)
+before deploy — no SSO re-auth needed.
 
-## Synthesized-template inspection (static)
+## Live verification against https://d1o0u6nv8iqp83.cloudfront.net
 
-Each required element was confirmed by inspecting the JSON templates in
-`infra/cdk.out/`. Stack key: **SD** = `SecureAssistantSecurityData`,
-**AE** = `SecureAssistantAppEdgeAI`.
+Method: all checks were **curl-verified** (no real browser available in this
+environment). Static assets and the three API contracts were exercised live
+through CloudFront. Browser-only interactions (click-to-open, Esc, focus) were
+verified by inspecting the shipped markup/CSS/JS that implement them.
 
-| Required element | Where | Result |
-|------------------|-------|--------|
-| WAF WebACL + managed rule group + rate-based rule (COUNT mode) | AE | **PRESENT** — 1 `AWS::WAFv2::WebACL`, Scope `REGIONAL`. Rule `AWSManagedRulesCommonRuleSet` (ManagedRuleGroupStatement, override None); rule `RateLimit` (RateBasedStatement, limit 2000, aggregateKey IP) with `Action: { Count: {} }` → COUNT mode. |
-| WebACL association | AE | **PRESENT** — 1 `AWS::WAFv2::WebACLAssociation` to the regional API GW stage ARN. |
-| CloudFront + OAC | AE | **PRESENT** — 1 `AWS::CloudFront::Distribution`, 1 `AWS::CloudFront::OriginAccessControl`. `/api/*` cache behavior present; `ViewerCertificate` is the default (no ACM cert / custom domain). |
-| KMS CMK on receipts bucket + log destination | SD + AE | **PRESENT** — 1 `AWS::KMS::Key` (SD) with `EnableKeyRotation: true`. Receipts bucket (AE) `SSEAlgorithm: aws:kms` using the imported CMK ARN. Bedrock invocation log group (SD) has `KmsKeyId`; invocation-log S3 bucket (SD) is `aws:kms`. |
-| S3 bucket policy denying non-TLS | AE | **PRESENT** — receipts bucket (and SPA bucket) have a `Deny` statement conditioned on `aws:SecureTransport = false`. |
-| ABAC policy (ResourceTag + PrincipalTag) | AE | **PRESENT** — refund-confirm role policy carries `aws:ResourceTag/team` StringEquals `${aws:PrincipalTag/team}`; the literal `${aws:PrincipalTag/team}` survives verbatim into the rendered template (not collapsed by a JS template literal). |
-| bedrock-runtime interface VPC endpoint + endpoint policy | AE | **PRESENT** — 2 `AWS::EC2::VPCEndpoint` (Interface, `PrivateDnsEnabled: true`): bedrock-runtime + bedrock control-plane. Each has a non-wildcard `PolicyDocument` scoped to the three Bedrock actions on the inference-profile ARN, foundation-model ARN, and guardrail ARN. |
-| Bedrock Guardrail (content + PII filters) + version | SD | **PRESENT** — 1 `AWS::Bedrock::Guardrail`: content filters `HATE` + `VIOLENCE`; PII entities `US_BANK_ACCOUNT_NUMBER` / `US_SOCIAL_SECURITY_NUMBER` / `EMAIL` (action `ANONYMIZE`); DENY topic `legal-advice`. 1 `AWS::Bedrock::GuardrailVersion` referencing the guardrail → published version. |
-| Assistant role IAM allowing invoke on BOTH ARNs | AE | **PRESENT** — `AssistantFnServiceRoleDefaultPolicy` grants `bedrock:InvokeModel` + `...WithResponseStream` on BOTH `inference-profile/apac.amazon.nova-micro-v1:0` AND `*::foundation-model/amazon.nova-micro-v1:0`. |
-| Model invocation logging to a KMS-encrypted destination | SD | **PRESENT** — `AWS::Bedrock::ModelInvocationLoggingConfiguration` (raw CfnResource escape hatch; no L1/L2 in aws-cdk-lib@2.160.0) delivering to the CMK-encrypted CloudWatch log group + CMK-encrypted S3 bucket. |
-| X-Ray on API GW + Lambda | AE | **PRESENT** — API GW stage `TracingEnabled: true`; `AssistantFn`, `RefundConfirmFn`, `PresignFn` all `TracingConfig.Mode: Active`. |
-| Secrets Manager + SSM | SD | **PRESENT** — `AWS::SecretsManager::Secret` `session5/payment-processor-key`; `AWS::SSM::Parameter` `/session5/assistant/config`. |
-| VPC imported (NO `AWS::EC2::VPC` created) | SD + AE | **CONFIRMED** — `AWS::EC2::VPC` count = 0 in BOTH templates. VPC comes from `ec2.Vpc.fromVpcAttributes` (no `fromLookup`, no context lookup). |
-| Assistant Lambda in private subnets | AE | **PRESENT** — `AssistantFn` is `PackageType: Image`, has a `VpcConfig`, placed in the three explicitly-imported private subnets. |
-| Strands `model_id` = APAC inference profile; guardrail id/version passed to `BedrockModel` | `app/assistant/handler.py` | **CONFIRMED** — `_build_agent` sets `model_id = NOVA_MODEL_ID` env (default `apac.amazon.nova-micro-v1:0`), `region_name = ap-southeast-1`, and forwards `guardrail_id` / `guardrail_version` / `guardrail_trace="enabled"` to `BedrockModel`. The `NOVA_MODEL_ID`, `GUARDRAIL_ID`, `GUARDRAIL_VERSION` env vars are wired on `AssistantFn` in the AE template. |
+### 1. Storefront is live (curl-verified)
+`curl https://d1o0u6nv8iqp83.cloudfront.net/?cb=<ts>` and grep:
+- "Coffee — Makes you Love" → 3 matches (title/hero/meta)
+- `openChatFab` (floating button id) → 1 match
+- `chatPanel` → 6 matches
+- `ui.js` script tag → 1 match
+- `id="log"` → 1 match (chat log present in panel)
+Asset HTTP status: `styles.css` 200, `app.js` 200, `ui.js` 200.
+=> The NEW storefront markup is live (not the old bare chat page).
 
-## Behavior confirmations
+### 2. Chat end-to-end — POST /api/chat (curl-verified)
+Request `{"message":"where is my order ORD-000123?"}` → HTTP 200. Reply names
+the order: "1x Flat White and 1x Croissant", status OK. Proves
+Strands → Nova → Bedrock path works through CloudFront `/api/*`.
 
-- **Human-in-the-loop pending-confirmation refund flow** — CONFIRMED.
-  `tools.make_initiate_refund` writes a `PENDING_CONFIRMATION` DynamoDB item
-  with a uuid4 token + TTL and moves no money (test: item has no `paid`/
-  `settled` field; bad order id / amount ≤ 0 / amount > max are REJECTED and
-  nothing is written). The separate `refund_confirm.confirm_refund` state
-  machine is the ONLY executor: 400 bad-token-format, 404 unknown, 410 expired,
-  409 not-pending, 200 confirm, and idempotent 200 (no second update) on an
-  already-CONFIRMED token. All six paths covered by passing unit tests.
-- **Tool-handler PII masking** — CONFIRMED. `pii.mask_pii` masks account
-  numbers / SSNs / emails keeping only last-4; `initiate_refund` routes
-  order/amount through the masker before persisting, and a test asserts a raw
-  12-digit account value never appears in the written item nor in captured log
-  output. The guardrail tool-call blind spot is handled in-handler by design.
+### 3. Human-in-the-loop refund — POST /api/chat then /api/refunds/confirm (curl-verified)
+- `{"message":"Refund the full 12.50 for ORD-000123"}` → HTTP 200 with a
+  structured `pendingRefund`:
+  `{"token":"717af2ec-...","amountMasked":"12.50","orderMasked":"ORD-000123"}`.
+  (Masked order + amount present; the reply text says "No money has moved yet.")
+- `POST /api/refunds/confirm` with `{"token":"717af2ec-..."}` (the opaque token
+  echoed back unchanged) → HTTP 200 `{"status":"CONFIRMED","token":"717af2ec-..."}`.
+  Confirms the opaque-token confirm path. In the UI this renders the
+  "Refund confirmed." system message (app.js `confirmRefund`).
+- Note: the assistant only emits `pendingRefund` once an amount is given; a bare
+  "I want a refund" first asks for the amount (expected agent behavior).
 
-## Notes / deviations (carried from implementation)
-- PII entity for a bank account is `US_BANK_ACCOUNT_NUMBER` (the valid Bedrock
-  entity; there is no generic `ACCOUNT_NUMBER`). SSN = `US_SOCIAL_SECURITY_NUMBER`,
-  email = `EMAIL`. PII action is `ANONYMIZE` (the valid CfnGuardrail
-  mask-equivalent action; `MASK` is not a valid value).
-- `AWS::Bedrock::ModelInvocationLoggingConfiguration` has no L1/L2 construct in
-  aws-cdk-lib@2.160.0, so it is provisioned via a raw `CfnResource` escape hatch.
+### 4. Receipt — GET /api/receipts/ORD-000123/url (curl-verified)
+Request → HTTP 200 `{"url":"https://...receiptsbucket.../receipts/ORD-000123.pdf?...","expiresIn":900}`.
+The API returns a presigned S3 URL per the contract; the frontend opens it with
+`window.open(data.url, "_blank")`.
+Caveat (BACKEND, out of frontend scope): the presigned URL is signed SigV2 and
+the receipts bucket is KMS-encrypted in ap-southeast-1, so following S3's 307
+regional redirect yields a SigV4-required error. This is a property of the
+backend's URL generation (Lambda), which this frontend-only task must not
+change, and does not affect the frontend contract (API returns 200 + a url).
 
-## No-live-resources statement
-All verification was performed locally. `cdk synth` only generates
-CloudFormation templates into the local, git-ignored `infra/cdk.out/`
-directory; it does not call AWS. **No AWS account was mutated and no AWS
-resources were created, deployed, or invoked.**
+### 5. Security re-check (curl-verified on live assets)
+- Fetched live `app.js`/`ui.js` + HTML and scanned: NO hardcoded API
+  keys/secrets/tokens/passwords (only a comment stating "No secrets ... live in
+  the browser").
+- All `fetch(...)` targets are relative and same-origin: `/api/chat`,
+  `/api/refunds/confirm`, `/api/receipts/.../url`. No absolute or cross-origin
+  URLs in the served HTML/JS. No external CDN links.
+- The refund token is handled as an opaque string: app.js passes
+  `pending.token` straight to `confirmRefund` and sends `{"token":token}` — it
+  is never parsed from the reply text. (app.js unchanged.)
+
+## Accessibility (verified by inspecting shipped markup/CSS/JS)
+- Floating button `#openChatFab` has `aria-label="Chat with us to order coffee"`.
+- Openers have `aria-haspopup="dialog"`, `aria-controls="chatPanel"`,
+  `aria-expanded` toggled by `ui.js`.
+- Panel is `role="dialog" aria-modal="true" aria-labelledby="chatPanelTitle"`,
+  `hidden` when closed (`.chat-panel[hidden]{display:none}`).
+- `ui.js` closes the panel on the × button and on `Escape`, moves focus into the
+  panel on open and returns focus to the opener on close.
+- `#log` keeps `aria-live="polite"`.
+
+## Summary
+All three live API contracts return 200 and behave as specified; the new
+storefront markup/CSS/JS is confirmed live over HTTPS through CloudFront; no
+secrets and all same-origin relative `/api/...` calls preserved; `app.js`
+unchanged. The one caveat (presigned-URL S3 redirect signature) is pre-existing
+backend behavior outside this frontend-only task's scope.

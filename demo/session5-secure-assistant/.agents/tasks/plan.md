@@ -1,465 +1,284 @@
-# Implementation Plan — Session 5: Secure Coffee-Shop AI Assistant
+# Implementation Plan — Session 5 Storefront Frontend (chat as a widget)
 
-Implements the approved design at `.agents/tasks/design.md` (requirements at
-`.agents/tasks/requirements.md`). All work happens under the worktree at
-`/Users/erictole/demo/apcr-dva/.worktrees/session5/demo/session5-secure-assistant`
-(abbreviated `<ROOT>` below). Use absolute paths; use
-`git -C /Users/erictole/demo/apcr-dva/.worktrees/session5` for any git.
+Turn the bare chat page at `demo/session5-secure-assistant/spa/` into a
+Session-4-style coffee-shop STOREFRONT, with the existing secure chat assistant
+opening as a floating widget/overlay panel from it.
 
-## Ground rules for every item (read before starting)
+**Scope: FRONTEND ONLY.** Every change lives under
+`/Users/erictole/demo/apcr-dva/demo/session5-secure-assistant/spa/`. No
+backend, API, infra, or CDK code changes. One redeploy of the already-deployed
+app stack ships the new `spa/` folder, then live verification.
 
-- **Do NOT modify** `/Users/erictole/demo/apcr-dva/demo/session4-coffee-ship`. It
-  is the reference only. Acceptance #1 requires its git diff to stay empty.
-- **Local-only verification boundary (authoritative, non-negotiable).** The only
-  commands allowed during authoring/verification are: `npm install` + `npx tsc
-  --noEmit` + `npx cdk synth` (in `infra/`, with a dummy `CDK_DEFAULT_ACCOUNT`),
-  `python3 -m py_compile`, `pytest`, `python3 build_diagram.py` + `rsvg-convert`,
-  and `bash -n` on the shell scripts. **NEVER** run `cdk deploy`, `cdk bootstrap`,
-  `docker build`, `docker push`, `aws ...` live calls, or any Bedrock/Guardrail
-  runtime invocation. `deploy.sh`/`destroy.sh` are authored but never executed
-  here (acceptance #25).
-- Pinned facts (never re-decide): account `875692608981`, region
-  `ap-southeast-1`, Nova via `apac.amazon.nova-micro-v1:0` inference profile,
-  `aws-cdk-lib` exactly `2.160.0`, VPC id `vpc-01857e627d800ca7a` and the six
-  subnet ids / three AZs from the design's VPC-import section.
-- Follow session4 conventions exactly where they apply: `infra/package.json`
-  toolchain, `infra/tsconfig.json`, `infra/cdk.json` context flags (incl.
-  `@aws-cdk/aws-iam:minimizePolicies: true`), two-stack `bin/`+`lib/` split with
-  cross-stack refs via stack props, `set -euo pipefail` + numbered-step echo
-  scripts with a typed-`destroy` guard, and the base64 icon-embed `build_diagram.py`.
-- Each item must leave the project in a buildable state (`tsc --noEmit` + `cdk
-  synth` succeed, `py_compile` passes) before the next item starts.
+## Grounding facts (read before starting — discovered from the code, do not re-decide)
 
-The three NIT findings from design review are folded into the relevant items:
-NIT-6 (pin `strands-agents==1.23.0`, guardrail kwargs via `**model_config`) in
-item 9; NIT-7 (`bedrock:ApplyGuardrail` is defensive, scoped to the guardrail
-ARN) in items 5 and 7.
+- **How `spa/` ships.** `infra/lib/app-edge-ai-stack.ts` has a
+  `s3deploy.BucketDeployment` (`SpaDeployment`) whose source is
+  `Source.asset(.../spa)` and whose `distributionPaths: ['/*']` invalidates the
+  CloudFront cache on deploy. Anything placed in `spa/` is uploaded verbatim;
+  adding new asset files under `spa/` is safe and they ship too. CloudFront's
+  default behavior serves the SPA with `ALLOW_GET_HEAD` and
+  `defaultRootObject: index.html`; `/api/*` is a separate CACHING_DISABLED
+  behavior to API Gateway. Both are same-origin from the viewer's perspective.
+- **How `app.js` binds to the DOM (critical constraint).** `spa/app.js` is loaded
+  with a plain `<script src="app.js"></script>` at the end of `<body>`, so it
+  runs after the HTML is parsed. At module load it calls
+  `document.getElementById(...)` for exactly these five ids and stores them in
+  module constants: `log`, `chatForm`, `message`, `orderId`, `receiptBtn`. It
+  also, at load time, attaches a `submit` listener to `chatForm` and a `click`
+  listener to `receiptBtn`. **Therefore all five ids MUST exist in the markup
+  before the `app.js` `<script>` tag, with the same roles** (`#log` a container
+  it appends message divs to and scrolls; `#chatForm` a `<form>`; `#message` the
+  text input inside it; `#orderId` the receipt text input; `#receiptBtn` the
+  receipt button). We keep the ids identical and keep the script tag last, so
+  `app.js` needs **no changes to its element lookups**.
+- **CSS classes `app.js` depends on.** `append(cls, text)` creates
+  `div.msg.<cls>` where `<cls>` is `user` / `bot` / `sys`. `renderPendingRefund`
+  creates `div.pending` containing a `<button>` and the exact strings
+  "Refund pending confirmation", "Order … — amount …", "No money has moved yet.",
+  and a "Confirm refund" button. These classes/strings must keep working, so the
+  new `styles.css` must retain `.msg`, `.msg.user`, `.msg.bot`, `.msg.sys`, and
+  `.pending` (+ its button). Do not rename them.
+- **Security facts that must stay true (unchanged by this work).** No
+  secrets/keys/tokens in the browser; `pendingRefund.token` stays an opaque
+  string only echoed back to `/api/refunds/confirm`, never parsed from reply
+  text; all fetches stay same-origin relative `/api/...` (they already are, in
+  `app.js` — we do not touch them); the human-in-the-loop confirm card and the
+  download-receipt capability are preserved. The simplest way to guarantee all
+  of this: **leave `app.js`'s functions and fetch calls byte-for-byte intact**
+  and only change markup + CSS (plus a tiny, additive open/close script).
+- **No CDN dependencies.** The reference Session 4 page pulls jQuery / Bootstrap
+  / font-awesome from `static/`; those assets are NOT in `spa/` and must not be
+  added or linked from a CDN (a strict CSP/edge setup may block CDNs). Build a
+  single self-authored `styles.css` and use inline SVG for icons/illustrations.
+- **Verification is live.** There is no local dev server for the SPA; it is
+  served by CloudFront. "Does it work" is verified in two layers: (1) static
+  HTML/JS validity + a local file open for layout/behavior sanity, then (2) a
+  real redeploy of the app stack and a check against the live CloudFront URL.
+- **Redeploy command.** Re-running the `BucketDeployment` = deploy the app stack
+  only: from `infra/`, `AWS_REGION=ap-southeast-1 AWS_DEFAULT_REGION=ap-southeast-1
+  CDK_DEFAULT_ACCOUNT=875692608981 CDK_DEFAULT_REGION=ap-southeast-1 npx cdk
+  deploy SecureAssistantAppEdgeAI --require-approval never`. This re-uploads
+  `spa/` and invalidates `/*`; it does NOT rebuild the assistant container image
+  (that is a separate deploy.sh step) because the image is imported by tag. The
+  CloudFront URL is stack output `CloudFrontUrl`.
 
----
+## Design decisions (made here; one-liners with rationale)
 
-## Phase A — CDK scaffolding (must compile and synth before any stack logic)
-
-- [ ] 1. Scaffold the `infra/` CDK project skeleton so `tsc` and `cdk synth` run
-      against an empty-but-valid app. Create `infra/package.json` (name
-      `secure-assistant-infra`, `bin.secure-assistant = bin/secure-assistant.ts`,
-      deps `aws-cdk-lib: "2.160.0"` + `constructs: "^10.3.0"`, devDeps `aws-cdk:
-      2.160.0`, `typescript: ~5.5.4`, `ts-node: ^10.9.2`, `@types/node:
-      ^20.14.0` — identical pins to session4), `infra/tsconfig.json` (copy
-      session4's verbatim, incl. `experimentalDecorators: true`),
-      `infra/cdk.json` (`app: "npx ts-node --prefer-ts-exts
-      bin/secure-assistant.ts"` + the full session4 `context` block incl.
-      `@aws-cdk/aws-iam:minimizePolicies: true`), and a minimal
-      `bin/secure-assistant.ts` that constructs `new cdk.App()` with
-      `env = { region: 'ap-southeast-1', account: process.env.CDK_DEFAULT_ACCOUNT }`
-      and calls `app.synth()` (stacks added in later items). Add
-      `infra/.gitignore` ignoring `node_modules/`, `cdk.out/`, `*.js`, `*.d.ts`.
-      Files: `<ROOT>/infra/package.json`, `<ROOT>/infra/tsconfig.json`,
-      `<ROOT>/infra/cdk.json`, `<ROOT>/infra/bin/secure-assistant.ts`,
-      `<ROOT>/infra/.gitignore`.
-      Verify: `cd <ROOT>/infra && npm install && npx tsc --noEmit` → no errors;
-      `CDK_DEFAULT_ACCOUNT=111111111111 npx cdk synth` → produces `cdk.out` with
-      no live calls. Confirm `infra/package.json` pins `aws-cdk-lib` to exactly
-      `2.160.0` (acceptance #2, #3, #4).
-
-- [ ] 2. Add the shared VPC-import helper `lib/vpc-import.ts` exporting a function
-      `importVpc(scope: Construct): ec2.IVpc` that returns
-      `ec2.Vpc.fromVpcAttributes(scope, 'ImportedVpc', {...})` using the literal
-      ids from the design (vpcId `vpc-01857e627d800ca7a`, cidr `10.1.0.0/16`, AZs
-      `[ap-southeast-1a,1b,1c]`, the three `privateSubnetIds` and three
-      `publicSubnetIds` in AZ-matched order) — **not** `fromLookup` (NFR-4).
-      Export a helper returning the three private subnets as a `SubnetSelection`
-      via `ec2.Subnet.fromSubnetId` so Lambdas/endpoints select them explicitly.
-      Add a code comment: private subnets have a NAT route but Bedrock traffic
-      goes via the interface endpoint (item 7), not NAT.
-      Files: `<ROOT>/infra/lib/vpc-import.ts`.
-      Verify: `cd <ROOT>/infra && npx tsc --noEmit` → no errors (helper is
-      imported by stacks in later items; a stray-unused-export is fine under the
-      session4 `noUnusedLocals: false`).
-
-## Phase B — SecurityData stack (the substrate referenced by AppEdgeAI)
-
-- [ ] 3. Create the `SecureAssistantSecurityData` stack in
-      `lib/security-data-stack.ts` with the KMS CMK, DynamoDB tables, Secrets
-      Manager secret, and SSM parameter, exposing typed `public readonly`
-      members for cross-stack wiring. Specifically: one `kms.Key`
-      (`enableKeyRotation: true`, `alias: 'alias/session5-secure-assistant'`,
-      `removalPolicy: DESTROY`); `orders` table (PK `orderId` S, `PAY_PER_REQUEST`,
-      `encryption: CUSTOMER_MANAGED` + `encryptionKey: key`, DESTROY); `pending-refunds`
-      table (PK `confirmationToken` S, `PAY_PER_REQUEST`, CMK, TTL attribute `ttl`
-      enabled, DESTROY, tagged `team=support` via `cdk.Tags.of(table).add('team',
-      'support')`); Secrets Manager secret `session5/payment-processor-key`
-      (`generateSecretString` like session4's payment secret); SSM `StringParameter`
-      `/session5/assistant/config` holding a JSON string (greeting, maxRefund, etc).
-      Register the stack in `bin/secure-assistant.ts` with the shared `env`.
-      Files: `<ROOT>/infra/lib/security-data-stack.ts`,
-      `<ROOT>/infra/bin/secure-assistant.ts`.
-      Verify: `cd <ROOT>/infra && npx tsc --noEmit && CDK_DEFAULT_ACCOUNT=111111111111
-      npx cdk synth SecureAssistantSecurityData` → synth succeeds; template shows
-      a CMK, two DynamoDB tables with customer-managed KMS, the secret, and the
-      SSM parameter (acceptance #6, #9).
-
-- [ ] 4. Add the Bedrock Guardrail, its published version, and the Bedrock
-      invocation-logging configuration to the SecurityData stack. Create a
-      `bedrock.CfnGuardrail` with content filters **Hate** and **Violence** at
-      **HIGH** (input+output), PII entities `ACCOUNT_NUMBER`,
-      `US_SOCIAL_SECURITY_NUMBER`, `EMAIL` set to **MASK** (input+output), one
-      **BLOCK** example (a denied topic `legal-advice` and/or a BLOCK-action PII
-      entity), and `blockedInputMessaging`/`blockedOutputsMessaging`; publish a
-      `bedrock.CfnGuardrailVersion`. Expose `guardrailId` (from
-      `guardrail.attrGuardrailId`) and `guardrailVersion` (from
-      `version.attrVersion`) as public readonly strings. Create a CMK-encrypted
-      CloudWatch `logs.LogGroup` (`encryptionKey: key`) and a CMK-encrypted S3
-      log bucket (`BucketEncryption.KMS`, `encryptionKey: key`, `BLOCK_ALL`), a
-      Bedrock logging IAM role, grant the Bedrock logging/delivery principal
-      `kms:GenerateDataKey*`+`kms:Decrypt` on the CMK, and provision invocation
-      logging via an **escape-hatch** `new cdk.CfnResource(this,
-      'BedrockInvokeLogging', { type: 'AWS::Bedrock::ModelInvocationLoggingConfiguration',
-      properties: { LoggingConfig: {...} } })` with the exact `LoggingConfig` JSON
-      from design Decision 5 (CloudWatch + S3 destinations, both CMK-encrypted).
-      Do NOT use a `CfnModelInvocationLoggingConfiguration` class — it does not
-      exist in `aws-cdk-lib@2.160.0` (design Finding 1).
-      Files: `<ROOT>/infra/lib/security-data-stack.ts`.
-      Verify: `cd <ROOT>/infra && npx tsc --noEmit && CDK_DEFAULT_ACCOUNT=111111111111
-      npx cdk synth SecureAssistantSecurityData` → synth succeeds; the template
-      contains a `CfnGuardrail` (Hate+Violence HIGH, PII MASK, a BLOCK example) +
-      `CfnGuardrailVersion`, and a raw `AWS::Bedrock::ModelInvocationLoggingConfiguration`
-      resource whose destinations reference the CMK (acceptance #12, #14).
-
-## Phase C — AppEdgeAI stack (edge + compute + observability)
-
-- [ ] 5. Create the `SecureAssistantAppEdgeAI` stack shell in
-      `lib/app-edge-ai-stack.ts` with its `AppEdgeAIStackProps` interface and
-      imported VPC. Define `AppEdgeAIStackProps extends cdk.StackProps` carrying
-      `kmsKey: kms.IKey`, `ordersTable`/`pendingRefundsTable: dynamodb.ITable`,
-      `receiptsBucket` is created here (not passed), `paymentSecret:
-      secretsmanager.ISecret`, `configParam: ssm.IStringParameter`, `guardrailId:
-      string`, `guardrailVersion: string`. In the constructor, import the VPC via
-      the item-2 helper and create the security groups: `assistantSg` (agent
-      Lambda) and `bedrockEndpointSg`. Register the stack in
-      `bin/secure-assistant.ts`, passing the SecurityData members through props
-      (session4 wiring style). Nothing else yet.
-      Files: `<ROOT>/infra/lib/app-edge-ai-stack.ts`,
-      `<ROOT>/infra/bin/secure-assistant.ts`.
-      Verify: `cd <ROOT>/infra && npx tsc --noEmit && CDK_DEFAULT_ACCOUNT=111111111111
-      npx cdk synth --all` → two stacks synth; template shows no `AWS::EC2::VPC`
-      resource (acceptance #5, #6).
-
-- [ ] 6. Add the receipts S3 bucket (CMK, TLS-only DENY), the SPA bucket
-      (OAC-ready), and their resource policies to the AppEdgeAI stack. Receipts
-      bucket: `BucketEncryption.KMS` with `props.kmsKey`, `bucketKeyEnabled`,
-      `BLOCK_ALL`, `removalPolicy: DESTROY` + `autoDeleteObjects: true`; attach
-      the TLS-only `DenyInsecureTransport` resource policy (DENY `s3:*` for
-      `AnyPrincipal` when `aws:SecureTransport = false`) exactly as in design.
-      SPA bucket: `S3_MANAGED`, `BLOCK_ALL`, DESTROY + autoDelete, plus a
-      defensive TLS-only deny.
-      Files: `<ROOT>/infra/lib/app-edge-ai-stack.ts`.
-      Verify: `cd <ROOT>/infra && npx tsc --noEmit && CDK_DEFAULT_ACCOUNT=111111111111
-      npx cdk synth SecureAssistantAppEdgeAI` → template shows the receipts
-      bucket resource policy with a `Deny` on `aws:SecureTransport = false`
-      (acceptance #10) and the receipts bucket encrypted with the CMK (#9).
-
-- [ ] 7. Add the two Bedrock interface VPC endpoints with endpoint policy + tight
-      SG to the AppEdgeAI stack. Create `ec2.InterfaceVpcEndpoint` for
-      `BEDROCK_RUNTIME` and one for `BEDROCK` (control plane) in the three private
-      subnets, `privateDnsEnabled: true`, `securityGroups: [bedrockEndpointSg]`.
-      `bedrockEndpointSg.addIngressRule(assistantSg, ec2.Port.tcp(443))` only.
-      Attach a **non-wildcard** endpoint policy allowing `bedrock:InvokeModel`,
-      `bedrock:InvokeModelWithResponseStream`, `bedrock:ApplyGuardrail` on the
-      inference-profile ARN
-      `arn:aws:bedrock:ap-southeast-1:875692608981:inference-profile/apac.amazon.nova-micro-v1:0`,
-      the foundation-model ARN `arn:aws:bedrock:*::foundation-model/amazon.nova-micro-v1:0`,
-      and the guardrail ARN (for `ApplyGuardrail`). Add a code comment that
-      `ApplyGuardrail` is included **defensively** (inline-guardrail wiring may
-      not issue a separate call — design Finding 7). Add a code comment: private
-      subnet != private path to Bedrock; PrivateLink is what keeps it off NAT.
-      Files: `<ROOT>/infra/lib/app-edge-ai-stack.ts`.
-      Verify: `cd <ROOT>/infra && npx tsc --noEmit && CDK_DEFAULT_ACCOUNT=111111111111
-      npx cdk synth SecureAssistantAppEdgeAI` → template shows a `bedrock-runtime`
-      interface endpoint in the private subnets with a non-wildcard policy and an
-      SG admitting only `assistantSg` on 443 (acceptance #13).
-
-- [ ] 8. Add the three Lambda functions, their IAM roles (least privilege + ABAC
-      + identity/resource pairing), and X-Ray tracing to the AppEdgeAI stack —
-      wired to the Python sources authored in Phase D. The **assistant** is a
-      `lambda.DockerImageFunction` from `lambda.DockerImageCode.fromImageAsset('<ROOT>/app',
-      { file: 'Dockerfile' })`, in the three private subnets with `assistantSg`,
-      `timeout: 60s`, `memory: 1024`, `tracing: ACTIVE`, env `GUARDRAIL_ID`,
-      `GUARDRAIL_VERSION`, table names, secret/param names, region. The
-      **refund_confirm** and **presign** are `lambda.Function`
-      (`runtime: PYTHON_3_12`, `code: fromAsset('<ROOT>/app/refund_confirm' | '.../presign')`,
-      `tracing: ACTIVE`). IAM: agent role grants `bedrock:InvokeModel` +
-      `InvokeModelWithResponseStream` on **both** the inference-profile ARN and
-      the foundation-model ARN (plus `ApplyGuardrail` defensively on the guardrail
-      ARN), DynamoDB RW scoped to the two tables, `secretsmanager:GetSecretValue`
-      on the payment secret ARN only, `ssm:GetParameter` on the config param ARN
-      only, X-Ray write, and `kms` decrypt/generate on the CMK; presign role gets
-      an **identity** `s3:GetObject` on `receiptsBucket.arnForObjects('*')`
-      (pairs with the item-6 resource DENY → acceptance #11/#16). Add the **ABAC**
-      policy statement on the refund_confirm/operator role: ALLOW
-      `dynamodb:GetItem`/`UpdateItem` on the pending-refunds ARN conditioned
-      `StringEquals: { 'aws:ResourceTag/team': '${aws:PrincipalTag/team}' }` —
-      **single-quoted non-template string** so the IAM variable survives verbatim
-      (design Finding 5), with the code comment explaining why a backtick literal
-      is forbidden; tag the operator role `team=support`. No `Action:'*'`/`Resource:'*'`
-      except the foundation-model ARN wildcard form.
-      Files: `<ROOT>/infra/lib/app-edge-ai-stack.ts`.
-      Verify: `cd <ROOT>/infra && npx tsc --noEmit && CDK_DEFAULT_ACCOUNT=111111111111
-      npx cdk synth SecureAssistantAppEdgeAI` → synth succeeds (image asset only
-      staged, no `docker build` at synth — design Decision 2); template shows the
-      agent role dual-ARN Bedrock grant (#15), the literal `${aws:PrincipalTag/team}`
-      in the rendered ABAC statement (#11), and no VPC resource. (This item
-      depends on Phase D sources existing; if authoring stacks first, create empty
-      `app/` + `app/Dockerfile` + `app/refund_confirm/` + `app/presign/` dirs so
-      asset staging resolves, then flesh them out in Phase D.)
-
-- [ ] 9. Add the API Gateway REST API (X-Ray on), the regional WAF WebACL +
-      association, and the CloudFront distribution (OAC S3 + `/api/*`) to the
-      AppEdgeAI stack, plus the SPA `BucketDeployment` and the CloudFront URL
-      output. REST API (`apigateway.RestApi`, regional) with
-      `deployOptions.tracingEnabled: true` and a top-level `/api` resource holding
-      `POST /api/chat`→assistant, `POST /api/refunds/confirm`→refund_confirm, `GET
-      /api/receipts/{orderId}/url`→presign (proxy integrations). Regional
-      `wafv2.CfnWebACL` (`scope: 'REGIONAL'`) with `AWSManagedRulesCommonRuleSet`
-      (`overrideAction: { none: {} }`) and a rate-based rule `action: { count: {} }`
-      (COUNT mode, `limit: 2000`, `aggregateKeyType: 'IP'`), CloudWatch metrics
-      on; associate to the API stage via `wafv2.CfnWebACLAssociation`.
-      `cloudfront.Distribution`: default behavior = SPA bucket via
-      `origins.S3BucketOrigin.withOriginAccessControl(spaBucket)` (OAC,
-      `REDIRECT_TO_HTTPS`, `CACHING_OPTIMIZED`, GET/HEAD), additional behavior
-      `/api/*` = `origins.RestApiOrigin(api)` (`REDIRECT_TO_HTTPS`,
-      `CACHING_DISABLED`, `originRequestPolicy: ALL_VIEWER_EXCEPT_HOST_HEADER`,
-      `ALLOW_ALL`), `defaultRootObject: 'index.html'`, default CloudFront
-      domain/cert (no ACM, no alias). Add `s3deploy.BucketDeployment` from
-      `<ROOT>/spa` to the SPA bucket. `CfnOutput` the CloudFront URL.
-      Files: `<ROOT>/infra/lib/app-edge-ai-stack.ts`.
-      Verify: `cd <ROOT>/infra && npx tsc --noEmit && CDK_DEFAULT_ACCOUNT=111111111111
-      npx cdk synth SecureAssistantAppEdgeAI` → template has a CloudFront
-      distribution with an OAC S3 origin + `/api/*` behavior and NO
-      `AWS::CertificateManager::Certificate`/alias (#7), a WebACL with the common
-      rule set + a COUNT rate rule associated regionally (#8), and `tracingEnabled`
-      on the API stage (#20). (Needs `<ROOT>/spa` to exist — create it in Phase E
-      first, or a placeholder `index.html` so `BucketDeployment` staging resolves.)
-
-## Phase D — Python Lambda sources (pure, unit-testable)
-
-- [ ] 10. Create the PII helpers and Strands tools as pure functions.
-      `app/assistant/pii.py`: `mask_account`, `mask_ssn`, `mask_email`,
-      `mask_pii`, `validate` — pure functions, with code comments explaining the
-      **guardrail tool-call blind spot** (the guardrail does not see tool
-      args/results, so handlers mask themselves). `app/assistant/tools.py`:
-      `look_up_order(order_id)` (read-only; validates `^ORD-[0-9]{6}$`) and a
-      factory `make_initiate_refund(table, req_ctx)` returning an `@tool`
-      `initiate_refund(order_id, amount)` that validates+masks args, writes a
-      `pending-refunds` item keyed by a fresh `uuid4` `confirmationToken` with
-      `status='PENDING_CONFIRMATION'`, `ttl`, masked order ref, amount — **moves
-      no money** — appends `{token, amountMasked, orderMasked}` to
-      `req_ctx['pending_refunds']` (the request-scoped side channel, design
-      Decision 6), and returns a PENDING-CONFIRMATION dict. DynamoDB access is
-      injected (`table` arg) so tests use a stub. Never write raw PII.
-      Files: `<ROOT>/app/assistant/pii.py`, `<ROOT>/app/assistant/tools.py`.
-      Verify: `python3 -m py_compile <ROOT>/app/assistant/pii.py
-      <ROOT>/app/assistant/tools.py` → no errors.
-
-- [ ] 11. Create the assistant Lambda handler wiring Strands + Nova Micro +
-      guardrail + X-Ray subsegments. `app/assistant/handler.py`: `from
-      strands import Agent, tool`; `from strands.models import BedrockModel`;
-      construct `BedrockModel(model_id='apac.amazon.nova-micro-v1:0',
-      region_name='ap-southeast-1', guardrail_id=os.environ['GUARDRAIL_ID'],
-      guardrail_version=os.environ['GUARDRAIL_VERSION'],
-      guardrail_trace='enabled')` with a comment noting the guardrail kwargs are
-      forwarded via `**model_config` in `strands-agents==1.23.0` (design NIT-6);
-      no Bedrock classic Agent / AgentCore. Build a per-request `req_ctx =
-      {'pending_refunds': []}`, bind `make_initiate_refund(table, req_ctx)`,
-      `Agent(model=model, tools=[look_up_order, initiate_refund])`. Parse the API
-      GW proxy event (validate `message` 1–2000 chars → 400 on bad input),
-      `from aws_xray_sdk.core import patch_all; patch_all()`, wrap the model call
-      in `xray_recorder.in_subsegment('bedrock-invoke')` and DynamoDB access in a
-      `'ddb-...'` subsegment (acceptance #20, #28), then build the response
-      envelope `{reply, pendingRefund?}` from `req_ctx['pending_refunds']` (not
-      from model text — Decision 6 side-channel contract). Handle errors per the
-      design error table (generic, PII-free). Add `app/assistant/__init__.py` if
-      needed for imports.
-      Files: `<ROOT>/app/assistant/handler.py`.
-      Verify: `python3 -m py_compile <ROOT>/app/assistant/handler.py` → no errors
-      (no runtime import of `strands` required for py_compile) (acceptance #16).
-
-- [ ] 12. Create the `refund_confirm` and `presign` Lambda handlers.
-      `app/refund_confirm/handler.py`: validate `confirmationToken` (uuid4
-      format → 400), look up the pending-refunds item (404 missing / 409 already
-      confirmed / 410 expired), idempotently flip `status` to `CONFIRMED`, read
-      the payment secret to demonstrate the grant, **stub** the processor call
-      (moves no real money), return a result. `app/presign/handler.py`: validate
-      `orderId` (`^ORD-[0-9]{6}$` → 400), generate a presigned GET URL
-      (`ExpiresIn=300`) for `receipts/{orderId}.pdf`, 500 on KMS/permission
-      error. Keep URL-generation logic as an injectable/pure function for tests.
-      Files: `<ROOT>/app/refund_confirm/handler.py`,
-      `<ROOT>/app/presign/handler.py`.
-      Verify: `python3 -m py_compile <ROOT>/app/refund_confirm/handler.py
-      <ROOT>/app/presign/handler.py` → no errors.
-
-- [ ] 13. Create the Lambda dependency manifests and the assistant Dockerfile.
-      `app/requirements.txt` pinning `strands-agents==1.23.0`,
-      `strands-agents-tools==0.2.9`, `boto3==1.35.76`, `aws-xray-sdk==2.14.0`
-      (acceptance #17). `app/dev-requirements.txt` pinning `pytest`.
-      `app/Dockerfile`: `FROM public.ecr.aws/lambda/python:3.12`, copy
-      `requirements.txt`, `pip install -r requirements.txt`, copy `assistant/`,
-      set `CMD ["assistant.handler.handler"]` (or the matching module path).
-      Files: `<ROOT>/app/requirements.txt`, `<ROOT>/app/dev-requirements.txt`,
-      `<ROOT>/app/Dockerfile`.
-      Verify: `bash -n` not applicable; confirm `app/requirements.txt` pins the
-      three required packages to explicit versions. (The image is built only at
-      deploy — never here; design Decision 2.)
-
-- [ ] 14. Write the pytest unit tests for the pure handlers.
-      `app/tests/conftest.py` adds `app/` to `sys.path` (session4 pattern) so
-      `assistant.pii`/`assistant.tools`/`refund_confirm.handler`/`presign.handler`
-      import. `test_pii.py` (masking/validation). `test_tools.py`:
-      `initiate_refund` returns PENDING_CONFIRMATION, writes a token, moves no
-      money, and a raw account number never appears in the written item nor in a
-      captured log line (acceptance #18, #19). `test_refund.py`: the confirm step
-      executes only with a matching token (idempotent, expiry/already-confirmed
-      paths). `test_presign.py`: URL generation via a botocore stub + bad-orderId
-      rejection. Use injected table/stub objects — no live AWS, no moto needed.
-      Files: `<ROOT>/app/tests/conftest.py`, `<ROOT>/app/tests/test_pii.py`,
-      `<ROOT>/app/tests/test_tools.py`, `<ROOT>/app/tests/test_refund.py`,
-      `<ROOT>/app/tests/test_presign.py`.
-      Verify: `cd <ROOT> && python3 -m pytest app/tests -q` → all tests pass;
-      `python3 -m py_compile` on every `.py` under `app/` → no errors (#22).
-
-## Phase E — SPA
-
-- [ ] 15. Create the dependency-light chat SPA (no build step). `spa/index.html`
-      (chat UI shell), `spa/app.js`, `spa/styles.css`. `app.js`: POST `{message}`
-      to same-origin `"/api/chat"`; when the response carries
-      `{pendingRefund:{token, amountMasked, orderMasked}}`, render a **Confirm
-      refund** button that POSTs `{token}` to `"/api/refunds/confirm"` (treat the
-      token as opaque, never parse it from assistant text); a **Download receipt**
-      control that GETs `"/api/receipts/{orderId}/url"` then opens the returned
-      presigned URL. No secrets/API keys in the SPA. (If item 9 was authored
-      before this, replace the placeholder `index.html` created there.)
-      Files: `<ROOT>/spa/index.html`, `<ROOT>/spa/app.js`, `<ROOT>/spa/styles.css`.
-      Verify: `cd <ROOT>/infra && CDK_DEFAULT_ACCOUNT=111111111111 npx cdk synth
-      SecureAssistantAppEdgeAI` → the `BucketDeployment` stages `spa/` with no
-      bundler/npm build (acceptance #21 UI controls present; verified visually in
-      the SPA source).
-
-## Phase F — Diagram, scripts, docs
-
-- [ ] 16. Create the architecture diagram generator reusing the session4 base64
-      icon-embed approach. `diagram/build_diagram.py` modeled on
-      `demo/session4-coffee-ship/container/build_diagram.py` (`data_uri()`
-      inlining each `*_64.svg` as `data:image/svg+xml;base64`, zones, curved
-      bezier `edge()`, numbered steps, legend, drop-shadow). `ICON_BASE =
-      "/Users/erictole/demo/apcr-dva/aws-icons/Architecture-Service-Icons_04302026"`
-      with the verified icon relative paths from design (cloudfront, waf, apigw,
-      lambda, bedrock, privatelink, vpc, dynamodb, s3, kms, secrets, iam, ssm,
-      xray, cloudwatch — all confirmed present). Draw: Viewer → CloudFront →
-      {S3+OAC SPA; `/api/*` → WAF → API GW → assistant Lambda in VPC private
-      subnets}; Lambda → PrivateLink bedrock-runtime → Bedrock Nova Micro
-      (guardrail); Lambda → DynamoDB (CMK) + Secrets + SSM; presign → receipts S3
-      (CMK, TLS-only); Bedrock invocation logs → CMK CloudWatch; X-Ray across API
-      GW + Lambdas; four color-coded act zones. Write `diagram/architecture.svg`.
-      Files: `<ROOT>/diagram/build_diagram.py`.
-      Verify: `cd <ROOT>/diagram && python3 build_diagram.py && rsvg-convert -o
-      architecture.png architecture.svg` → both `architecture.svg` and
-      `architecture.png` produced; icons embedded as base64 (no external file
-      refs in the SVG) (acceptance #23).
-
-- [ ] 17. Author `deploy.sh` and `destroy.sh` (not executed here). `deploy.sh`
-      (`set -euo pipefail`, `AWS_REGION`/`AWS_DEFAULT_REGION=ap-southeast-1`,
-      numbered-step echo): preflight (`aws docker node npm python3 zip
-      rsvg-convert`), `npm install` + `cdk bootstrap`, build+push the assistant
-      image (this is where docker build happens — never at synth), `cdk deploy
-      SecureAssistantSecurityData` (capture guardrail id/version), `cdk deploy
-      SecureAssistantAppEdgeAI`, seed demo data (orders items, a sample receipt
-      PDF to the receipts bucket, the SSM config), resolve+print the CloudFront
-      URL. `destroy.sh` (`set -euo pipefail`, region pinned, **guarded**: aborts
-      unless the operator types `destroy`): confirm prompt, empty SPA+receipts
-      buckets (all versions/delete markers), delete the Bedrock
-      invocation-logging configuration (account/region singleton) so the CMK is
-      not pinned, `cdk destroy --all --force`, sweep leftover asset buckets/log
-      groups. Follow the session4 script structure.
-      Files: `<ROOT>/deploy.sh`, `<ROOT>/destroy.sh`.
-      Verify: `bash -n <ROOT>/deploy.sh && bash -n <ROOT>/destroy.sh` → pass;
-      confirm `destroy.sh` aborts unless `destroy` is typed (acceptance #22).
-
-- [ ] 18. Write `README.md` and `FACILITATOR-RUNBOOK.md` walking the four acts
-      with **OLX** and **Clariant** talking points and all seven required
-      callouts: ACM us-east-1 rule (taught though no cert is provisioned); Nova
-      inference-profile requirement; Strands guardrail wiring; guardrail
-      tool-call blind spot; human-in-the-loop refund; invocation-logging PII trap;
-      the Strands Agents SDK note — plus the regional-WAF-vs-us-east-1-CloudFront-WAF
-      tradeoff (design FR-36/FR-37). Reference the diagram and the local-only
-      verification boundary. Match session4 doc tone.
-      Files: `<ROOT>/README.md`, `<ROOT>/FACILITATOR-RUNBOOK.md`.
-      Verify: confirm both docs contain all seven callouts + the regional-WAF
-      tradeoff + OLX/Clariant references across the four acts (acceptance #24).
-
-## Phase G — add CDK template assertions and run the full local gate
-
-- [ ] 19. Add the `cdk` template-assertion test and run the complete local
-      verification suite end-to-end. Create `infra/test/template.test.ts` using
-      `Template.fromStack` to assert: `resourceCountIs('AWS::EC2::VPC', 0)`; two
-      stacks; CloudFront with an OAC S3 origin + `/api/*` behavior and no ACM
-      cert; WebACL with the common rule set + a COUNT rate rule associated
-      regionally; CMK on receipts + log destination + both tables; receipts
-      TLS-only Deny; ABAC statement containing the literal `${aws:PrincipalTag/team}`
-      verbatim; `CfnGuardrail` (filters/PII/BLOCK) + published version;
-      `bedrock-runtime` interface endpoint with non-wildcard policy + SG;
-      `hasResource('AWS::Bedrock::ModelInvocationLoggingConfiguration', ...)` on
-      the raw CFN type with a CMK-encrypted destination; agent-role dual-ARN
-      Bedrock grant; X-Ray on API GW + Lambda. (Add `jest`/`aws-cdk-lib`
-      assertions + a test runner to `infra/package.json` devDeps and a `test`
-      script, consistent with the pinned toolchain, or run via `ts-node` if a
-      test runner is not already present — do not change the `aws-cdk-lib` pin.)
-      Files: `<ROOT>/infra/test/template.test.ts`, `<ROOT>/infra/package.json`.
-      Verify (full local gate, in order — all must pass):
-      1. `cd <ROOT>/infra && npm install && npx tsc --noEmit`
-      2. `cd <ROOT>/infra && CDK_DEFAULT_ACCOUNT=111111111111 npx cdk synth --all`
-      3. `cd <ROOT>/infra && npm test` (the template assertions)
-      4. `cd <ROOT> && python3 -m py_compile $(find app -name '*.py')`
-      5. `cd <ROOT> && python3 -m pytest app/tests -q`
-      6. `cd <ROOT>/diagram && python3 build_diagram.py && rsvg-convert -o architecture.png architecture.svg`
-      7. `bash -n <ROOT>/deploy.sh && bash -n <ROOT>/destroy.sh`
-      NO `cdk deploy`, `cdk bootstrap`, `docker build/push`, live `aws` calls, or
-      Bedrock invocation at any point (acceptance #25).
-
-- [ ] 20. Final consistency sweep against the acceptance criteria. Confirm the
-      directory holds `infra/`, `spa/`, `app/`, `deploy.sh`, `destroy.sh`,
-      `README.md`, `FACILITATOR-RUNBOOK.md`, and the diagram generator; confirm
-      `git -C /Users/erictole/demo/apcr-dva/.worktrees/session5 status` shows the
-      new files only under `demo/session5-secure-assistant/` and that
-      `demo/session4-coffee-ship` has an empty diff (acceptance #1). Walk each of
-      the 25 acceptance criteria and confirm the corresponding artifact/assertion
-      exists. Fix any gap, then re-run the full local gate from item 19.
-      Files: none (verification + targeted fixes only).
-      Verify: re-run the item-19 gate (all pass) and `git -C
-      /Users/erictole/demo/apcr-dva/.worktrees/session5 status --short` shows no
-      changes under `demo/session4-coffee-ship`.
+1. **Single-page storefront, chat in an overlay panel — not a route change.**
+   The task calls for a floating "Chat with us" button plus a nav/hero "Order"
+   button that both open the SAME panel. A single `index.html` with a
+   `role="dialog"` panel that is shown/hidden via a CSS class is the lightest
+   approach and keeps the five required ids on the page at parse time (so
+   `app.js` binds correctly). Rejected: a separate `chat.html` page — it would
+   split the ids off the landing page and need `app.js` rewiring.
+2. **Keep `app.js` logic intact; add a separate tiny inline/script block for
+   open/close + Esc.** Satisfies "REUSE sendMessage/confirmRefund/
+   downloadReceipt/renderPendingRefund … keep those functions and fetch calls
+   intact." The toggle logic touches only new elements (button + panel) and does
+   not reference the five bound ids, so it cannot regress chat behavior. We add
+   it as a second `<script>` (either a new `spa/ui.js` file or an inline block
+   placed BEFORE `app.js`); choose a new file `spa/ui.js` for cleanliness and
+   load it after `app.js` so both are present. Either order is safe because the
+   two scripts bind disjoint elements.
+3. **Self-authored CSS, coffee palette + existing accent `#8c4fff`.** One
+   `styles.css`, no external deps. Reuse the current CSS custom properties and
+   accent, add coffee-tone variables (warm browns/cream) for the storefront
+   chrome. Rationale: matches "dependency-light like the current SPA" and the
+   explicit palette instruction.
+4. **Inline SVG for the three offer icons (Coffee/Tea/Cakes) and the hero.** No
+   binary images required, nothing to host. Rationale: avoids adding assets and
+   avoids any CDN/icon-font dependency.
+5. **Panel open/close is accessible.** Toggle button has `aria-label` and
+   `aria-expanded`; the panel has `role="dialog"`, `aria-modal="true"`,
+   `aria-labelledby`, is `hidden` when closed, and closes on `Esc` and on a
+   close (×) button; focus moves into the panel on open and back to the opener on
+   close. The `#log` keeps `aria-live="polite"`. Rationale: explicit
+   accessibility requirement in the task.
 
 ---
 
-## Notes and assumptions
+## Phase 1 — Storefront + chat-panel markup
 
-- **Authoring order vs. dependency order.** Phase C stack items (8, 9) reference
-  the Phase D/E sources via asset paths. Either author Phase D/E first, or create
-  the directories (`app/`, `app/Dockerfile`, `app/refund_confirm/`,
-  `app/presign/`, `spa/index.html`) as minimal placeholders when doing the stack
-  items so `cdk synth` asset staging resolves, then flesh them out. The item
-  text calls this out where it matters; the full gate in item 19 is the real
-  acceptance.
-- **No `CfnModelInvocationLoggingConfiguration` class** exists in
-  `aws-cdk-lib@2.160.0` — invocation logging is an escape-hatch
-  `cdk.CfnResource` of type `AWS::Bedrock::ModelInvocationLoggingConfiguration`
-  (design Finding 1). Assert via `hasResource` on the raw type, not an L1 class.
-- **Docker at synth.** `DockerImageCode.fromImageAsset` only *stages* the build
-  context and emits an image-asset manifest at synth; it does **not** run
-  `docker build` (design Decision 2). No `CDK_DOCKER=echo` is required; the real
-  build happens in `deploy.sh` at deploy time, which is never executed here.
-- **CDK test runner.** Session4 ships no `infra/test/` or test runner, so item 19
-  adds one (jest or ts-node-driven) within the pinned toolchain without touching
-  the `aws-cdk-lib` 2.160.0 pin. If adding jest proves heavy, the template
-  assertions may instead run as a standalone `ts-node` script invoked by the
-  `test` npm script — either satisfies the local-only gate.
-- A sample receipt PDF for the receipts bucket is seeded by `deploy.sh` at deploy
-  time (not committed), consistent with session4 seeding demo data in the script.
+- [ ] 1. Rewrite `spa/index.html` into the storefront landing page with an
+      embedded (hidden) chat panel that preserves the five required ids.
+      Structure, top to bottom:
+      - `<head>`: keep `charset`, `viewport`, update `<title>` (e.g. "Coffee —
+        Makes you Love"), keep `<link rel="stylesheet" href="styles.css">`. No
+        CDN links.
+      - **Navbar** (`<header class="site-nav">`): brand/logo (inline SVG cup +
+        shop name), and a nav with an **"Order with Assistant"** button —
+        `<button type="button" id="openChat" class="btn-order" aria-haspopup="dialog"
+        aria-controls="chatPanel" aria-expanded="false">`. Anchor links to the
+        in-page sections (`#offer`, `#menu`) are optional but nice.
+      - **Hero** (`<section class="hero">`): headline "Coffee — Makes you Love",
+        a tagline, and a secondary hero CTA button that ALSO opens the panel —
+        give it `class="btn-order"` and `data-open-chat` (the toggle script binds
+        all `.btn-order` / `[data-open-chat]` openers to one handler) so both the
+        nav and hero buttons open the SAME panel.
+      - **"What We Offer"** (`<section id="offer">`): heading plus three cards
+        (Coffee / Tea / Cakes), each with an inline SVG icon, a title, and a
+        short blurb.
+      - **Menu / specials** (`<section id="menu">`): a heading and a few items
+        (name + short description + price), e.g. Flat White, Latte, Croissant,
+        Coco Cake — static content, coffee-shop themed.
+      - **Footer** (`<footer class="site-footer">`): shop name, a line of fake
+        contact info, copyright.
+      - **Floating button** (bottom-right): `<button type="button"
+        id="openChatFab" class="chat-fab btn-order" aria-haspopup="dialog"
+        aria-controls="chatPanel" aria-expanded="false" aria-label="Chat with us
+        to order coffee">` with an inline chat/cup SVG. Also carries the shared
+        opener hook so it opens the same panel.
+      - **Chat panel overlay** (`<div id="chatPanel" class="chat-panel" role="dialog"
+        aria-modal="true" aria-labelledby="chatPanelTitle" hidden>`), containing,
+        in order: a header bar with `<h2 id="chatPanelTitle">` ("Order with our
+        assistant") and a close button `<button type="button" id="closeChat"
+        class="chat-close" aria-label="Close chat">`; then the EXACT existing
+        chat controls, with ids unchanged —
+        `<section id="log" class="log" aria-live="polite"></section>`,
+        the receipt block (`<label for="orderId">Download my receipt</label>` +
+        `<div class="row"><input id="orderId" …><button id="receiptBtn"
+        type="button">Download receipt</button></div>`),
+        and `<form id="chatForm" class="chat"><input id="message" … required>
+        <button type="submit">Send</button></form>`.
+      - **Scripts at end of `<body>`**, in this order: `<script src="app.js"></script>`
+        then `<script src="ui.js"></script>`. `app.js` runs first and finds all
+        five ids already in the DOM; `ui.js` binds only the new opener/close
+        elements.
+      Files: `spa/index.html`
+      Verify: `cd demo/session5-secure-assistant && node --check spa/app.js`
+      (unchanged file still parses) and open `spa/index.html` in a browser
+      (`open demo/session5-secure-assistant/spa/index.html`): the storefront
+      renders (navbar, hero, offer cards, menu, footer); clicking the nav button,
+      the hero CTA, and the floating button each opens the chat panel; the panel
+      shows the log, receipt row, and chat input. (Chat/refund/receipt network
+      calls will error against `file://` — that is expected; they are verified
+      live in Phase 3.)
+
+## Phase 2 — Styling and open/close behavior
+
+- [ ] 2. Rewrite `spa/styles.css` as a single self-contained stylesheet: a
+      coffee-shop storefront theme plus the chat-panel styles, reusing the accent
+      `#8c4fff` and KEEPING the classes `app.js` depends on.
+      Must include: CSS variables (coffee browns/cream + `--accent: #8c4fff`);
+      base/body/reset; `.site-nav` + `.btn-order`; `.hero` banner; `#offer`
+      cards grid; `#menu` list; `.site-footer`; `.chat-fab` fixed bottom-right;
+      `.chat-panel` overlay/drawer with a visible vs `hidden`/closed state
+      (panel is shown by removing the `hidden` attribute — ensure
+      `.chat-panel[hidden]{display:none}` is honored and the open state is a
+      positioned panel), a backdrop if used, `.chat-panel .chat-close`.
+      MUST retain (ported from the current file): `.log` (bordered, scrollable
+      container), `.msg` + `.msg.user` + `.msg.bot` + `.msg.sys`, `.pending`
+      (+ its button), `.receipt` + `.receipt label`, `.row`, `.chat`, and the
+      shared button + `input[type="text"]` styling. Keep `.pending button`,
+      `.receipt button`, `.chat button` on the accent color and
+      `.pending button[disabled]` dimmed, matching current behavior.
+      Files: `spa/styles.css`
+      Verify: reload `spa/index.html` in the browser — storefront is styled
+      (coffee palette, accent purple on primary buttons), the floating button
+      sits bottom-right, the panel opens as a styled overlay/drawer, and inside
+      the panel the message log, a sample `.msg.user`/`.msg.bot` bubble (type a
+      message to render a user bubble even if the network call fails), the
+      receipt row, and the chat form are all styled correctly.
+
+- [ ] 3. Create `spa/ui.js` with the panel open/close + Esc + focus logic, bound
+      only to the new elements (no reference to the five chat ids).
+      Behavior: query `#chatPanel`, `#closeChat`, and all openers (`#openChat`,
+      `#openChatFab`, and any `[data-open-chat]`/`.btn-order` opener). `openPanel()`
+      removes `hidden`, sets each opener's `aria-expanded="true"`, moves focus to
+      the panel (e.g. focus `#closeChat` or `#message`), and remembers the opener
+      that was clicked. `closePanel()` sets `hidden`, resets `aria-expanded` to
+      `"false"`, and returns focus to the last opener. Wire: click on any opener
+      → `openPanel`; click on `#closeChat` → `closePanel`; `keydown` Escape while
+      open → `closePanel`; optional click on backdrop → `closePanel`. Guard every
+      lookup against `null` so a missing element never throws. Do NOT redefine or
+      call `sendMessage`/`confirmRefund`/`downloadReceipt`/`renderPendingRefund`
+      and do NOT touch `#log`/`#chatForm`/`#message`/`#orderId`/`#receiptBtn`.
+      Files: `spa/ui.js`
+      Verify: `cd demo/session5-secure-assistant && node --check spa/ui.js`
+      passes; reload `spa/index.html` — opening via each of the three buttons
+      works, `Esc` closes the panel, the × button closes it, `aria-expanded`
+      flips, and no console errors appear on open/close.
+
+## Phase 3 — Ship and verify live
+
+- [ ] 4. Redeploy the already-deployed app stack to upload the new `spa/` and
+      invalidate CloudFront. This re-runs the `SpaDeployment` BucketDeployment;
+      it does not rebuild the assistant image.
+      Command (run from `demo/session5-secure-assistant/infra`):
+      `AWS_REGION=ap-southeast-1 AWS_DEFAULT_REGION=ap-southeast-1
+      CDK_DEFAULT_ACCOUNT=875692608981 CDK_DEFAULT_REGION=ap-southeast-1
+      npx cdk deploy SecureAssistantAppEdgeAI --require-approval never`
+      (run `npm install` first only if `infra/node_modules` is absent). This hits
+      REAL AWS and may invalidate the CloudFront cache — expected and in scope for
+      "a redeploy and live verification"; it is not destructive. If AWS
+      credentials for account 875692608981 / ap-southeast-1 are not available in
+      the environment, STOP and report that the build is complete but the live
+      redeploy/verification could not run, rather than guessing.
+      Files: none (deploys existing infra with new `spa/` assets)
+      Verify: the deploy completes and prints the `CloudFrontUrl` output
+      (also retrievable via `aws cloudformation describe-stacks --stack-name
+      SecureAssistantAppEdgeAI --region ap-southeast-1 --query
+      "Stacks[0].Outputs[?OutputKey=='CloudFrontUrl'].OutputValue | [0]"
+      --output text`).
+
+- [ ] 5. Live-verification checklist against the `CloudFrontUrl` from item 4
+      (hard-reload to bypass any cached assets). Confirm each:
+      1. **Storefront loads over HTTPS**: navbar, hero ("Coffee — Makes you
+         Love"), "What We Offer" cards, menu/specials, footer all render; no
+         console errors; no requests to any external/CDN origin (check
+         DevTools → Network: every request is same-origin, assets are
+         `index.html` / `styles.css` / `app.js` / `ui.js`, API calls are
+         relative `/api/...`).
+      2. **Panel opens from all three entry points** (nav button, hero CTA,
+         floating bottom-right button) and shows the log + receipt row + chat
+         form.
+      3. **Accessibility**: `Esc` closes the panel; the × button closes it; the
+         floating button has an accessible name; focus moves into the panel on
+         open; `#log` has `aria-live="polite"`.
+      4. **Chat works**: send a message about `ORD-000123`; a user bubble and a
+         bot reply render; `POST /api/chat` is 200 and same-origin.
+      5. **Human-in-the-loop refund**: ask for a refund; the pending card appears
+         with title "Refund pending confirmation", the masked order + amount, and
+         "No money has moved yet."; the Confirm button disables itself while in
+         flight and `POST /api/refunds/confirm` is called with the opaque token
+         (verify in DevTools the request body is `{"token":"…"}` echoing the
+         server-provided value, not anything parsed from the reply text); on
+         success a "Refund confirmed." system message appears.
+      6. **Receipt download**: enter `ORD-000123`, click Download receipt;
+         `GET /api/receipts/ORD-000123/url` returns a URL and it opens in a new
+         tab.
+      7. **Security re-check**: view source / Network — no API keys, tokens, or
+         secrets in `index.html` / `app.js` / `ui.js`; all `/api/...` calls are
+         relative and same-origin; no absolute or cross-origin URLs added.
+      Files: none (observation only)
+      Verify: all seven checks pass. Record pass/fail (and the CloudFront URL
+      used) in `.agents/tasks/verification-notes.md`.
+
+---
+
+## Dependency order & buildable-state notes
+
+- Item 1 (markup) must land before items 2–3 so the CSS/JS have real elements to
+  target. After item 1 the page already renders and opens the panel (openers can
+  be wired by item 3; before that the page is still valid, just non-interactive
+  for open/close).
+- Items 2 and 3 are independent of each other (CSS vs JS) and both depend only on
+  item 1; do 2 then 3 (either order is fine).
+- Item 4 (redeploy) depends on items 1–3 being complete. Item 5 depends on 4.
+- After each of items 1–3 the `spa/` folder is a valid static site (HTML parses,
+  `node --check` passes on both JS files, `styles.css` is valid), so the project
+  stays shippable at every step.
+
+## Assumptions / gaps
+
+- The backend (`/api/chat`, `/api/refunds/confirm`, `/api/receipts/{id}/url`) is
+  already deployed and working; this task does not touch it. Seeded demo order
+  `ORD-000123` exists (deploy.sh seeds it), so the live checklist uses it.
+- `ui.js` vs inline script: chose a new `spa/ui.js` file for clarity; it ships
+  automatically because the whole `spa/` folder is uploaded. If a stricter CSP
+  were ever added that blocks separate scripts, an inline block is the fallback —
+  but no CSP header is configured in the current CloudFront distribution, so a
+  separate file is fine.
+- Live verification requires AWS access to account 875692608981 in
+  ap-southeast-1. If unavailable, items 4–5 cannot run; the frontend work
+  (items 1–3) is still complete and verifiable locally by opening the page.

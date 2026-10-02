@@ -1,0 +1,7 @@
+{
+  "task_id": "task-order-placement",
+  "task_description": "Extend the Session 5 secure coffee-shop assistant so chat can RECEIVE and PROCESS new orders: place an order via chat (server-side priced from a fixed menu, PII-masked, side-channel id), persist to the CMK-encrypted OrdersTable with an age-derived status lifecycle, let the user look up an order's status, and show the most-recent orders live on the storefront. Full-stack: Strands @tool factories + handler wiring (container image), a byCreatedAt GSI, a new least-privilege read-only orders_list Lambda behind GET /api/orders, a storefront Recent Orders panel, corrected/extended seed data, strands-free/boto3-free unit tests, then a region-pinned deploy and live verification. All in ap-southeast-1. Do NOT run destroy.sh and do NOT commit.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
+  "blocked_reason": null
+}
