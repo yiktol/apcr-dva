@@ -25,6 +25,17 @@
           <a href="#contact">Contact</a>
           <button
             type="button"
+            id="openDiagram"
+            class="nav-link-btn"
+            data-open-diagram
+            aria-haspopup="dialog"
+            aria-controls="diagramModal"
+            aria-expanded="false"
+          >
+            Architecture
+          </button>
+          <button
+            type="button"
             id="openChat"
             class="btn-order"
             data-open-chat
@@ -190,6 +201,33 @@
       <span class="chat-fab-label">Chat with us</span>
     </button>
 
+    <!-- ==== ARCHITECTURE DIAGRAM MODAL ==== -->
+    <div
+      id="diagramModal"
+      class="diagram-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="diagramModalTitle"
+      hidden
+    >
+      <div class="diagram-modal-box">
+        <div class="diagram-modal-header">
+          <h2 id="diagramModalTitle">Architecture</h2>
+          <button type="button" id="closeDiagram" class="chat-close" aria-label="Close architecture diagram">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
+              <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+        <div class="diagram-modal-body">
+          <a href="architecture.png" target="_blank" rel="noopener" title="Open the full-size diagram in a new tab">
+            <img src="architecture.png" alt="Secure Coffee-Shop AI Assistant architecture diagram" class="diagram-img" />
+          </a>
+          <p class="diagram-caption">Tap the diagram to open it full size in a new tab.</p>
+        </div>
+      </div>
+    </div>
+
     <!-- ==== CHAT PANEL OVERLAY ==== -->
     <div
       id="chatPanel"
@@ -226,5 +264,6 @@
     <script src="app.js"></script>
     <script src="ui.js"></script>
     <script src="orders.js"></script>
+    <script src="diagram.js"></script>
   </body>
 </html>

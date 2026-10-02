@@ -85,6 +85,22 @@ h3 {
   opacity: 1;
   color: #fff;
 }
+/* A nav item that is a <button> but should read as a text link. */
+.nav-link-btn {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: var(--cream);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+  opacity: 0.9;
+}
+.nav-link-btn:hover {
+  opacity: 1;
+  color: #fff;
+}
 
 /* ---------- Primary buttons (shared accent) ---------- */
 .btn-order {
@@ -466,12 +482,69 @@ input[type="text"] {
   margin-bottom: 14px;
 }
 
+/* ---------- Architecture diagram modal ---------- */
+.diagram-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(43, 27, 18, 0.6);
+}
+.diagram-modal[hidden] {
+  display: none;
+}
+.diagram-modal-box {
+  background: #fff;
+  border-radius: 14px;
+  max-width: 1120px;
+  width: 100%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(43, 27, 18, 0.35);
+}
+.diagram-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--espresso);
+  color: var(--cream);
+}
+.diagram-modal-header h2 {
+  margin: 0;
+  font-size: 17px;
+}
+.diagram-modal-body {
+  padding: 16px;
+  overflow: auto;
+  text-align: center;
+}
+.diagram-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  border-radius: 8px;
+}
+.diagram-caption {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--coffee);
+  opacity: 0.75;
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 640px) {
   .nav-links {
     gap: 12px;
   }
-  .nav-links a {
+  .nav-links a,
+  .nav-link-btn {
     display: none;
   }
   .hero h1 {
