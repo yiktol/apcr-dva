@@ -111,11 +111,12 @@ RECEIPTS_BUCKET="$(aws cloudformation describe-stacks \
   --query "Stacks[0].Outputs[?OutputKey=='ReceiptsBucketName'].OutputValue | [0]" \
   --output text)"
 
+NOW=$(date +%s)
 if [[ -n "${ORDERS_TABLE}" && "${ORDERS_TABLE}" != "None" ]]; then
   aws dynamodb put-item --table-name "${ORDERS_TABLE}" --region "${AWS_REGION}" \
-    --item '{"orderId":{"S":"ORD-000123"},"summary":{"S":"1x Flat White, 1x Croissant"},"total":{"N":"12.50"}}' || true
+    --item "{\"orderId\":{\"S\":\"ORD-000123\"},\"summary\":{\"S\":\"1x Flat White, 1x Croissant\"},\"total\":{\"N\":\"7.50\"},\"status\":{\"S\":\"RECEIVED\"},\"gsiPk\":{\"S\":\"ORDER\"},\"createdAt\":{\"N\":\"$((NOW-90))\"}}" || true
   aws dynamodb put-item --table-name "${ORDERS_TABLE}" --region "${AWS_REGION}" \
-    --item '{"orderId":{"S":"ORD-000456"},"summary":{"S":"2x Latte"},"total":{"N":"9.00"}}' || true
+    --item "{\"orderId\":{\"S\":\"ORD-000456\"},\"summary\":{\"S\":\"2x Latte\"},\"total\":{\"N\":\"9.50\"},\"status\":{\"S\":\"RECEIVED\"},\"gsiPk\":{\"S\":\"ORDER\"},\"createdAt\":{\"N\":\"$((NOW-30))\"}}" || true
 fi
 
 if [[ -n "${RECEIPTS_BUCKET}" && "${RECEIPTS_BUCKET}" != "None" ]]; then

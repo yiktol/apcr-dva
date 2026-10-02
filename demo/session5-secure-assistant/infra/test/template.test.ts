@@ -102,6 +102,21 @@ check('invocation CloudWatch log group is CMK-encrypted', () => {
   });
 });
 
+check('Orders table has the byCreatedAt GSI (gsiPk HASH / createdAt RANGE)', () => {
+  sec.hasResourceProperties('AWS::DynamoDB::Table', {
+    GlobalSecondaryIndexes: Match.arrayWith([
+      Match.objectLike({
+        IndexName: 'byCreatedAt',
+        KeySchema: [
+          { AttributeName: 'gsiPk', KeyType: 'HASH' },
+          { AttributeName: 'createdAt', KeyType: 'RANGE' },
+        ],
+        Projection: { ProjectionType: 'ALL' },
+      }),
+    ]),
+  });
+});
+
 console.log('AppEdgeAI stack:');
 
 check('no AWS::EC2::VPC in AppEdgeAI', () => {
@@ -203,6 +218,16 @@ check('ABAC statement keeps the literal ${aws:PrincipalTag/team}', () => {
   if (!json.includes('${aws:PrincipalTag/team}')) {
     throw new Error('literal ${aws:PrincipalTag/team} not found (template-literal regression?)');
   }
+});
+
+check('API Gateway has an orders resource with a GET method', () => {
+  edge.hasResourceProperties('AWS::ApiGateway::Resource', {
+    PathPart: 'orders',
+  });
+  edge.hasResourceProperties('AWS::ApiGateway::Method', {
+    HttpMethod: 'GET',
+    ResourceId: { Ref: Match.stringLikeRegexp('AssistantApiapiorders') },
+  });
 });
 
 check('three Lambda functions have Active X-Ray tracing', () => {

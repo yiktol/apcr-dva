@@ -88,6 +88,16 @@ export class SecurityDataStack extends cdk.Stack {
       encryptionKey: key,
       removalPolicy: cdk.RemovalPolicy.DESTROY, // demo only
     });
+    // Single constant "ORDER" partition => one hot partition. This is an
+    // ACCEPTABLE DEMO SIMPLIFICATION so recent orders is a Query
+    // (ScanIndexForward=false, Limit 10), never a Scan. Do NOT generalise the
+    // PK for the demo.
+    ordersTable.addGlobalSecondaryIndex({
+      indexName: 'byCreatedAt',
+      partitionKey: { name: 'gsiPk', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'createdAt', type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
     this.ordersTable = ordersTable;
 
     const pendingRefundsTable = new dynamodb.Table(this, 'PendingRefundsTable', {

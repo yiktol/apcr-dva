@@ -252,6 +252,22 @@ export class AppEdgeAIStack extends cdk.Stack {
       },
     });
 
+    // Orders-list: plain zip Lambda. READ-ONLY recent-orders list behind
+    // GET /api/orders. Queries the byCreatedAt GSI (never scans).
+    const ordersListFn = new lambda.Function(this, 'OrdersListFn', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: 'handler.handler',
+      code: lambda.Code.fromAsset(path.join(appRoot, 'orders_list')),
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+      tracing: lambda.Tracing.ACTIVE,
+      environment: {
+        AWS_REGION_PINNED: REGION,
+        ORDERS_TABLE: ordersTable.tableName,
+        ORDERS_GSI_NAME: 'byCreatedAt',
+      },
+    });
+
     // ---- IAM: assistant role (least privilege, dual-ARN Bedrock grant) -----
     const assistantRole = assistantFn.role as iam.Role;
     assistantRole.addToPolicy(
@@ -338,6 +354,16 @@ export class AppEdgeAIStack extends cdk.Stack {
     );
     kmsKey.grantDecrypt(presignRole);
 
+    // ---- IAM: orders-list role (least privilege, READ-ONLY) ----------------
+    // Its OWN dedicated role — NOT the assistant role, which is left untouched.
+    // grantReadData covers the Query action on the table AND its indexes
+    // (GetItem/Query/Scan read actions on table + table/index/*); we do NOT add
+    // any write action and the Lambda itself never calls scan. The table is
+    // CMK-encrypted, so decrypt on the key is required to read items back.
+    const ordersListRole = ordersListFn.role as iam.Role;
+    ordersTable.grantReadData(ordersListRole);
+    kmsKey.grantDecrypt(ordersListRole);
+
     // ---- API Gateway REST API (X-Ray on) -----------------------------------
     const api = new apigateway.RestApi(this, 'AssistantApi', {
       restApiName: 'session5-secure-assistant',
@@ -362,6 +388,9 @@ export class AppEdgeAIStack extends cdk.Stack {
       'POST',
       new apigateway.LambdaIntegration(refundConfirmFn),
     );
+
+    const orders = apiRoot.addResource('orders');
+    orders.addMethod('GET', new apigateway.LambdaIntegration(ordersListFn));
 
     const receipts = apiRoot.addResource('receipts');
     const receiptById = receipts.addResource('{orderId}');
