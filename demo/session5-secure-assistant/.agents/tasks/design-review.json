@@ -1,0 +1,27 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "id": "NIT-1",
+      "severity": "NIT",
+      "location": "Decision 6 (Strands wiring) / Lambdas section",
+      "problem": "The look_up_order tool required by FR-23 is referenced in Agent(tools=[look_up_order, initiate_refund]) but never specified: no behavior, return shape, order_id validation, PII masking of its result, or orders-table access path.",
+      "fix": "Add a short @tool spec for look_up_order(order_id) that validates ^ORD-[0-9]{6}$, reads the injected orders table, masks PII in the result before returning (tool-result guardrail blind spot), and is unit-testable like the other tools."
+    },
+    {
+      "id": "NIT-2",
+      "severity": "NIT",
+      "location": "Decision 6 (token side-channel contract vs. wiring snippet)",
+      "problem": "initiate_refund is described as produced by a factory make_initiate_refund(table, req_ctx) returning a closure, but the Agent wiring passes the bare symbol initiate_refund; the two do not line up, and look_up_order likely needs the same factory treatment for its table.",
+      "fix": "Build the tool instances from the factories in the handler (initiate_refund = make_initiate_refund(pending_refunds_table, req_ctx); look_up_order = make_look_up_order(orders_table)) and pass those to Agent(tools=[...]). Pick one pattern (factory/closure vs. Strands per-invocation context) and state it once so tools.py and handler.py agree."
+    },
+    {
+      "id": "NIT-3",
+      "severity": "NIT",
+      "location": "Decision 4 / VPC import section (subnet selection)",
+      "problem": "Two subnet-selection methods are offered and the primary one, vpc.selectSubnets({ subnets: [ec2.Subnet.fromSubnetId(...)] }), produces subnets with dummy AZ tokens (CDK 'no AZ information' warning) that can misplace Lambda/endpoint ENIs; the imported VPC already populates privateSubnets with real AZs.",
+      "fix": "Pick one AZ-aware method and use it for both the agent Lambda and the two interface endpoints, e.g. vpcSubnets = { subnets: vpc.privateSubnets } or { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }; avoid Subnet.fromSubnetId for selection."
+    }
+  ],
+  "reviewDoc": "/Users/erictole/demo/apcr-dva/.worktrees/session5/demo/session5-secure-assistant/.agents/tasks/design-review.md"
+}

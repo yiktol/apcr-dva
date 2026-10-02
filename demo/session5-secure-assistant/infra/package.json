@@ -1,0 +1,24 @@
+{
+  "name": "secure-assistant-infra",
+  "version": "0.1.0",
+  "description": "CDK v2 infra for the session5 secure coffee-shop AI assistant (ap-southeast-1)",
+  "private": true,
+  "bin": {
+    "secure-assistant": "bin/secure-assistant.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "synth": "cdk synth",
+    "test": "ts-node --prefer-ts-exts test/template.test.ts"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.160.0",
+    "constructs": "^10.3.0"
+  },
+  "devDependencies": {
+    "aws-cdk": "2.160.0",
+    "typescript": "~5.5.4",
+    "ts-node": "^10.9.2",
+    "@types/node": "^20.14.0"
+  }
+}

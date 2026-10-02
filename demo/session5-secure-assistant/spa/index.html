@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Coffee Shop — Secure Assistant</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="hdr">
+        <h1>Coffee Shop Assistant</h1>
+        <p class="sub">Ask about an order, download a receipt, or request a refund.</p>
+      </header>
+
+      <section id="log" class="log" aria-live="polite"></section>
+
+      <section class="receipt">
+        <label for="orderId">Download my receipt</label>
+        <div class="row">
+          <input id="orderId" type="text" placeholder="ORD-000123" autocomplete="off" />
+          <button id="receiptBtn" type="button">Download receipt</button>
+        </div>
+      </section>
+
+      <form id="chatForm" class="chat">
+        <input
+          id="message"
+          type="text"
+          placeholder="Type a message…"
+          autocomplete="off"
+          maxlength="2000"
+          required
+        />
+        <button type="submit">Send</button>
+      </form>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

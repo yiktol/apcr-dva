@@ -1,0 +1,6 @@
+# Runtime dependencies for the assistant container-image Lambda.
+# Pinned for reproducible deploy-time builds.
+strands-agents==1.23.0
+strands-agents-tools==0.2.9
+boto3==1.35.76
+aws-xray-sdk==2.14.0
