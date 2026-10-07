@@ -1,0 +1,14 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Document on Python Save",
+      "trigger": "PostFileSave",
+      "matcher": "\\.py$",
+      "action": {
+        "type": "agent",
+        "prompt": "A Python file was just saved. Generate or update documentation for it:\n1. Read the saved Python file to understand its purpose, functions, classes, and public API.\n2. Add or update docstrings (module-level, class-level, and function/method-level) following PEP 257 and the Google or NumPy docstring style already used in the file. Do not change runtime behavior — only add or improve docstrings and comments.\n3. Create or update a companion Markdown doc at `docs/<module_name>.md` summarizing the module: its purpose, key classes/functions with signatures, parameters, return values, and a short usage example.\n4. Keep the documentation accurate to the actual code — do not invent behavior. If something is unclear, note it rather than guessing."
+      }
+    }
+  ]
+}

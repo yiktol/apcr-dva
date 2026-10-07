@@ -8,7 +8,7 @@ const VERSION = 'v1';
 // User-facing app name. Single source of truth for the header, document.title,
 // and the architecture diagram alt text. A demo edit flips this one line to
 // 'BeanThere Cafe'.
-export const APP_NAME = 'Coffee Shop';
+export const APP_NAME = 'BeanThere Cafe';
 
 // Hardcoded menu. The SPA is a demo storefront; prices are fixed client-side
 // and the server recomputes loyalty points from the posted total.
