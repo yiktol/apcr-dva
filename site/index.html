@@ -62,6 +62,8 @@
     .card .actions { display: flex; gap: .55rem; flex-wrap: wrap; margin-top: .6rem; }
     .card .go { display: inline-flex; align-items: center; gap: .4rem; text-decoration: none; font-weight: 600; font-size: .84rem; color: #fff; background: var(--accent); padding: .5rem .9rem; border-radius: 10px; transition: filter .15s ease, transform .15s ease; }
     .card .go:hover { filter: brightness(1.08); transform: translateX(2px); }
+    .card .go.quiz { background: #fff; color: var(--accent); border: 1px solid var(--accent); }
+    .card .go.quiz:hover { background: #f3f8fb; }
     .card.d1 { --accent: var(--blue); } .card.d2 { --accent: var(--teal); } .card.d3 { --accent: var(--navy); } .card.d4 { --accent: var(--green); } .card.d5 { --accent: var(--magenta); }
     footer { max-width: 1120px; margin: 0 auto; padding: 1rem 1.5rem 2.5rem; font-size: .82rem; color: var(--muted); line-height: 1.6; }
     footer kbd { font-family: inherit; font-size: .74rem; font-weight: 600; background: #eef1f5; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: .1rem .4rem; color: var(--ink); }
@@ -115,11 +117,11 @@
   </footer>
   <script>
     const sessions = [
-      { n: 1, title: "Infrastructure Foundations", blurb: "Regions and Availability Zones, Amazon CloudFront, Amazon EC2, Auto Scaling, Elastic Load Balancing, Amazon ECS/EKS/Fargate/ECR, Amazon VPC, and IAM.", count: 76 },
-      { n: 2, title: "Development with AWS Services", blurb: "Amazon API Gateway, AWS Lambda, Amazon DynamoDB, AWS Step Functions, Amazon SQS/SNS, Amazon Bedrock, and Kiro.", count: 78 },
-      { n: 3, title: "Decoupling, Caching, Auth & Observability", blurb: "Amazon SQS/SNS/EventBridge, Amazon ElastiCache, Amazon Cognito, and Amazon CloudWatch/CloudTrail.", count: 58 },
-      { n: 4, title: "Testing and Deployment", blurb: "AWS CodePipeline/CodeDeploy, AWS Elastic Beanstalk, deployment strategies, and AWS CloudFormation/CDK/SAM.", count: 72 },
-      { n: 5, title: "Security, AI Security & Observability", blurb: "AWS WAF, AWS KMS, AWS PrivateLink, AWS Certificate Manager, IAM policy evaluation, Amazon Bedrock Guardrails, and AWS X-Ray.", count: 66 },
+      { n: 1, title: "Infrastructure Foundations", blurb: "Regions and Availability Zones, Amazon CloudFront, Amazon EC2, Auto Scaling, Elastic Load Balancing, Amazon ECS/EKS/Fargate/ECR, Amazon VPC, and IAM.", count: 54 },
+      { n: 2, title: "Development with AWS Services", blurb: "Amazon API Gateway, AWS Lambda, Amazon DynamoDB, AWS Step Functions, Amazon SQS/SNS, Amazon Bedrock, and Kiro.", count: 52 },
+      { n: 3, title: "Decoupling, Caching, Auth & Observability", blurb: "Amazon SQS/SNS/EventBridge, Amazon ElastiCache, Amazon Cognito, and Amazon CloudWatch/CloudTrail.", count: 32 },
+      { n: 4, title: "Testing and Deployment", blurb: "AWS CodePipeline/CodeDeploy, AWS Elastic Beanstalk, deployment strategies, and AWS CloudFormation/CDK/SAM.", count: 41 },
+      { n: 5, title: "Security, AI Security & Observability", blurb: "AWS WAF, AWS KMS, AWS PrivateLink, AWS Certificate Manager, IAM policy evaluation, Amazon Bedrock Guardrails, and AWS X-Ray.", count: 36 },
     ];
     const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
     document.getElementById("grid").innerHTML = sessions.map((s) => `
@@ -130,6 +132,7 @@
         <div class="meta">${s.count} slides</div>
         <div class="actions">
           <a class="go" href="deck.html?m=${s.n}"><i class="fa-solid fa-play"></i> Present slides</a>
+          <a class="go quiz" href="knowledgecheck.html?m=${s.n}"><i class="fa-solid fa-list-check"></i> Knowledge Check</a>
         </div>
       </article>`).join("");
   </script>

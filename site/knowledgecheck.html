@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>APCR-DVA (DVA-C03) — Knowledge Check</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <link rel="stylesheet" href="fonts.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reveal.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/theme/white.min.css" id="theme" />
+  <style>
+    :root {
+      /* AWS OneBrand palette (matches ppt/APCR_DVA_Kickoff_2026.pptx):
+         dk2 navy, accent2 magenta (primary), accent3 green, a deep magenta for
+         the 5th session accent so the per-session colors stay distinct. */
+      --aws-navy: #161D26; --aws-blue: #C300E0; --aws-green: #00B37A; --aws-teal: #8A00A3;
+      --brand-magenta: #C300E0; --brand-magenta-lt: #F299FF; --aws-magenta: #7A1FA2;
+      --ink: #1a2230; --muted: #64748b; --line: #e6e9ee;
+      --ok: #197956; --okbg: #eafaf4; --warn: #b4690e; --warnbg: #fdf4e6; --miss: #b3341f; --missbg: #fdecea;
+    }
+    .reveal { font-family: "Amazon Ember", system-ui, sans-serif; }
+    .reveal .slide-native h2 { font-family: "Amazon Ember Display", "Amazon Ember", sans-serif; }
+    .reveal .slides section { text-align: left; }
+    .reveal .student-notes, .reveal .slide-audio { display: none; }
+
+    /* ---- native slide shell ---- */
+    .reveal .slide-native { height: 100%; display: flex; flex-direction: column; padding: 0.5em 0.6em; }
+    .reveal .slide-native .kicker { color: var(--accent, var(--aws-blue)); font-weight: 700; font-size: 0.34em; letter-spacing: 0.06em; text-transform: uppercase; }
+    .reveal .slide-native h2 { margin: 0.12em 0 0.18em; font-size: 0.84em; line-height: 1.12; color: var(--aws-navy); font-weight: 700; letter-spacing: -0.01em; }
+    .reveal .slide-native h2 em { color: var(--accent, var(--aws-blue)); font-style: normal; }
+    .reveal .slide-native .lead { font-size: 0.4em; line-height: 1.4; color: #3a4756; margin: 0 0 0.6em; max-width: 46em; }
+    .reveal .slide-native.sm-skill { border-left: 6px solid var(--accent, var(--aws-blue)); border-radius: 10px; background: linear-gradient(180deg,#fff 0%,#fbfcfe 100%); box-shadow: 0 2px 10px rgba(16,24,40,.05); min-height: 15.5em; }
+
+    /* ---- interactive "check yourself" slide ---- */
+    .reveal .slide-native.sm-check { border-left-color: var(--accent, var(--aws-blue)); background: linear-gradient(180deg,#fff 0%,#f7fbfd 100%); }
+    .reveal .slide-native.sm-check h2 { font-size: 0.6em; display: flex; align-items: baseline; gap: .5em; flex-wrap: wrap; }
+    .sm-check-hint { font-size: 0.5em; font-weight: 600; color: var(--muted); text-transform: none; letter-spacing: 0; }
+    .sm-check-q { font-size: 0.42em; font-weight: 600; line-height: 1.35; color: var(--aws-navy); margin: .15em 0 .55em; max-width: 54em; }
+    /* denser option rows on check slides so long questions fit one slide */
+    .sm-check .sm-opts { gap: .35em; }
+    .sm-check .sm-opt { padding: .45em .7em; align-items: center; }
+    .sm-check .sm-opt-t { font-size: 0.38em; line-height: 1.3; }
+    .sm-check .sm-opt-l { width: 1.5em; height: 1.5em; font-size: 0.38em; }
+    .sm-check h2 { margin-bottom: .1em; }
+    .sm-check .kicker { margin-bottom: .1em; }
+    /* auto-fit tiers for dense check slides (added by fitChecks()) */
+    .sm-check.sm-compact .sm-check-q { font-size: 0.38em; margin-bottom: .4em; }
+    .sm-check.sm-compact .sm-opts { gap: .28em; }
+    .sm-check.sm-compact .sm-opt { padding: .38em .6em; }
+    .sm-check.sm-compact .sm-opt-t { font-size: 0.34em; }
+    .sm-check.sm-compact-2 .sm-check-q { font-size: 0.35em; }
+    .sm-check.sm-compact-2 .sm-opt-t { font-size: 0.31em; }
+    .sm-check.sm-compact-2 .sm-opt-l { width: 1.4em; height: 1.4em; }
+    .sm-check.sm-compact-2 .sm-opts { gap: .24em; }
+    .sm-check.sm-compact-2 .sm-opt { padding: .32em .55em; }
+    .sm-opts { display: flex; flex-direction: column; gap: .55em; }
+    .sm-opt { display: flex; align-items: center; gap: .7em; border: 1px solid var(--line); border-radius: 9px; padding: .6em .8em; background: #fff; cursor: pointer; text-align: left; font-family: inherit; font-size: 1em; width: 100%; transition: border-color .12s, background .12s; }
+    .sm-opt:hover { border-color: #cfd6df; background: #fafcfe; }
+    .sm-opt-l { flex: none; width: 1.6em; height: 1.6em; border-radius: 50%; background: #eef1f5; color: var(--muted); font-weight: 700; font-size: 0.42em; display: grid; place-items: center; }
+    .sm-opt-t { font-size: 0.42em; line-height: 1.35; color: var(--ink); flex: 1; }
+    .sm-opt-m { font-size: 0.46em; font-weight: 700; align-self: center; }
+    .sm-opt.sel { border-color: var(--aws-blue); background: #f0f8fb; } .sm-opt.sel .sm-opt-l { background: var(--aws-blue); color: #fff; }
+    .sm-opt.correct { border-color: var(--ok); background: var(--okbg); } .sm-opt.correct .sm-opt-l { background: var(--ok); color: #fff; } .sm-opt.correct .sm-opt-m { color: var(--ok); }
+    .sm-opt.wrong { border-color: var(--miss); background: var(--missbg); } .sm-opt.wrong .sm-opt-l { background: var(--miss); color: #fff; } .sm-opt.wrong .sm-opt-m { color: var(--miss); }
+    .sm-opt.dim { opacity: .5; }
+    .sm-opt.locked { cursor: default; }
+    .sm-check-submit { margin-top: .5em; }
+    .sm-submit { font-family: inherit; font-weight: 600; font-size: 0.4em; line-height: 1; border: none; border-radius: 8px; padding: .55em 1.1em; cursor: pointer; background: var(--accent, var(--aws-blue)); color: #fff; }
+    .sm-submit:disabled { background: #d7dde6; color: #96a1b0; cursor: not-allowed; }
+    .sm-check-fb { margin-top: .6em; border-radius: 9px; padding: .55em .8em; border: 1px solid; font-size: 0.38em; line-height: 1.45; }
+    .sm-check-fb.correct { background: var(--okbg); border-color: #cdeee1; color: #12403e; }
+    .sm-check-fb.wrong { background: var(--missbg); border-color: #f3cfc8; color: #7a2015; }
+    .sm-check-fb .lbl { font-weight: 700; }
+    .sm-check-fb .why { color: #40506a; margin-top: .25em; }
+    .sm-check-fb .retry { background: transparent; border: none; color: var(--aws-blue); font: inherit; font-weight: 600; cursor: pointer; padding: 0; margin-top: .3em; }
+
+    /* ---- section header / title ---- */
+    .reveal .slide-native.section-header, .reveal .slide-native.title-slide {
+      align-items: center; justify-content: center; text-align: center;
+      background: linear-gradient(135deg, var(--aws-navy) 0%, var(--accent, var(--aws-blue)) 100%);
+      margin: -0.5em -0.6em; padding: 0.6em; border-radius: 10px;
+    }
+    .reveal .section-header .kicker, .reveal .title-slide .kicker { color: var(--aws-green); }
+    .reveal .section-header h2, .reveal .title-slide h2 { color: #fff; font-size: 1.1em; }
+    .reveal .section-header h2 em, .reveal .title-slide h2 em { color: var(--aws-green); }
+    .reveal .section-header .lead, .reveal .title-slide .lead { color: rgba(255,255,255,.9); font-size: 0.42em; text-align: center; }
+    .sm-divider-meta { color: var(--aws-green); font-weight: 700; font-size: 0.42em; letter-spacing: .04em; margin-top: .5em; }
+
+    /* ---- shared diagram atoms ---- */
+    .sm-source { margin-top: auto; padding-top: .5em; border-top: 1px solid var(--line); display: flex; align-items: baseline; gap: .5em; flex-wrap: wrap; font-size: 0.3em; color: var(--aws-teal); font-weight: 600; }
+    .sm-source i { color: var(--accent, var(--aws-blue)); }
+    .sm-source-lesson { color: var(--muted); font-weight: 500; }
+
+    /* top bar + toc (from deck.html) */
+    .deck-topbar { position: fixed; top: 0; left: 0; right: 0; height: 44px; background: linear-gradient(135deg, var(--aws-navy) 0%, var(--aws-blue) 100%); color: #fff; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; z-index: 40; font-family: "Amazon Ember", system-ui, sans-serif; font-size: 14px; }
+    .deck-topbar .title { font-weight: 600; }
+    .deck-topbar .title span { color: var(--aws-green); }
+    .deck-topbar a { text-decoration: none; background: var(--aws-green); color: var(--aws-navy); font-weight: 600; padding: 5px 12px; border-radius: 6px; }
+    .deck-topbar a.secondary, .deck-topbar .topbar-btn { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,0.5); margin-right: 8px; }
+    .deck-topbar .topbar-btn { font-family: inherit; font-size: 14px; font-weight: 600; padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+    .deck-topbar .topbar-btn:hover { background: rgba(255,255,255,0.15); }
+    .reveal .slides { margin-top: 20px; }
+    .loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-family: "Amazon Ember", system-ui, sans-serif; color: var(--aws-navy); }
+    .toc-overlay { position: fixed; inset: 0; background: rgba(35, 47, 62, 0.55); z-index: 50; display: none; }
+    .toc-overlay.open { display: block; }
+    .toc-panel { position: fixed; top: 0; left: 0; bottom: 0; width: 400px; max-width: 85vw; background: #fff; box-shadow: 2px 0 24px rgba(0,0,0,0.25); display: flex; flex-direction: column; font-family: "Amazon Ember", system-ui, sans-serif; transform: translateX(-100%); transition: transform 0.22s ease; }
+    .toc-overlay.open .toc-panel { transform: translateX(0); }
+    .toc-panel .toc-head { background: linear-gradient(135deg, var(--aws-navy) 0%, var(--aws-blue) 100%); color: #fff; padding: 14px 16px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; }
+    .toc-panel .toc-close { background: transparent; border: none; color: #fff; font-size: 20px; cursor: pointer; line-height: 1; padding: 0 4px; }
+    .toc-panel .toc-search { border: none; border-bottom: 1px solid #e2e8ee; padding: 10px 16px; font-family: inherit; font-size: 14px; outline: none; }
+    .toc-list { overflow-y: auto; padding: 6px 0; flex: 1; }
+    .toc-item { display: flex; gap: 10px; align-items: baseline; padding: 9px 16px; cursor: pointer; border: none; background: transparent; width: 100%; text-align: left; font-family: inherit; font-size: 13px; color: var(--aws-navy); border-left: 3px solid transparent; }
+    .toc-item:hover { background: #f0f6fc; }
+    .toc-item.active { background: #eaf4fb; border-left-color: var(--aws-green); font-weight: 600; }
+    .toc-item .toc-num { color: var(--aws-blue); font-weight: 700; min-width: 26px; flex-shrink: 0; }
+    .toc-item .toc-label { line-height: 1.3; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .toc-item .toc-kind { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: #8a97a6; margin-left: auto; flex-shrink: 0; align-self: center; }
+  </style>
+</head>
+<body>
+  <div class="deck-topbar">
+    <div class="title" id="deckTitle">APCR-DVA Knowledge Check</div>
+    <div>
+      <a class="secondary" href="index.html">&larr; Sessions</a>
+      <button id="tocBtn" class="topbar-btn" type="button" title="Jump to slide (T)">&#9776; Slides</button>
+      <button id="notesBtn" class="topbar-btn" type="button" title="Open speaker notes (S)">&#128221; Notes</button>
+      <button id="fullscreenBtn" class="topbar-btn" type="button" title="Toggle fullscreen (F)">&#9187; Fullscreen</button>
+    </div>
+  </div>
+
+  <div class="toc-overlay" id="tocOverlay">
+    <div class="toc-panel" role="dialog" aria-label="Slide list">
+      <div class="toc-head"><span>Jump to slide</span><button class="toc-close" id="tocClose" type="button" title="Close (Esc)">&times;</button></div>
+      <input class="toc-search" id="tocSearch" type="text" placeholder="Filter slides&hellip;" />
+      <div class="toc-list" id="tocList"></div>
+    </div>
+  </div>
+
+  <div class="reveal"><div class="slides" id="slides"><section><div class="loading">Loading slides&hellip;</div></section></div></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reveal.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/plugin/notes/notes.min.js"></script>
+  <script>
+    const SESSION_TITLES = {
+      "1": "Infrastructure Foundations",
+      "2": "Development with AWS Services",
+      "3": "Decoupling, Caching, Auth & Observability",
+      "4": "Testing and Deployment",
+      "5": "Security, AI Security & Observability",
+    };
+
+    const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+
+    function getModuleNum() {
+      const m = new URL(window.location.href).searchParams.get("m");
+      return m && /^[1-5]$/.test(m) ? m : "1";
+    }
+    const MODULE = getModuleNum();
+    function loadDeckScript(m) {
+      return new Promise((resolve) => {
+        if (window.DECK_DATA && window.DECK_DATA[m]) { resolve(window.DECK_DATA[m]); return; }
+        const el = document.createElement("script");
+        el.src = `knowledgecheck/d${m}.js`;
+        el.onload = () => resolve((window.DECK_DATA && window.DECK_DATA[m]) || null);
+        el.onerror = () => resolve(null);
+        document.head.appendChild(el);
+      });
+    }
+    async function loadDeck() {
+      const title = SESSION_TITLES[MODULE] || "Content Review";
+      document.getElementById("deckTitle").innerHTML = `Session ${MODULE} <span>&middot; Knowledge Check</span>`;
+      document.title = `APCR-DVA (DVA-C03) — Session ${MODULE} Knowledge Check: ${title}`;
+      let slides = await loadDeckScript(MODULE);
+      if (!slides) {
+        try { const res = await fetch(`knowledgecheck/d${MODULE}.json`, { cache: "no-cache" }); if (res.ok) slides = await res.json(); } catch (e) {}
+      }
+      if (!slides) {
+        document.getElementById("slides").innerHTML = `<section><h2>Deck not found</h2><p>Expected <code>knowledgecheck/d${MODULE}.js</code> (or <code>.json</code> over HTTP). Run <code>python3 build_knowledgecheck.py</code>.</p></section>`;
+        initReveal(); return;
+      }
+      const container = document.getElementById("slides");
+      container.innerHTML = slides.map((s) => {
+        const body = (s.mode === "native" && s.native) ? s.native
+          : (s.image ? `<img class="slide-image" src="${s.image}" alt="slide ${s.n}" />` : "");
+        const notes = s.student
+          ? `<aside class="notes">${renderNotes(s.student)}</aside>` : "";
+        return `<section>${body}${notes}</section>`;
+      }).join("");
+      initReveal(); buildTOC(); wireChecks(); fitChecks();
+    }
+
+    // Speaker notes: shown in the reveal.js speaker view (press S), never on the
+    // slide itself. Linkifies URLs and preserves paragraph breaks.
+    function renderNotes(text) {
+      if (!text) return "";
+      const escN = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return text.split(/\n{2,}/).map((para) => {
+        let p = escN(para.trim());
+        p = p.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+        p = p.replace(/\n/g, "<br>");
+        return `<p>${p}</p>`;
+      }).join("");
+    }
+
+    // Auto-fit dense check slides: if a check slide's content is taller than the
+    // slide area, add .sm-compact (and .sm-compact-2 for the longest) to shrink
+    // just those, leaving short questions at full size.
+    function fitChecks() {
+      const H = (Reveal.getConfig().height || 720);
+      const run = () => {
+        document.querySelectorAll(".sm-check").forEach((card) => {
+          card.classList.remove("sm-compact", "sm-compact-2");
+          if (card.scrollHeight > H - 24) card.classList.add("sm-compact");
+          if (card.scrollHeight > H - 24) card.classList.add("sm-compact-2");
+        });
+      };
+      run();
+      Reveal.on("slidechanged", run);
+      window.addEventListener("resize", run);
+    }
+
+    // Interactive "Check yourself" slides: click an option to grade in place.
+    // No backend judge call -- this is a static site, so feedback is drawn
+    // entirely from the slide's local data-rationale / data-judge "why", and
+    // never blocks on (or depends on) a network call.
+    function wireChecks() {
+      document.querySelectorAll(".sm-check").forEach((card) => {
+        const correct = (card.dataset.correct || "").split(",").filter(Boolean);
+        const multi = !!card.dataset.multi;
+        const opts = Array.from(card.querySelectorAll(".sm-opt"));
+        const submit = card.querySelector(".sm-submit");
+        const fb = card.querySelector(".sm-check-fb");
+        const correctSet = new Set(correct);
+        let judgeData = null;
+        try { judgeData = JSON.parse(card.dataset.judge || "null"); } catch (e) { judgeData = null; }
+        const isCorrect = (picked) => {
+          const ps = new Set(picked);
+          return correctSet.size === ps.size && [...correctSet].every(l => ps.has(l));
+        };
+        // Render feedback with a Reset control (always offered once interacted).
+        const showFb = (cls, inner) => {
+          fb.style.display = "block";
+          fb.className = "sm-check-fb " + cls;
+          fb.innerHTML = inner + `<div><button class="retry" type="button">Reset question &#8635;</button></div>`;
+          fb.querySelector(".retry").addEventListener("click", (e) => {
+            e.stopPropagation(); resetCheck(card, opts, submit, fb);
+          });
+        };
+        // Reveal full answer + rationale and lock -- only ever on a CORRECT answer.
+        const succeed = () => {
+          card.dataset.locked = "1";
+          opts.forEach((o) => {
+            o.classList.add("locked"); o.classList.remove("sel", "wrong");
+            const l = o.dataset.ltr, m = o.querySelector(".sm-opt-m");
+            if (correctSet.has(l)) { o.classList.add("correct"); m.innerHTML = "&#10003;"; }
+            else { o.classList.add("dim"); m.innerHTML = ""; }
+          });
+          if (submit) submit.style.display = "none";
+          const rat = card.dataset.rationale || (judgeData && judgeData.why) || "";
+          showFb("correct", `<span class="lbl">Correct.</span><div class="why">${rat}</div>`);
+        };
+        // Mark a wrong pick but DO NOT reveal the answer or lock -- let them retry.
+        const tryAgain = (wrongLetters) => {
+          wrongLetters.forEach((l) => {
+            const o = opts.find(x => x.dataset.ltr === l);
+            if (o) { o.classList.add("wrong"); o.classList.remove("sel"); o.querySelector(".sm-opt-m").innerHTML = "&#10007;"; }
+          });
+          if (submit) submit.disabled = true;
+          showFb("wrong", `<span class="lbl">Not quite.</span> <span class="why">Try another option.</span>`);
+        };
+        if (multi) {
+          opts.forEach((o) => o.addEventListener("click", () => {
+            if (card.dataset.locked) return;
+            if (o.classList.contains("wrong")) return; // already ruled out
+            o.classList.toggle("sel");
+            if (submit) submit.disabled = !opts.some(x => x.classList.contains("sel"));
+          }));
+          if (submit) submit.addEventListener("click", () => {
+            if (card.dataset.locked) return;
+            const picked = opts.filter(o => o.classList.contains("sel")).map(o => o.dataset.ltr);
+            if (!picked.length) return;
+            if (isCorrect(picked)) succeed();
+            else {
+              // clear the selection so they can re-pick; nudge, don't reveal
+              opts.forEach(o => o.classList.remove("sel"));
+              if (submit) submit.disabled = true;
+              showFb("wrong", `<span class="lbl">Not quite.</span> <span class="why">That combination is not right &mdash; adjust your selection and submit again.</span>`);
+            }
+          });
+        } else {
+          opts.forEach((o) => o.addEventListener("click", () => {
+            if (card.dataset.locked) return;
+            if (o.classList.contains("wrong")) return; // already tried, ruled out
+            const l = o.dataset.ltr;
+            if (isCorrect([l])) succeed();
+            else tryAgain([l]);
+          }));
+        }
+      });
+    }
+    function resetCheck(card, opts, submit, fb) {
+      delete card.dataset.locked;
+      opts.forEach((o) => { o.classList.remove("sel","correct","wrong","dim","locked"); o.querySelector(".sm-opt-m").innerHTML = ""; });
+      if (submit) { submit.style.display = ""; submit.disabled = true; }
+      fb.style.display = "none"; fb.innerHTML = "";
+    }
+    function slideLabel(section) {
+      const h2 = section.querySelector(".slide-native h2");
+      if (h2 && h2.textContent.trim()) return h2.textContent.trim();
+      return "";
+    }
+    function slideKind(section) {
+      if (section.querySelector(".title-slide")) return "title";
+      if (section.querySelector(".section-header")) return "session";
+      if (section.querySelector(".sm-check")) return "check";
+      return "";
+    }
+    function buildTOC() {
+      const list = document.getElementById("tocList"); if (!list) return;
+      const sections = Array.from(document.querySelectorAll(".reveal .slides > section"));
+      list.innerHTML = sections.map((sec, i) => {
+        const label = slideLabel(sec) || `Slide ${i + 1}`;
+        const kind = slideKind(sec);
+        const kindTag = kind ? `<span class="toc-kind">${kind}</span>` : "";
+        return `<button class="toc-item" data-index="${i}" type="button"><span class="toc-num">${i + 1}</span><span class="toc-label">${label.replace(/</g, "&lt;")}</span>${kindTag}</button>`;
+      }).join("");
+      list.querySelectorAll(".toc-item").forEach((btn) => btn.addEventListener("click", () => { Reveal.slide(parseInt(btn.dataset.index, 10)); closeTOC(); }));
+      highlightTOC();
+    }
+    function highlightTOC() {
+      const idx = Reveal.getIndices().h;
+      document.querySelectorAll(".toc-item").forEach((btn) => {
+        const active = parseInt(btn.dataset.index, 10) === idx;
+        btn.classList.toggle("active", active);
+        if (active) btn.scrollIntoView({ block: "nearest" });
+      });
+    }
+    function openTOC() { document.getElementById("tocOverlay").classList.add("open"); highlightTOC(); const s = document.getElementById("tocSearch"); if (s) { s.value = ""; filterTOC(""); setTimeout(() => s.focus(), 50); } }
+    function closeTOC() { document.getElementById("tocOverlay").classList.remove("open"); }
+    function toggleTOC() { document.getElementById("tocOverlay").classList.contains("open") ? closeTOC() : openTOC(); }
+    function filterTOC(q) { const needle = q.trim().toLowerCase(); document.querySelectorAll(".toc-item").forEach((btn) => { btn.style.display = !needle || btn.textContent.toLowerCase().includes(needle) ? "" : "none"; }); }
+    function initTOC() {
+      document.getElementById("tocBtn").addEventListener("click", (e) => { e.currentTarget.blur(); toggleTOC(); });
+      document.getElementById("tocClose").addEventListener("click", closeTOC);
+      document.getElementById("tocOverlay").addEventListener("click", (e) => { if (e.target.id === "tocOverlay") closeTOC(); });
+      const search = document.getElementById("tocSearch");
+      search.addEventListener("input", (e) => filterTOC(e.target.value));
+      search.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") { closeTOC(); return; }
+        if (e.key === "Enter") { const first = Array.from(document.querySelectorAll(".toc-item")).find((b) => b.style.display !== "none"); if (first) { Reveal.slide(parseInt(first.dataset.index, 10)); closeTOC(); } }
+      });
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.getElementById("tocOverlay").classList.contains("open")) closeTOC(); });
+    }
+    function initReveal() {
+      Reveal.initialize({
+        hash: true, slideNumber: "c/t", transition: "slide", width: 1280, height: 720, margin: 0.04,
+        center: true, navigationMode: "linear", plugins: [RevealNotes],
+        keyboard: { 33: "prev", 34: "next", 32: "next", 37: "prev", 38: "prev", 39: "next", 40: "next",
+          36: () => Reveal.slide(0), 35: () => Reveal.slide(Reveal.getTotalSlides() - 1), 84: () => toggleTOC() },
+      });
+      Reveal.on("slidechanged", highlightTOC);
+    }
+    function toggleFullscreen() { const el = document.documentElement; const isFs = document.fullscreenElement || document.webkitFullscreenElement; if (!isFs) { (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el); } else { (document.exitFullscreen || document.webkitExitFullscreen)?.call(document); } }
+    document.getElementById("fullscreenBtn").addEventListener("click", (e) => { e.currentTarget.blur(); toggleFullscreen(); });
+    // Open the reveal.js speaker-notes window. The notes plugin binds this to
+    // the "S" key; synthesize that keypress (its public API has no open()).
+    document.getElementById("notesBtn").addEventListener("click", (e) => {
+      e.currentTarget.blur();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", keyCode: 83, which: 83, bubbles: true }));
+    });
+    function updateFsLabel() { const isFs = document.fullscreenElement || document.webkitFullscreenElement; document.getElementById("fullscreenBtn").innerHTML = isFs ? "&#9187; Exit fullscreen" : "&#9187; Fullscreen"; }
+    document.addEventListener("fullscreenchange", updateFsLabel);
+    document.addEventListener("webkitfullscreenchange", updateFsLabel);
+    initTOC(); loadDeck();
+  </script>
+</body>
+</html>
