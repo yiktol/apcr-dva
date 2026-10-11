@@ -406,10 +406,10 @@
           card.dataset.locked = "1";
           Timer.onAnswered(card);
           opts.forEach((o) => {
-            o.classList.add("locked"); o.classList.remove("sel", "wrong");
+            o.classList.add("locked"); o.classList.remove("sel");
             const l = o.dataset.ltr, m = o.querySelector(".sm-opt-m");
-            if (correctSet.has(l)) { o.classList.add("correct"); m.innerHTML = "&#10003;"; }
-            else { o.classList.add("dim"); m.innerHTML = ""; }
+            if (correctSet.has(l)) { o.classList.remove("wrong"); o.classList.add("correct"); m.innerHTML = "&#10003;"; }
+            else if (!o.classList.contains("wrong")) { o.classList.add("dim"); m.innerHTML = ""; }
           });
           if (submit) submit.style.display = "none";
           const rat = card.dataset.rationale || (judgeData && judgeData.why) || "";
@@ -440,26 +440,28 @@
           seekJudge(card, fb, textOf(wrongLetters[0]), false);
         };
         if (multi) {
+          // Select-all-that-apply now grades one option at a time, the same
+          // way single-answer does: each click locks that option correct/wrong
+          // in place (wrong picks stay locked, never cleared) and the card
+          // finalizes via succeed() once every correctSet letter has been
+          // individually picked correct. No submit step needed.
+          if (submit) submit.style.display = "none";
           opts.forEach((o) => o.addEventListener("click", () => {
             if (card.dataset.locked) return;
-            if (o.classList.contains("wrong")) return; // already ruled out
-            o.classList.toggle("sel");
-            if (submit) submit.disabled = !opts.some(x => x.classList.contains("sel"));
-          }));
-          if (submit) submit.addEventListener("click", () => {
-            if (card.dataset.locked) return;
-            const picked = opts.filter(o => o.classList.contains("sel")).map(o => o.dataset.ltr);
-            if (!picked.length) return;
-            if (isCorrect(picked)) succeed(picked);
-            else {
-              // clear the selection so they can re-pick; nudge, don't reveal
-              const pickText = picked.map(textOf).join("; ");
-              opts.forEach(o => o.classList.remove("sel"));
-              if (submit) submit.disabled = true;
-              showFb("wrong", `<span class="lbl">Not quite.</span> <span class="why">That combination is not right &mdash; adjust your selection and submit again.</span>`);
-              seekJudge(card, fb, pickText, false);
+            if (o.classList.contains("wrong") || o.classList.contains("correct")) return; // already locked
+            const l = o.dataset.ltr;
+            if (correctSet.has(l)) {
+              o.classList.add("correct", "locked"); o.classList.remove("sel");
+              o.querySelector(".sm-opt-m").innerHTML = "&#10003;";
+              const why = explList([l]) || (() => { const rat = card.dataset.rationale || (judgeData && judgeData.why) || ""; return rat ? `<div class="why">${rat}</div>` : ""; })();
+              showFb("correct", `<span class="lbl">Correct.</span>${why}`);
+              seekJudge(card, fb, textOf(l), true);
+              const foundAll = opts.filter(x => x.classList.contains("correct")).length === correctSet.size;
+              if (foundAll) succeed([...correctSet]);
+            } else {
+              tryAgain([l]);
             }
-          });
+          }));
         } else {
           opts.forEach((o) => o.addEventListener("click", () => {
             if (card.dataset.locked) return;
@@ -475,7 +477,7 @@
       delete card.dataset.locked;
       delete card.dataset.judged;
       opts.forEach((o) => { o.classList.remove("sel","correct","wrong","dim","locked"); o.querySelector(".sm-opt-m").innerHTML = ""; });
-      if (submit) { submit.style.display = ""; submit.disabled = true; }
+      if (submit) { submit.style.display = card.dataset.multi ? "none" : ""; submit.disabled = true; }
       fb.style.display = "none"; fb.innerHTML = "";
     }
     // Per-question countdown timer (check slides). A corner pill is injected
