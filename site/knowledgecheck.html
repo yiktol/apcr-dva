@@ -73,6 +73,36 @@
     .sm-check-fb .lbl { font-weight: 700; }
     .sm-check-fb .why { color: #40506a; margin-top: .25em; }
     .sm-check-fb .retry { background: transparent; border: none; color: var(--aws-blue); font: inherit; font-weight: 600; cursor: pointer; padding: 0; margin-top: .3em; }
+    .sm-check-fb { max-height: 7.5em; overflow-y: auto; }
+
+    /* ---- per-question countdown timer (check slides) ---- */
+    /* A corner pill the deck JS injects into the active check slide. Positioned
+       relative to the slide-native shell. Click to pause/resume. Turns amber in
+       the last stretch and red at zero (stop-and-flag; it never reveals). */
+    .reveal .slide-native.sm-check { position: relative; }
+    .sm-timer { position: absolute; top: .5em; right: .5em; z-index: 5;
+      display: inline-flex; align-items: center; gap: .4em;
+      font-family: "Amazon Ember", system-ui, sans-serif; font-size: 0.4em; font-weight: 700;
+      color: #fff; background: var(--accent, var(--aws-blue));
+      border: none; border-radius: 999px; padding: .35em .7em; cursor: pointer;
+      box-shadow: 0 2px 8px rgba(16,24,40,.18); line-height: 1; user-select: none;
+      transition: background .2s ease, transform .1s ease; }
+    .sm-timer:hover { transform: translateY(-1px); }
+    .sm-timer i { font-size: .9em; opacity: .9; }
+    .sm-timer .sm-timer-t { font-variant-numeric: tabular-nums; min-width: 2.6em; text-align: right; }
+    .sm-timer.idle { background: var(--aws-navy); opacity: .9; }
+    .sm-timer.warn { background: #b4690e; }
+    .sm-timer.done { background: var(--miss); animation: sm-timer-pulse 1s ease-in-out 3; }
+    .sm-timer.paused { background: var(--aws-navy); }
+    @keyframes sm-timer-pulse { 0%,100% { box-shadow: 0 2px 8px rgba(179,52,31,.4); } 50% { box-shadow: 0 0 0 6px rgba(179,52,31,.18); } }
+    /* timer duration control in the top bar */
+    .timer-ctl { display: inline-flex; align-items: center; gap: .35em; margin-left: .2em; vertical-align: middle;
+      font-size: 13px; color: #44525f; }
+    .timer-ctl label { cursor: pointer; display: inline-flex; align-items: center; gap: .3em; }
+    .timer-ctl input[type="number"] { width: 3.2em; font-family: inherit; font-size: 13px; padding: .25em .35em;
+      border: 1px solid #d7dde6; border-radius: 6px; text-align: center; color: var(--aws-navy); }
+    .timer-ctl input[type="number"]:focus { outline: none; border-color: var(--aws-blue); }
+    .timer-ctl .sw { position: relative; display: inline-block; }
 
     /* ---- section header / title ---- */
     .reveal .slide-native.section-header, .reveal .slide-native.title-slide {
@@ -122,6 +152,10 @@
     <div class="title" id="deckTitle">APCR-DVA Knowledge Check</div>
     <div>
       <a class="secondary" href="index.html">&larr; Sessions</a>
+      <span class="timer-ctl" title="Countdown shown on each question slide">
+        <button id="timerToggle" class="topbar-btn" type="button" title="Show/hide the per-question timer">&#9201;&#65039; Timer: on</button>
+        <label for="timerSecs">&middot; <input id="timerSecs" type="number" min="5" max="600" step="5" value="60" />s</label>
+      </span>
       <button id="tocBtn" class="topbar-btn" type="button" title="Jump to slide (T)">&#9776; Slides</button>
       <button id="notesBtn" class="topbar-btn" type="button" title="Open speaker notes (S)">&#128221; Notes</button>
       <button id="fullscreenBtn" class="topbar-btn" type="button" title="Toggle fullscreen (F)">&#9187; Fullscreen</button>
@@ -207,16 +241,19 @@
     // just those, leaving short questions at full size.
     function fitChecks() {
       const H = (Reveal.getConfig().height || 720);
-      const run = () => {
-        document.querySelectorAll(".sm-check").forEach((card) => {
-          card.classList.remove("sm-compact", "sm-compact-2");
-          if (card.scrollHeight > H - 24) card.classList.add("sm-compact");
-          if (card.scrollHeight > H - 24) card.classList.add("sm-compact-2");
-        });
-      };
+      const run = () => { document.querySelectorAll(".sm-check").forEach((card) => refitCard(card)); };
       run();
       Reveal.on("slidechanged", run);
       window.addEventListener("resize", run);
+    }
+    // Re-measure a single check card and toggle the same compacting tiers
+    // fitChecks() uses, for when feedback text is injected after a click
+    // (not a slide change/resize, so fitChecks()'s own listeners won't fire).
+    function refitCard(card) {
+      const H = (Reveal.getConfig().height || 720);
+      card.classList.remove("sm-compact", "sm-compact-2");
+      if (card.scrollHeight > H - 24) card.classList.add("sm-compact");
+      if (card.scrollHeight > H - 24) card.classList.add("sm-compact-2");
     }
 
     // Interactive "Check yourself" slides: click an option to grade in place.
@@ -233,11 +270,15 @@
         const correctSet = new Set(correct);
         let judgeData = null;
         try { judgeData = JSON.parse(card.dataset.judge || "null"); } catch (e) { judgeData = null; }
+        const explanations = (judgeData && judgeData.explanations) || {};
+        const explFor = (l) => (explanations[l] || "").trim();
         const isCorrect = (picked) => {
           const ps = new Set(picked);
           return correctSet.size === ps.size && [...correctSet].every(l => ps.has(l));
         };
         // Render feedback with a Reset control (always offered once interacted).
+        // Also re-measures the card so newly-added explanation text can't
+        // overflow the slide (compacting kicks in the same way fitChecks() does).
         const showFb = (cls, inner) => {
           fb.style.display = "block";
           fb.className = "sm-check-fb " + cls;
@@ -245,10 +286,27 @@
           fb.querySelector(".retry").addEventListener("click", (e) => {
             e.stopPropagation(); resetCheck(card, opts, submit, fb);
           });
+          refitCard(card);
+        };
+        // Build a per-picked-option explanation list, e.g. for multi-answer
+        // feedback where several options need their own explanation shown.
+        // Skips letters with no distinct explanation; omits the wrapper
+        // entirely if nothing is left to show.
+        const explList = (letters) => {
+          const items = letters
+            .map((l) => ({ l, txt: explFor(l) }))
+            .filter((x) => x.txt)
+            .map((x) => `<div>${esc(x.l)}: ${x.txt}</div>`);
+          return items.length ? `<div class="why">${items.join("")}</div>` : "";
         };
         // Reveal full answer + rationale and lock -- only ever on a CORRECT answer.
-        const succeed = () => {
+        // `picked`, when provided (multi-answer path), lists every selected
+        // letter so each one's own explanation can be shown alongside the
+        // shared rationale; the single-answer call site (no args) keeps the
+        // original single `.why` block sourced from the shared rationale.
+        const succeed = (picked) => {
           card.dataset.locked = "1";
+          Timer.onAnswered(card);
           opts.forEach((o) => {
             o.classList.add("locked"); o.classList.remove("sel", "wrong");
             const l = o.dataset.ltr, m = o.querySelector(".sm-opt-m");
@@ -257,16 +315,26 @@
           });
           if (submit) submit.style.display = "none";
           const rat = card.dataset.rationale || (judgeData && judgeData.why) || "";
-          showFb("correct", `<span class="lbl">Correct.</span><div class="why">${rat}</div>`);
+          let why;
+          if (picked && picked.length) {
+            why = explList(picked) || (rat ? `<div class="why">${rat}</div>` : "");
+          } else {
+            const single = explFor(correct[0]) || rat;
+            why = single ? `<div class="why">${single}</div>` : "";
+          }
+          showFb("correct", `<span class="lbl">Correct.</span>${why}`);
         };
-        // Mark a wrong pick but DO NOT reveal the answer or lock -- let them retry.
+        // Mark a wrong pick but DO NOT reveal the answer or lock -- let them
+        // retry. Shows the clicked option's own explanation when available,
+        // falling back to the generic nudge when it has none.
         const tryAgain = (wrongLetters) => {
           wrongLetters.forEach((l) => {
             const o = opts.find(x => x.dataset.ltr === l);
             if (o) { o.classList.add("wrong"); o.classList.remove("sel"); o.querySelector(".sm-opt-m").innerHTML = "&#10007;"; }
           });
           if (submit) submit.disabled = true;
-          showFb("wrong", `<span class="lbl">Not quite.</span> <span class="why">Try another option.</span>`);
+          const why = explFor(wrongLetters[0]) || "Try another option.";
+          showFb("wrong", `<span class="lbl">Not quite.</span> <span class="why">${why}</span>`);
         };
         if (multi) {
           opts.forEach((o) => o.addEventListener("click", () => {
@@ -279,12 +347,13 @@
             if (card.dataset.locked) return;
             const picked = opts.filter(o => o.classList.contains("sel")).map(o => o.dataset.ltr);
             if (!picked.length) return;
-            if (isCorrect(picked)) succeed();
+            if (isCorrect(picked)) succeed(picked);
             else {
               // clear the selection so they can re-pick; nudge, don't reveal
+              const list = explList(picked);
               opts.forEach(o => o.classList.remove("sel"));
               if (submit) submit.disabled = true;
-              showFb("wrong", `<span class="lbl">Not quite.</span> <span class="why">That combination is not right &mdash; adjust your selection and submit again.</span>`);
+              showFb("wrong", `<span class="lbl">Not quite.</span> <span class="why">That combination is not right &mdash; adjust your selection and submit again.</span>${list}`);
             }
           });
         } else {
@@ -304,6 +373,145 @@
       if (submit) { submit.style.display = ""; submit.disabled = true; }
       fb.style.display = "none"; fb.innerHTML = "";
     }
+    // Per-question countdown timer (check slides). A corner pill is injected
+    // into the active .sm-check card; idle until clicked (manual start), then
+    // click toggles pause/resume. At zero it stops and turns red (never
+    // auto-reveals the answer); clicking resets it to idle. It is removed if
+    // the question gets answered.
+    const Timer = (() => {
+      const DEFAULT_SECS = 60;
+      const LS_SECS = "apcrdva-kc-timer-secs";
+      const LS_ON = "apcrdva-kc-timer-on";
+      let secs = DEFAULT_SECS;   // configured duration
+      let enabled = true;        // feature on/off
+      let intervalId = null;     // active countdown
+      let el = null;             // the pill in the current slide
+      let remaining = 0;
+      let state = "idle";        // idle | running | paused | done
+
+      const clampSecs = (v) => Math.min(600, Math.max(5, Math.round(v) || DEFAULT_SECS));
+
+      function initConfig() {
+        const q = new URL(location.href).searchParams.get("timer");
+        if (q === "off" || q === "none" || q === "0") enabled = false;
+        else if (q && !isNaN(parseInt(q, 10))) { secs = clampSecs(parseInt(q, 10)); enabled = true; }
+        else {
+          try { const s = localStorage.getItem(LS_SECS); if (s !== null) secs = clampSecs(parseInt(s, 10)); } catch (e) {}
+          try { const on = localStorage.getItem(LS_ON); if (on !== null) enabled = on === "1"; } catch (e) {}
+        }
+        const input = document.getElementById("timerSecs");
+        const toggle = document.getElementById("timerToggle");
+        if (input) {
+          input.value = secs;
+          input.addEventListener("change", () => {
+            secs = clampSecs(parseInt(input.value, 10)); input.value = secs;
+            try { localStorage.setItem(LS_SECS, String(secs)); } catch (e) {}
+            // restart on the current slide so the new duration takes effect now
+            attachToCurrent(true);
+          });
+        }
+        if (toggle) {
+          const paintToggle = () => { toggle.innerHTML = enabled ? "&#9201;&#65039; Timer: on" : "&#9201;&#65039; Timer: off"; };
+          paintToggle();
+          toggle.addEventListener("click", (e) => {
+            e.currentTarget.blur();
+            enabled = !enabled;
+            try { localStorage.setItem(LS_ON, enabled ? "1" : "0"); } catch (e) {}
+            paintToggle();
+            if (enabled) attachToCurrent(true); else clearPill();
+          });
+        }
+      }
+
+      function fmt(s) {
+        if (s >= 60) { const m = Math.floor(s / 60), r = s % 60; return m + ":" + String(r).padStart(2, "0"); }
+        return "0:" + String(s).padStart(2, "0");
+      }
+
+      function stop() { if (intervalId) { clearInterval(intervalId); intervalId = null; } }
+
+      function clearPill() {
+        stop();
+        document.querySelectorAll(".sm-timer").forEach((n) => n.remove());
+        el = null; state = "idle";
+      }
+
+      function render() {
+        if (!el) return;
+        const tspan = el.querySelector(".sm-timer-t");
+        if (tspan) tspan.textContent = fmt(Math.max(0, remaining));
+        const icon = el.querySelector("i");
+        el.classList.toggle("warn", state === "running" && remaining <= 10 && remaining > 0);
+        el.classList.toggle("done", state === "done");
+        el.classList.toggle("paused", state === "paused");
+        el.classList.toggle("idle", state === "idle");
+        // icon + hint reflect what a click will do next
+        if (icon) {
+          if (state === "running") { icon.className = "fa-solid fa-pause"; el.title = "Running \u2014 click to pause"; }
+          else if (state === "paused") { icon.className = "fa-solid fa-play"; el.title = "Paused \u2014 click to resume"; }
+          else if (state === "done") { icon.className = "fa-solid fa-rotate-left"; el.title = "Time up \u2014 click to reset"; }
+          else { icon.className = "fa-solid fa-play"; el.title = "Click to start the timer"; }
+        }
+      }
+
+      function start() {
+        remaining = secs; state = "running"; stop();
+        intervalId = setInterval(tick, 1000); render();
+      }
+
+      function tick() {
+        if (state !== "running") return;
+        remaining -= 1;
+        if (remaining <= 0) { remaining = 0; state = "done"; render(); stop(); return; }
+        render();
+      }
+
+      // Manual control: idle -> start, running -> pause, paused -> resume,
+      // done -> reset to idle (does NOT auto-run; instructor starts it again).
+      function onClick() {
+        if (state === "idle") start();
+        else if (state === "running") { state = "paused"; render(); }
+        else if (state === "paused") { state = "running"; render(); }
+        else if (state === "done") { remaining = secs; state = "idle"; stop(); render(); }
+      }
+
+      // Attach a fresh pill + countdown to the current slide if it is a check
+      // slide. `force` restarts even if a pill already exists (duration change).
+      function attachToCurrent(force) {
+        clearPill();
+        if (!enabled) return;
+        const section = Reveal.getCurrentSlide();
+        if (!section) return;
+        const card = section.querySelector(".sm-check");
+        if (!card) return;
+        if (card.dataset.locked) return; // already answered — no timer
+        el = document.createElement("button");
+        el.className = "sm-timer";
+        el.type = "button";
+        el.innerHTML = '<i class="fa-solid fa-play"></i><span class="sm-timer-t"></span>';
+        el.addEventListener("click", (e) => { e.stopPropagation(); onClick(); });
+        card.appendChild(el);
+        // Idle: show the full duration but do NOT count down — the instructor
+        // clicks the pill to start it.
+        remaining = secs; state = "idle"; stop();
+        render();
+      }
+
+      function init() {
+        initConfig();
+        Reveal.on("slidechanged", () => attachToCurrent(false));
+        // first slide (in case we land directly on a check slide via hash)
+        attachToCurrent(false);
+      }
+
+      // let wireChecks() tell us the question was answered, so we stop the clock
+      function onAnswered(card) {
+        if (el && Reveal.getCurrentSlide() && Reveal.getCurrentSlide().contains(card)) clearPill();
+      }
+
+      return { init, onAnswered };
+    })();
+
     function slideLabel(section) {
       const h2 = section.querySelector(".slide-native h2");
       if (h2 && h2.textContent.trim()) return h2.textContent.trim();
@@ -359,6 +567,7 @@
           36: () => Reveal.slide(0), 35: () => Reveal.slide(Reveal.getTotalSlides() - 1), 84: () => toggleTOC() },
       });
       Reveal.on("slidechanged", highlightTOC);
+      Reveal.on("ready", () => Timer.init());
     }
     function toggleFullscreen() { const el = document.documentElement; const isFs = document.fullscreenElement || document.webkitFullscreenElement; if (!isFs) { (el.requestFullscreen || el.webkitRequestFullscreen)?.call(el); } else { (document.exitFullscreen || document.webkitExitFullscreen)?.call(document); } }
     document.getElementById("fullscreenBtn").addEventListener("click", (e) => { e.currentTarget.blur(); toggleFullscreen(); });

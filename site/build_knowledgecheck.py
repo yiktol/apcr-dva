@@ -547,11 +547,13 @@ def check_slide(session_n: int, session_title: str, q: dict, idx: int, total: in
             else '<span class="sm-check-hint">click an option</span>')
 
     by_letter = {o["letter"]: o["text"] for o in q["options"]}
+    explanations = {o["letter"]: o.get("rationale", "") or "" for o in q["options"]}
     judge = {
         "prompt": q.get("prompt", ""),
         "options": [o["text"] for o in q["options"]],
         "answer": "; ".join(by_letter.get(l, "") for l in q["correct"]),
         "why": rat,
+        "explanations": explanations,
     }
     judge_attr = e(json.dumps(judge, ensure_ascii=False))
     return (
