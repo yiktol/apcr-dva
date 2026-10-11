@@ -75,8 +75,13 @@ or is not right.
 questions, do NOT say "consider", "think about", "reconsider", or "look \
 again". Do NOT address the learner ("you"). No preamble, no filler, no \
 restating the question.
-- For an INCORRECT pick, explain why THAT option is wrong on its own terms; \
-keep the focus on the picked option and do not enumerate the other options.
+- For an INCORRECT pick, explain ONLY why THAT picked option is wrong, on \
+its own terms. You MUST NOT reveal, name, hint at, describe, or recommend \
+the correct answer or any better option. Do not mention which service or \
+approach WOULD work, do not say what the option "fails to" do relative to a \
+better choice, and do not enumerate or contrast the other options. Every \
+bullet must be strictly about a shortcoming of the picked option itself. (A \
+correct pick may freely affirm why it is right.)
 - Ground every claim in the provided documentation excerpts. If no excerpts \
 were provided, state the fact from general AWS knowledge accurately.
 - Plain text in each bullet, no markdown, no leading "-" or bullet glyphs.
@@ -203,15 +208,29 @@ def build_user_message(payload: dict, docs: list[tuple[str, str]]) -> str:
         )
     else:
         doc_text = "(no documentation excerpts were available -- answer from general AWS knowledge only)"
-    return (
+    head = (
         f"QUESTION:\n{payload.get('prompt', '')}\n\n"
         f"OPTIONS:\n{opts_text}\n\n"
         f"LEARNER PICKED: {pick}\n"
         f"LEARNER WAS: {'CORRECT' if correct else 'WRONG'}\n"
-        f"CORRECT ANSWER (do NOT reveal if the learner was wrong): {answer}\n"
-        f"STATIC RATIONALE (for your reference only): {why}\n\n"
-        f"DOCUMENTATION EXCERPTS:\n{doc_text}\n"
     )
+    if correct:
+        # Affirmation path: the correct answer and rationale help the model be
+        # specific about why the pick is right.
+        head += (
+            f"CORRECT ANSWER: {answer}\n"
+            f"STATIC RATIONALE (for your reference only): {why}\n"
+        )
+    else:
+        # Wrong pick: deliberately WITHHOLD the correct answer and the
+        # answer-revealing rationale so the model cannot leak them. Judge the
+        # picked option purely on its own shortcomings.
+        head += (
+            "The correct answer is deliberately not provided. Explain only why "
+            "the picked option is wrong on its own terms; do not infer, name, "
+            "or hint at what the correct answer is.\n"
+        )
+    return head + f"\nDOCUMENTATION EXCERPTS:\n{doc_text}\n"
 
 
 def run_judge(payload: dict) -> dict:
