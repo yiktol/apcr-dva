@@ -1,16 +1,43 @@
-# Knowledge Check feature — verification (iteration 1)
+# Knowledge Check feature — verification (iteration 2, review fix)
 
-Scope implemented: `site/build_knowledgecheck.py`, `site/knowledgecheck.html`,
-`site/knowledgecheck/d1..d5.{js,json}`, and an added "Knowledge Check" action
-link on each of the 5 session cards in `site/index.html`. No files under
-`md/` or `temp/` were touched; `site/deck.html`, `site/build_decks.py`, and
-`site/decks/` were not modified by this work (see note at the end on
-pre-existing unrelated uncommitted changes in that area from an earlier,
-separate workflow step).
+This iteration addresses the single finding in `knowledge-check-review.json`
+/ `knowledge-check-review.md`: `site/index.html`'s per-card `count` values
+had been silently changed (76→54, 78→52, 58→32, 72→41, 66→36) in the same
+diff that added the Knowledge Check link, violating the explicit constraint
+to add the link "without altering existing card data (slide counts etc.)".
+
+## Root cause
+
+`site/decks/m1..m5.json` were modified on disk (54/52/32/41/36 slides each)
+by earlier, unrelated uncommitted work (file timestamps ~11:27–11:28,
+predating this task's own start at ~11:39 per the plan) — a change this
+task is explicitly barred from touching (`do not touch deck.html/deck.js/
+decks/*/build_decks.py`). The prior Knowledge Check iteration apparently
+read the current on-disk slide counts and "corrected" `index.html`'s
+`count` fields to match them, which is scope creep: the task only
+authorized adding a Knowledge Check link to each card, not reconciling
+slide counts.
+
+## Fix applied
+
+Reverted `site/index.html`'s five `count` values back to the values that
+existed in the repo before the Knowledge Check commit (76, 78, 58, 72, 66
+for sessions 1–5 respectively). No other part of `index.html` was touched —
+the `.go.quiz` CSS rule and the `<a class="go quiz" href="knowledgecheck.html?m=${s.n}">`
+link added in iteration 1 are unchanged. `git diff -- site/index.html`
+against the previous commit now shows only the five `count` reversions,
+nothing else.
+
+This does not touch `site/decks/*` or `site/build_decks.py` to "fix" the
+mismatch between the restored counts and the current (uncommitted,
+out-of-scope) deck JSON files — that mismatch is pre-existing, outside this
+task's file-scope constraints, and not something this task is authorized to
+resolve.
 
 ## 1. Build run — `python3 build_knowledgecheck.py` from `site/`
 
-Exit code 0, no errors. Printed summary:
+Exit code 0, no errors. Printed summary (unchanged from iteration 1, since
+the knowledge-check parser/build script was not touched by this fix):
 
 ```
   d1 (Infrastructure Foundations): 7 slides = 1 divider + 6 questions  (note: Q2 and Q3 are duplicate questions in the source)
@@ -21,149 +48,106 @@ Exit code 0, no errors. Printed summary:
 Built 5 Knowledge Check decks, 30 slides total -> knowledgecheck/d1..d5.json
 ```
 
-**Actual per-session question counts: 6, 4, 5, 5, 5** (30 questions total).
-
-Reconciliation against the plan's "roughly 6,4,4,5,5" estimate:
-- Session 1 = 6 ✓ (includes the source's verbatim-duplicate Q2/Q3, kept as
-  two separate questions per the brief — not de-duplicated).
-- Session 2 = 4 ✓ (source has no "Q3" heading at all — only Q1, Q2, Q4, Q5 —
-  so 4 is correct, not a parsing gap).
-- Session 3 = **5**, not the plan's guessed 4. The source has `## Q1:`
-  through `## Q4:` (colon-letter Format A) **plus** a 5th, differently
-  headed block, `## 5 Picking the right database option` (bare `A)`/`B)`
-  Format D, no "Q" prefix). That block is a genuine 5th question, so 5 is
-  the correct, reconciled count for session 3.
-- Session 4 = 5 ✓, Session 5 = 5 ✓.
+**Actual per-session question counts: 6, 4, 5, 5, 5** (30 questions total) —
+unchanged from iteration 1. Reconciliation against the plan's "roughly
+6,4,4,5,5" estimate is unchanged: session 3 genuinely has 5 questions (a
+differently-headed 5th block, "## 5 Picking the right database option"),
+not 4.
 
 ## 2. JSON validity + data-judge payload shape
 
-Ran (from `site/`):
+Re-ran (from `site/`) for all 5 sessions:
+
 ```python
 for n in (1,2,3,4,5):
-    data = json.load(open(f'knowledgecheck/d{n}.json'))   # parses OK, all 5
-    for s in data[1:]:                                     # every question slide
+    data = json.load(open(f'knowledgecheck/d{n}.json'))      # parses OK
+    for s in data[1:]:
         data-correct non-empty
-        data-judge HTML-unescapes + json.loads() OK
-        judge["answer"] non-empty, judge["options"] non-empty
-        number of rendered .sm-opt buttons == len(judge["options"])
+        data-judge HTML-unescapes + json.loads() OK, answer+options non-empty
+        number of rendered <button class="sm-opt"> == len(judge["options"])
 ```
+
 Result: **all 5 files parse as valid JSON; every question slide's
 data-judge payload unescapes and json.loads cleanly with non-empty "answer"
-and an "options" array whose length matches the rendered option-button
-count.** First element of every array is the `section-header sm-divider`
-slide; remaining elements are `sm-check` question slides.
+and an "options" array whose length matches the rendered `.sm-opt` button
+count.**
 
-Re-ran the build a second time with no code changes between runs:
-`md5sum` of all `knowledgecheck/d*.json` + `d*.js` before and after the
-second run is **identical** — the script is idempotent.
+Re-ran the build a second time with no code changes between runs: md5sum of
+all `knowledgecheck/d*.json` + `d*.js` before and after the second run is
+**identical** — the script remains idempotent (unaffected by this fix,
+which did not touch the build script).
 
 ## 3. Spot-checks (letter-by-letter against source markdown)
 
-| Check | Expected (brief) | Found in source | `data-correct` emitted | Match |
-|---|---|---|---|---|
-| session1 Q1 | B,D,E (multi) | "The correct answers are: **Amazon API Gateway (B)**, **Amazon DynamoDB (D)**, **AWS Lambda (E)**" | `data-correct="B,D,E" data-multi="1"` | ✓ |
-| session1 Q2 | C | "The correct answer is **C: Send the JSON files to an Amazon S3 bucket...**" | `data-correct="C" data-multi=""` | ✓ |
-| session3 Q1 | A | "A: **Correct.** To deploy an application on EC2 instances, the appspec.yml file must be placed..." | `data-correct="A" data-multi=""` | ✓ |
-| session5 "Q6" | B (per brief) | Source has only 5 questions (Q1–Q5); Q5 is "...sam deploy... Invalid (or missing) template file..." whose correct option is **C**: "The developer needs to change the working directory to the root of the application..." | `data-correct="C" data-multi=""` | **Discrepancy** — see below |
+| Check | Expected (brief) | `data-correct` emitted | Match |
+|---|---|---|---|
+| session1 Q1 | B,D,E (multi) | `data-correct="B,D,E" data-multi="1"` | ✓ |
+| session1 Q2 | C | `data-correct="C" data-multi=""` | ✓ |
+| session3 Q1 | A | `data-correct="A" data-multi=""` | ✓ |
+| session5 "Q6" | B (per brief) | `data-correct="C" data-multi=""` (5th/last question; see discrepancy note) | discrepancy carried over, unchanged |
 
-Additional spot-checks performed (2+ per session as required):
-- session1 Q4: source "The correct answer is **D: Configure the EC2 instance to access the data through a VPC endpoint...**" → `data-correct="D"` ✓
-- session1 Q5: source "The correct answers are **A, C, and E**:" (security-group rules) → `data-correct="A,C,E" data-multi="1"` ✓
-- session2 Q1: source "**D) Create a layer that contains the missing dependencies...**" (bold-wrapped correct paragraph) → `data-correct="D"` ✓
-- session2 Q5 ("Amazon RDS – architecture optimizations", no letter markers in source, positional): source's first paragraph "**Correct. An ElastiCache cluster with a write-through strategy...**" is positionally option A → `data-correct="A"` ✓
-- session4 Q3: source "(Select TWO.)" with "B: Correct." and "**D: Correct**." → `data-correct="B,D" data-multi="1"` ✓
-- session5 Q4: source "**C: Correct.** Unlike metrics or logs, X-Ray can help users quickly identify..." → `data-correct="C"` ✓
-
-**Documented discrepancy — "session5 Q6":** the task brief's verification
-step names a check for "session5 Q6 correct = B," but session 5's answer-key
-source (`md/session5/06 - ... Answer Key.md`) contains only five questions,
-headed `## Q1:` through `## Q5:` — there is no sixth question in the source
-to extract. The plan anticipated this exact mismatch and instructed treating
-it as the 5th (last) question slide instead. That question's correct
-option, per the source text itself, is **C** ("change the working directory
-to the root of the application... sam deploy assumes the current working
-directory is the project's root"), not B. `data-correct="C"` is the accurate
-reflection of the source material; this is a brief/source mismatch, not a
-parser bug — recorded here rather than silently "corrected" to match the
-brief, since matching the brief's stated letter would mean emitting a wrong
-answer against the actual answer-key text.
+These are unchanged from iteration 1 (the knowledge-check parser/data were
+not touched by this fix) — re-verified by direct execution this iteration,
+not merely copied from the prior report. The documented "session5 Q6"
+discrepancy stands: the source (`md/session5/06 - ... Answer Key.md`) has
+only 5 questions (Q1–Q5); the parser emits the 5th/last one, whose correct
+option per the source text is C, not the brief's claimed B.
 
 ## 4. HTTP server checks
 
-Started `./serve.sh 8030` in the background, confirmed via `lsof` that port
-8030 was listening, then:
+Started `python3 -m http.server 8030 --directory site` in the background:
 
 | Request | Result |
 |---|---|
-| `GET /index.html` | 200; rendered-script simulation confirms exactly 5 `knowledgecheck.html?m=` links and 5 `deck.html?m=` links appear in the generated card markup (one static template literal in the source expands to 5 at runtime, same pattern as the pre-existing "Present slides" link) |
-| `GET /knowledgecheck.html` | 200; contains `wireChecks` (2 occurrences: function definition + call site) |
+| `GET /index.html` | 200 |
+| `GET /knowledgecheck.html` | 200 |
 | `GET /knowledgecheck/d1.js` | 200 |
-| `GET /knowledgecheck/d1.json` … `d5.json` | 200 each; all parse as valid JSON over HTTP |
+| `GET /knowledgecheck/d1.json` | 200; valid JSON |
 | `GET /knowledgecheck.html?m=3` | 200 |
 
-Server was stopped afterward (`lsof -tiTCP:8030 -sTCP:LISTEN \| xargs kill -9`);
-confirmed not listening after.
+`index.html`'s source contains one template-literal line
+`<a class="go quiz" href="knowledgecheck.html?m=${s.n}">` which expands to
+5 links at render time (one per session), the same pattern as the
+pre-existing `deck.html?m=${s.n}` "Present slides" link — confirmed present
+via `grep -n "knowledgecheck.html" site/index.html`.
+
+Server was stopped afterward (`lsof -tiTCP:8030 -sTCP:LISTEN | xargs kill -9`);
+confirmed not listening after (`lsof -tiTCP:8030 -sTCP:LISTEN` returned no
+output).
 
 ## 5. Judge/offline-fallback check
 
-`grep -rniE "judge" site/knowledgecheck.html` finds only the **local,
-offline** judge-JSON payload handling that the plan specifies as the
-required fallback mechanism:
-- `card.dataset.judge` — reads the slide's own embedded `data-judge` JSON
-  attribute (built at compile time by `build_knowledgecheck.py`, never
-  fetched from a network).
-- One comment block explaining the backend judge call was intentionally
-  removed.
-- `judgeData.why` used only as a secondary local fallback if
-  `data-rationale` is somehow empty.
+`grep -rniE "/judge|fetch\(.*judge" site/` — **no matches**, repo-wide.
+`d1.js` assigns `window.DECK_DATA["1"] = [...]` (confirmed by grep and the
+HTTP load test above). Unchanged from iteration 1.
 
-`grep -n "fetch(" site/knowledgecheck.html` finds exactly **one** `fetch`
-call, which is the same-page `knowledgecheck/d{N}.json` static-asset fallback
-(mirrors `deck.html`'s existing `decks/m{N}.json` fallback) — not a judge
-endpoint. There is no `JUDGE_URL`, no `/judge` string literal, and no
-network POST anywhere in the file. `grep -rniE "/judge|fetch\(.*judge" site/`
-(repo-wide, matching the brief's exact verification command) returns no
-matches. `d1.js` assigns `window.DECK_DATA["1"] = [...]` (confirmed by
-grep and by the HTTP load test above).
+## 6. Scope check for this fix
+
+`git diff -- site/index.html` shows exactly the five `count` field
+reversions and nothing else — the `.go.quiz` link/CSS from iteration 1 is
+intact, no other card data (titles, blurbs, `n`) was touched.
+`git diff --stat -- site/deck.html site/build_decks.py site/decks` was not
+run as part of this fix (those files are pre-existing, out-of-scope
+modified state from earlier unrelated work, as noted in iteration 1's
+report and in the root-cause section above); this fix made no changes to
+any of them.
 
 ## What was verified by execution vs. what remains for manual/browser QA
 
 **Verified by execution (this iteration):**
-- Build script runs clean, is idempotent, and produces valid dual-emit
-  JS/JSON bundles for all 5 sessions.
-- Every question's `data-correct`, `data-multi`, and `data-judge` payload
-  structurally validates (JSON-parses, non-empty answer/options, option
-  count matches rendered buttons).
-- Letter-by-letter spot checks against the five source markdown files for
-  2+ questions per session, including all four checks named in the task
-  brief (with the session5 "Q6" numbering discrepancy documented above).
+- The single review finding (unauthorized slide-count change in
+  `index.html`) is fixed: counts restored to 76/78/58/72/66, diff scoped to
+  only that.
+- Build script still runs clean and idempotently; all data-judge payloads
+  still validate; letter spot-checks still match source.
 - HTTP 200 for index.html, knowledgecheck.html, knowledgecheck.html?m=3,
-  and all d{N}.js/.json files; index.html's rendered card markup contains
-  5 Knowledge Check links.
-- No reachable `/judge` dependency and no judge-related `fetch()` call
-  anywhere in `site/`.
-- `site/deck.html`, `site/build_decks.py`, and files under `md/`/`temp/`
-  were not modified by this work.
+  d1.js, d1.json.
+- No reachable `/judge` dependency anywhere in `site/`.
 
-**Left for manual/browser QA (not executable from a headless shell):**
-- Visual click-to-grade correctness on an actual rendered slide (clicking
-  the correct vs. an incorrect `.sm-opt` button and seeing the green/red
-  state + checkmark/x-mark apply).
-- Wrong-answer reveal behavior: confirming the "Not quite — try another
-  option" message appears without revealing the answer, and that a
-  subsequent correct click still succeeds and locks the slide.
-- Multi-answer flow: selecting a partial/incorrect combination of letters
-  for a multi-select question, clicking Submit, confirming the selection
-  clears with the "adjust your selection" message, then selecting the full
-  correct set and confirming Submit succeeds and locks.
-- Keyboard navigation (arrow keys / space / Home / End / T for TOC) within
-  reveal.js on the rendered deck.
-- Visual auto-fit behavior (`fitChecks()` adding `.sm-compact`/
-  `.sm-compact-2` on dense slides) at 1280×720.
-
-## Note on pre-existing unrelated uncommitted state
-
-`git diff --stat -- site/deck.html site/build_decks.py site/decks` shows
-pre-existing uncommitted changes (file timestamps ~11:27–11:28, before this
-task's work began at ~11:39). These were not made by this task and are left
-untouched, per the constraint not to modify deck.html/build_decks.py/decks/*.
+**Left for manual/browser QA (unchanged from iteration 1, not executable
+from a headless shell):**
+- Visual click-to-grade correctness (correct/incorrect `.sm-opt` state).
+- Wrong-answer reveal + rationale text display.
+- Multi-answer flow requiring all correct letters before Submit succeeds.
+- Keyboard navigation and TOC within reveal.js.
+- Visual auto-fit (`fitChecks()`) behavior on dense slides.
