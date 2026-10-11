@@ -226,3 +226,5 @@ ppt/
 
 # Local scratch / temporary files
 /temp/
+# Workflow agent scratch output (plans, reviews, verification notes)
+/.agents/
