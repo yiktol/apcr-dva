@@ -117,11 +117,11 @@
   </footer>
   <script>
     const sessions = [
-      { n: 1, title: "Infrastructure Foundations", blurb: "Regions and Availability Zones, Amazon CloudFront, Amazon EC2, Auto Scaling, Elastic Load Balancing, Amazon ECS/EKS/Fargate/ECR, Amazon VPC, and IAM.", count: 76 },
-      { n: 2, title: "Development with AWS Services", blurb: "Amazon API Gateway, AWS Lambda, Amazon DynamoDB, AWS Step Functions, Amazon SQS/SNS, Amazon Bedrock, and Kiro.", count: 78 },
-      { n: 3, title: "Decoupling, Caching, Auth & Observability", blurb: "Amazon SQS/SNS/EventBridge, Amazon ElastiCache, Amazon Cognito, and Amazon CloudWatch/CloudTrail.", count: 58 },
-      { n: 4, title: "Testing and Deployment", blurb: "AWS CodePipeline/CodeDeploy, AWS Elastic Beanstalk, deployment strategies, and AWS CloudFormation/CDK/SAM.", count: 72 },
-      { n: 5, title: "Security, AI Security & Observability", blurb: "AWS WAF, AWS KMS, AWS PrivateLink, AWS Certificate Manager, IAM policy evaluation, Amazon Bedrock Guardrails, and AWS X-Ray.", count: 66 },
+      { n: 1, title: "Infrastructure Foundations", blurb: "Regions and Availability Zones, Amazon CloudFront, Amazon EC2, Auto Scaling, Elastic Load Balancing, Amazon ECS/EKS/Fargate/ECR, Amazon VPC, and IAM.", count: 54 },
+      { n: 2, title: "Development with AWS Services", blurb: "Amazon API Gateway, AWS Lambda, Amazon DynamoDB, AWS Step Functions, Amazon SQS/SNS, Amazon Bedrock, and Kiro.", count: 52 },
+      { n: 3, title: "Decoupling, Caching, Auth & Observability", blurb: "Amazon SQS/SNS/EventBridge, Amazon ElastiCache, Amazon Cognito, and Amazon CloudWatch/CloudTrail.", count: 32 },
+      { n: 4, title: "Testing and Deployment", blurb: "AWS CodePipeline/CodeDeploy, AWS Elastic Beanstalk, deployment strategies, and AWS CloudFormation/CDK/SAM.", count: 41 },
+      { n: 5, title: "Security, AI Security & Observability", blurb: "AWS WAF, AWS KMS, AWS PrivateLink, AWS Certificate Manager, IAM policy evaluation, Amazon Bedrock Guardrails, and AWS X-Ray.", count: 36 },
     ];
     const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
     document.getElementById("grid").innerHTML = sessions.map((s) => `

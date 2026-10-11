@@ -53,6 +53,16 @@ SLIDE_HEADING_RE = re.compile(r"^## Slide (\d+) \u2014 (.*)$")
 HIDDEN_SUFFIX_RE = re.compile(r"\s*:?\s*_\(hidden\)_\s*$")
 NO_NOTES_LITERAL = "_No speaker notes._"
 
+# Slides whose title matches this are the practice-question blocks
+# ("Question 1: ...", etc.) and are excluded from the published decks.
+QUESTION_TITLE_RE = re.compile(r"^Question\s+\d+\b", re.IGNORECASE)
+
+
+def _is_excluded(slide):
+    """A slide is dropped from the published deck if it is a hidden slide
+    (facilitator-only) or a practice-question slide."""
+    return slide["hidden"] or bool(QUESTION_TITLE_RE.match(slide["title"]))
+
 
 def parse_session(session_num, dirname, filename):
     """Parse one session's markdown file into a list of slide dicts."""
@@ -139,25 +149,30 @@ def main():
 
     totals = {}
     for n, (dirname, filename) in SESSIONS.items():
-        slides = parse_session(n, dirname, filename)
-        _copy_images(n, dirname, slides)
+        all_slides = parse_session(n, dirname, filename)
+
+        # Exclude facilitator-only hidden slides and practice-question slides
+        # from the published deck.
+        kept = [s for s in all_slides if not _is_excluded(s)]
+        dropped = len(all_slides) - len(kept)
+
+        _copy_images(n, dirname, kept)
 
         with open(os.path.join(DECKS_DIR, f"m{n}.json"), "w", encoding="utf-8") as f:
-            json.dump(slides, f, indent=2, ensure_ascii=False)
+            json.dump(kept, f, indent=2, ensure_ascii=False)
             f.write("\n")
 
-        compact = json.dumps(slides, ensure_ascii=False, separators=(", ", ": "))
+        compact = json.dumps(kept, ensure_ascii=False, separators=(", ", ": "))
         with open(os.path.join(DECKS_DIR, f"m{n}.js"), "w", encoding="utf-8") as f:
             f.write("window.DECK_DATA = window.DECK_DATA || {};\n")
             f.write(f'window.DECK_DATA["{n}"] = {compact};\n')
 
-        hidden_count = sum(1 for s in slides if s["hidden"])
-        totals[n] = (len(slides), hidden_count)
+        totals[n] = (len(kept), dropped)
 
     print("Built session decks:")
     total_slides = 0
-    for n, (count, hidden_count) in totals.items():
-        print(f"  m{n}: {count} slides ({hidden_count} hidden) -> decks/m{n}.js")
+    for n, (count, dropped) in totals.items():
+        print(f"  m{n}: {count} slides ({dropped} removed: hidden + question) -> decks/m{n}.js")
         total_slides += count
     print("Total:", total_slides)
 
