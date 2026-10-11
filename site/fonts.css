@@ -1,0 +1,68 @@
+/* Amazon Ember — AWS brand typeface, self-hosted (works under file:// and HTTP).
+   Text family for body/UI; Display family for large headings.
+   Weight map: 300 Light · 400 Regular · 500→SemiBold (no true Medium in family)
+   · 600 SemiBold · 700 Bold. Italics provided for 400 and 700. */
+
+@font-face {
+  font-family: "Amazon Ember";
+  font-style: normal; font-weight: 300;
+  src: url("fonts/AmazonEmber_Lt.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Amazon Ember";
+  font-style: normal; font-weight: 400;
+  src: url("fonts/AmazonEmber_Rg.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Amazon Ember";
+  font-style: italic; font-weight: 400;
+  src: url("fonts/AmazonEmber_RgIt.ttf") format("truetype");
+  font-display: swap;
+}
+/* The family has no true Medium; map 500 to SemiBold so weight:500 still renders in Ember. */
+@font-face {
+  font-family: "Amazon Ember";
+  font-style: normal; font-weight: 500;
+  src: url("fonts/AmazonEmber_SBd.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Amazon Ember";
+  font-style: normal; font-weight: 600;
+  src: url("fonts/AmazonEmber_SBd.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Amazon Ember";
+  font-style: normal; font-weight: 700;
+  src: url("fonts/AmazonEmber_Bd.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Amazon Ember";
+  font-style: italic; font-weight: 700;
+  src: url("fonts/AmazonEmber_BdIt.ttf") format("truetype");
+  font-display: swap;
+}
+
+/* Display cut for large headings (slide h2, landing hero). */
+@font-face {
+  font-family: "Amazon Ember Display";
+  font-style: normal; font-weight: 400;
+  src: url("fonts/AmazonEmberDisplay_Rg.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Amazon Ember Display";
+  font-style: normal; font-weight: 500;
+  src: url("fonts/AmazonEmberDisplay_Md.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Amazon Ember Display";
+  font-style: normal; font-weight: 700;
+  src: url("fonts/AmazonEmberDisplay_Bd.ttf") format("truetype");
+  font-display: swap;
+}

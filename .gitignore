@@ -156,8 +156,7 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
+
 
 # mypy
 .mypy_cache/
@@ -224,3 +223,6 @@ ppt/
 # macOS Finder metadata
 .DS_Store
 **/.DS_Store
+
+# Local scratch / temporary files
+/temp/
