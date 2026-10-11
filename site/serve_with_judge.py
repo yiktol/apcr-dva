@@ -56,34 +56,33 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
-SYSTEM_PROMPT = """You are an AWS certification answer-key reviewer. You are \
-given an exam question, its answer options, the answer key's claimed \
-correct letter(s), and excerpts fetched live from official AWS \
-documentation pages. Your job is to judge, strictly from the provided doc \
-excerpts (not general knowledge), whether each option is correct or \
-incorrect, whether the docs support the keyed answer, and whether the key \
-appears to be outdated versus the current docs.
+SYSTEM_PROMPT = """You are an AWS certification coach embedded in a quiz. A \
+learner has just picked an answer. You are given the question, its options, \
+the option the learner picked, the answer key's correct answer, a short \
+static rationale, whether the learner's pick was correct, and excerpts \
+fetched live from official AWS documentation pages.
+
+Write ONE short coaching paragraph (2-4 sentences), grounded in the provided \
+documentation excerpts whenever they are available:
+
+- If the learner was CORRECT: give a confident, specific affirmation of WHY \
+the answer is right, citing what the current AWS documentation says. You MAY \
+name the service behavior the docs describe.
+
+- If the learner was WRONG: give a Socratic nudge that helps them reconsider \
+WITHOUT revealing which option is correct. Point at the concept or the \
+documentation detail their pick overlooks, and invite them to look again. \
+NEVER state or hint at the correct letter or restate the correct option's \
+text.
+
+Ground your explanation in the documentation excerpts when they are present; \
+if no excerpts were provided, answer from general AWS knowledge but stay \
+accurate and do not fabricate citations.
 
 Respond with STRICT JSON ONLY -- no prose before or after, no markdown code \
 fences -- in exactly this shape:
-{
-  "perOption": [
-    {"letter": "A", "verdict": "correct|incorrect", "why": "...", "citedSource": "<url or null>"}
-  ],
-  "docSupportedCorrect": ["C"],
-  "keyAgreesWithDocs": true,
-  "keyNote": "...",
-  "grounded": true
-}
-Field names and nesting must match exactly. "perOption" must have one entry \
-per option letter given, in the same order. "docSupportedCorrect" is the \
-list of letters the docs actually support as correct. "keyAgreesWithDocs" \
-is true only if docSupportedCorrect matches the keyed correct letters \
-exactly. "keyNote" briefly explains your reasoning, and must call out \
-clearly if the keyed answer looks outdated vs. the current docs. Set \
-"grounded" to true if you relied on the provided doc excerpts, false if no \
-usable excerpts were provided and you are answering from general knowledge \
-only."""
+{"explanation": "your coaching paragraph here"}
+The "explanation" value is a single plain-text string (no markdown)."""
 
 
 # ---------------------------------------------------------------------------
@@ -181,19 +180,30 @@ def extract_first_json(text: str) -> dict | None:
 
 
 def build_user_message(payload: dict, docs: list[tuple[str, str]]) -> str:
+    # Reference "choice" contract: a single learner pick is judged for a
+    # Socratic nudge (wrong) or grounded affirmation (correct).
     options = payload.get("options") or []
-    opts_text = "\n".join(f"{o.get('letter')}: {o.get('text')}" for o in options)
-    keyed = ", ".join(payload.get("keyedCorrect") or [])
+    if options and isinstance(options[0], dict):
+        opts_text = "\n".join(f"{o.get('letter')}: {o.get('text')}" for o in options)
+    else:
+        opts_text = "\n".join(str(o) for o in options)
+    pick = payload.get("pick", "")
+    answer = payload.get("answer", "")
+    why = payload.get("why", "")
+    correct = bool(payload.get("correct"))
     if docs:
         doc_text = "\n\n".join(
             f"--- DOC EXCERPT ({url}) ---\n{text}" for url, text in docs
         )
     else:
-        doc_text = "(no documentation excerpts were available -- answer from general AWS knowledge only, and set grounded to false)"
+        doc_text = "(no documentation excerpts were available -- answer from general AWS knowledge only)"
     return (
         f"QUESTION:\n{payload.get('prompt', '')}\n\n"
         f"OPTIONS:\n{opts_text}\n\n"
-        f"ANSWER KEY CLAIMS CORRECT: {keyed}\n\n"
+        f"LEARNER PICKED: {pick}\n"
+        f"LEARNER WAS: {'CORRECT' if correct else 'WRONG'}\n"
+        f"CORRECT ANSWER (do NOT reveal if the learner was wrong): {answer}\n"
+        f"STATIC RATIONALE (for your reference only): {why}\n\n"
         f"DOCUMENTATION EXCERPTS:\n{doc_text}\n"
     )
 
@@ -225,17 +235,22 @@ def run_judge(payload: dict) -> dict:
             out_text = response["output"]["message"]["content"][0]["text"]
             return extract_first_json(out_text)
 
-        result = call(0.2)
+        result = call(0.3)
         if result is None:
             result = call(0.0)
         if result is None:
-            return {"error": "judge: could not parse a JSON verdict from the model response", "grounded": False}
+            return {"error": "judge: could not parse an explanation from the model response", "grounded": False}
 
-        result["grounded"] = bool(grounded) and bool(result.get("grounded", True))
-        if not grounded:
-            result["keyNote"] = (result.get("keyNote", "") + " (model knowledge only -- no documentation excerpts were fetched successfully)").strip()
-        result["sourcesUsed"] = sources_used
-        return result
+        explanation = (result.get("explanation") or "").strip()
+        if not explanation:
+            return {"error": "judge: empty explanation", "grounded": False}
+        # Reference-shaped response: a single coaching string. grounded /
+        # sourcesUsed are extra, non-breaking context the viewer may ignore.
+        return {
+            "explanation": explanation,
+            "grounded": bool(grounded),
+            "sourcesUsed": sources_used,
+        }
     except Exception as e:
         return {"error": str(e), "grounded": False}
 

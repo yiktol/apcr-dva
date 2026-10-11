@@ -76,21 +76,11 @@
     .sm-check-fb { max-height: 7.5em; overflow-y: auto; }
 
     /* ---- AI judge (serve_with_judge.py /judge; absent on plain serve.sh) ---- */
-    .judge-pending { margin-top: .5em; font-size: 0.36em; color: var(--muted); font-style: italic; display: flex; align-items: center; gap: .4em; }
-    .judge-pending i { animation: judge-spin 1s linear infinite; }
-    @keyframes judge-spin { to { transform: rotate(360deg); } }
-    .judge-block { margin-top: .5em; padding-top: .45em; border-top: 1px dashed var(--line); font-size: 0.36em; line-height: 1.45; }
-    .judge-block .judge-title { font-weight: 700; color: var(--aws-navy); display: flex; align-items: center; gap: .35em; margin-bottom: .3em; }
-    .judge-block .judge-title i { color: var(--accent, var(--aws-blue)); }
-    .judge-opt { margin: .18em 0; padding-left: .1em; }
-    .judge-opt .jl { font-weight: 700; margin-right: .3em; }
-    .judge-opt.ok .jl, .judge-opt.ok .jv { color: var(--ok); }
-    .judge-opt.bad .jl, .judge-opt.bad .jv { color: var(--miss); }
-    .judge-support { margin-top: .3em; color: #40506a; }
-    .judge-warn { margin-top: .4em; padding: .4em .6em; border-radius: 7px; background: var(--warnbg); border: 1px solid #f1dcb3; color: #6b4710; font-weight: 600; }
-    .judge-cites { margin-top: .35em; display: flex; flex-direction: column; gap: .15em; }
-    .judge-cites a { color: var(--aws-teal); text-decoration: none; word-break: break-all; }
-    .judge-cites a:hover { text-decoration: underline; }
+    /* AI judge: a coaching line is swapped IN PLACE into the feedback's .why
+       slot. While it loads, a small inline "thinking" spinner shows. */
+    .sm-think { display: inline-flex; align-items: center; gap: .5em; color: #6b4310; font-style: italic; }
+    .sm-spin { width: 0.9em; height: 0.9em; border: 2px solid #e4c38a; border-top-color: #b4690e; border-radius: 50%; display: inline-block; animation: sm-spin 0.7s linear infinite; }
+    @keyframes sm-spin { to { transform: rotate(360deg); } }
 
     /* ---- per-question countdown timer (check slides) ---- */
     /* A corner pill the deck JS injects into the active check slide. Positioned
@@ -273,110 +263,77 @@
       if (card.scrollHeight > H - 24) card.classList.add("sm-compact-2");
     }
 
-    // Optional AI judge call (POST /judge, served only by
-    // serve_with_judge.py -- plain serve.sh / file:// has no backend, so
-    // this is expected to fail there and that failure path is deliberately
-    // silent). Strictly additive: local grading above always fires first
-    // and is never blocked or delayed by this. On ANY failure (network
-    // error, timeout, non-200, parse error, backend absent) it quietly
-    // removes its own pending indicator and leaves local feedback as the
-    // only thing shown -- no console errors, no broken UI.
+    // ---- Optional AI judge (reference "choice" pattern) ---------------------
+    // On BOTH a correct pick (a confident, doc-grounded affirmation) and a
+    // wrong pick (a Socratic nudge that does NOT reveal the answer), ask the
+    // judge for a coaching paragraph and swap it IN PLACE into the feedback's
+    // ".why" slot. Same-origin "/judge" by default (served only by
+    // serve_with_judge.py); override with ?judge=<url>, disable with
+    // ?judge=off, or set a persistent URL in localStorage. Any failure
+    // (backend absent under plain serve.sh / file://, network error, timeout,
+    // non-200, empty/error body) silently keeps the local static explanation,
+    // so the slide never blocks or goes blank.
+    const JUDGE_URL = (() => {
+      const q = new URL(location.href).searchParams.get("judge");
+      if (q === "off" || q === "none") return "";
+      if (q) return q;
+      try { const ls = localStorage.getItem("apcrdva-kc-judge-url"); if (ls !== null) return ls; } catch (e) {}
+      return "/judge";
+    })();
+    const JUDGE_ENABLED = !!JUDGE_URL;
     const JUDGE_TIMEOUT_MS = 25000;
-    function judgeQuestion(card, fb, picked) {
+
+    // Returns the coaching explanation string, or null on any failure.
+    async function judgeChoice(payload) {
+      if (!JUDGE_ENABLED) return null;
+      const body = JSON.stringify({ mode: "choice", ...payload });
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), JUDGE_TIMEOUT_MS);
       try {
-        if (card.dataset.judged) return; // once per interaction
-        card.dataset.judged = "1";
-        let sources = [];
-        try { sources = JSON.parse(card.dataset.sources || "[]"); } catch (e) { sources = []; }
-        let judgeData = null;
-        try { judgeData = JSON.parse(card.dataset.judge || "null"); } catch (e) { judgeData = null; }
-        const correct = (card.dataset.correct || "").split(",").filter(Boolean);
-        const opts = Array.from(card.querySelectorAll(".sm-opt")).map((o) => ({
-          letter: o.dataset.ltr,
-          text: (o.querySelector(".sm-opt-t") || {}).textContent || "",
-        }));
-        const promptEl = card.querySelector(".sm-check-q");
-        const prompt = (promptEl && promptEl.textContent) || (judgeData && judgeData.prompt) || "";
-
-        const pending = document.createElement("div");
-        pending.className = "judge-pending";
-        pending.innerHTML = '<i class="fa-solid fa-spinner"></i> Checking against AWS docs&hellip;';
-        fb.appendChild(pending);
-        refitCard(card);
-
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), JUDGE_TIMEOUT_MS);
-
-        fetch("/judge", {
+        const res = await fetch(JUDGE_URL, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            prompt,
-            options: opts,
-            keyedCorrect: correct,
-            sources,
-          }),
-        })
-          .then((res) => {
-            if (!res.ok) throw new Error("judge http " + res.status);
-            return res.json();
-          })
-          .then((data) => {
-            clearTimeout(timer);
-            pending.remove();
-            if (!data || data.error) return; // silent fallback
-            renderJudge(card, fb, data, picked);
-          })
-          .catch(() => {
-            clearTimeout(timer);
-            pending.remove(); // silent fallback -- local explanation stands
-          });
-      } catch (e) {
-        // Never let a judge-call bug affect the page.
-      }
+          body, signal: ctrl.signal,
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return (data && data.explanation) ? String(data.explanation) : null;
+      } catch (e) { return null; }
+      finally { clearTimeout(timer); }
     }
 
-    // Append the AI judge's doc-grounded verdict to the existing feedback
-    // block (never replaces it). Renders per-option verdicts, a "docs
-    // support" line, an outdated-answer warning when the key disagrees with
-    // the docs, and clickable citation links.
-    function renderJudge(card, fb, data, picked) {
-      try {
-        const perOption = Array.isArray(data.perOption) ? data.perOption : [];
-        const rows = perOption.map((o) => {
-          const cls = o.verdict === "correct" ? "ok" : "bad";
-          const why = esc(o.why || "");
-          return `<div class="judge-opt ${cls}"><span class="jl">${esc(o.letter)}</span><span class="jv">${esc(o.verdict || "")}</span> &mdash; ${why}</div>`;
-        }).join("");
-        const supported = Array.isArray(data.docSupportedCorrect) ? data.docSupportedCorrect.join(", ") : "";
-        const supportLine = supported ? `<div class="judge-support">Docs support correct answer: <strong>${esc(supported)}</strong></div>` : "";
-        let warn = "";
-        if (data.keyAgreesWithDocs === false) {
-          warn = `<div class="judge-warn">&#9888; The keyed answer may be outdated vs current AWS docs. ${esc(data.keyNote || "")}</div>`;
-        } else if (data.keyNote) {
-          warn = `<div class="judge-support">${esc(data.keyNote)}</div>`;
-        }
-        const sourcesUsed = Array.isArray(data.sourcesUsed) ? data.sourcesUsed : [];
-        const cites = sourcesUsed.length
-          ? `<div class="judge-cites">${sourcesUsed.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join("")}</div>`
-          : "";
-        const block = document.createElement("div");
-        block.className = "judge-block";
-        block.innerHTML = `<div class="judge-title"><i class="fa-solid fa-robot"></i> AI judge (live AWS docs)</div>${rows}${supportLine}${warn}${cites}`;
-        fb.appendChild(block);
-        refitCard(card);
-      } catch (e) {
-        // Rendering failure should never break the page -- local feedback
-        // (already shown) remains the source of truth.
-      }
+    // Fetch an AI explanation and swap it into the feedback's ".why" slot.
+    // Used for both a wrong pick (nudge, no reveal) and a correct pick
+    // (grounded affirmation) -- the judge branches on the `correct` flag.
+    // Non-blocking: shows a spinner, then the explanation, and silently keeps
+    // the original static text if the judge is off/unreachable/empty.
+    function seekJudge(card, fb, pickText, correct) {
+      if (!JUDGE_ENABLED) return;
+      let judgeData = null;
+      try { judgeData = JSON.parse(card.dataset.judge || "null"); } catch (e) { judgeData = null; }
+      if (!judgeData) return;
+      let sources = [];
+      try { sources = JSON.parse(card.dataset.sources || "[]"); } catch (e) { sources = []; }
+      const why = fb.querySelector(".why");
+      if (!why) return;
+      const original = why.innerHTML;
+      why.innerHTML = '<span class="sm-think"><span class="sm-spin"></span> Thinking about your answer&hellip;</span>';
+      refitCard(card);
+      judgeChoice({
+        prompt: judgeData.prompt, options: judgeData.options,
+        pick: pickText, answer: judgeData.answer, why: judgeData.why,
+        correct: !!correct, sources,
+      })
+        .then((exp) => { why.innerHTML = exp ? esc(exp) : original; refitCard(card); })
+        .catch(() => { why.innerHTML = original; });
     }
 
     // Interactive "Check yourself" slides: click an option to grade in place.
     // Local grading (below) is drawn entirely from the slide's
     // data-rationale / data-judge "why" and never depends on a network
-    // call. The optional judgeQuestion() call layered on top is additive --
-    // see its own comment above for the full fallback contract.
+    // call. The optional seekJudge() call layered on top is additive and
+    // swaps the AI coaching line into the .why slot in place -- see its own
+    // comment above for the full fallback contract.
     function wireChecks() {
       document.querySelectorAll(".sm-check").forEach((card) => {
         const correct = (card.dataset.correct || "").split(",").filter(Boolean);
@@ -389,6 +346,7 @@
         try { judgeData = JSON.parse(card.dataset.judge || "null"); } catch (e) { judgeData = null; }
         const explanations = (judgeData && judgeData.explanations) || {};
         const explFor = (l) => (explanations[l] || "").trim();
+        const textOf = (l) => { const o = opts.find(x => x.dataset.ltr === l); return o ? (o.querySelector(".sm-opt-t") || {}).textContent.trim() : ""; };
         const isCorrect = (picked) => {
           const ps = new Set(picked);
           return correctSet.size === ps.size && [...correctSet].every(l => ps.has(l));
@@ -439,8 +397,11 @@
             const single = explFor(correct[0]) || rat;
             why = single ? `<div class="why">${single}</div>` : "";
           }
-          showFb("correct", `<span class="lbl">Correct.</span>${why}`);
-          judgeQuestion(card, fb, picked && picked.length ? picked : correct.slice());
+          // Ensure a .why slot exists for the AI affirmation to swap into.
+          const inner = why || `<div class="why">${rat}</div>`;
+          showFb("correct", `<span class="lbl">Correct.</span>${inner}`);
+          const pickLetters = picked && picked.length ? picked : correct.slice();
+          seekJudge(card, fb, pickLetters.map(textOf).filter(Boolean).join("; "), true);
         };
         // Mark a wrong pick but DO NOT reveal the answer or lock -- let them
         // retry. Shows the clicked option's own explanation when available,
@@ -453,7 +414,7 @@
           if (submit) submit.disabled = true;
           const why = explFor(wrongLetters[0]) || "Try another option.";
           showFb("wrong", `<span class="lbl">Not quite.</span> <span class="why">${why}</span>`);
-          judgeQuestion(card, fb, wrongLetters);
+          seekJudge(card, fb, textOf(wrongLetters[0]), false);
         };
         if (multi) {
           opts.forEach((o) => o.addEventListener("click", () => {
@@ -469,11 +430,11 @@
             if (isCorrect(picked)) succeed(picked);
             else {
               // clear the selection so they can re-pick; nudge, don't reveal
-              const list = explList(picked);
+              const pickText = picked.map(textOf).join("; ");
               opts.forEach(o => o.classList.remove("sel"));
               if (submit) submit.disabled = true;
-              showFb("wrong", `<span class="lbl">Not quite.</span> <span class="why">That combination is not right &mdash; adjust your selection and submit again.</span>${list}`);
-              judgeQuestion(card, fb, picked);
+              showFb("wrong", `<span class="lbl">Not quite.</span> <span class="why">That combination is not right &mdash; adjust your selection and submit again.</span>`);
+              seekJudge(card, fb, pickText, false);
             }
           });
         } else {
