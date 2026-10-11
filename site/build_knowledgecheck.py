@@ -30,10 +30,13 @@ The reveal slide's Notes hold everything needed to build the question:
     Correct/Incorrect word must agree with the ANSWER OVERVIEW line; the
     text after the second em-dash is that option's rationale.
 
-No slide anywhere restates the full scenario prose as text -- the scenario
-only exists as the slide IMAGE. The question's title string (e.g.
-"Question 1: a download link that expires in 15 minutes") is therefore used
-verbatim as the question prompt; nothing is fabricated.
+Each question's first slide also carries a "### Question" markdown block
+(injected from the original .pptx slide body by temp/enrich_stems.py) with
+the full on-slide scenario paragraph(s) and the trailing "Which ...?" line,
+followed by a blank line and the lettered option list. That scenario text
+(everything before the first lettered option line) is used verbatim as the
+question prompt; the title string is only a fallback for the rare case a
+block is missing.
 
 Doc reference URLs: every full "https://docs.aws.amazon.com/..." URL that
 appears anywhere in the question's own 4-slide block (most often on a
@@ -62,20 +65,15 @@ MD_DIR = os.path.join(HERE, "..", "md")
 OUTDIR = os.path.join(HERE, "knowledgecheck")
 
 SESSIONS = {
-    1: ("session1", "02 - APCR-DVA - Exam Strategy Session 1 - Answer Key.md",
-        "Infrastructure Foundations"),
-    2: ("session2", "03 - APCR-DVA - Exam Strategy Session 2 - Answer Key.md",
-        "Development with AWS Services"),
-    3: ("session3", "04 - APCR-DVA - Exam Strategy Session 3 - Answer Key.md",
-        "Decoupling, Caching, Auth & Observability"),
-    4: ("session4", "05 - APCR-DVA - Exam Strategy Session 4 - Answer Key.md",
-        "Testing and Deployment"),
-    5: ("session5", "06 - APCR-DVA - Exam Strategy Session 5 - Answer Key.md",
-        "Security, AI Security & Observability"),
+    1: ("session1", "Infrastructure Foundations"),
+    2: ("session2", "Development with AWS Services"),
+    3: ("session3", "Decoupling, Caching, Auth & Observability"),
+    4: ("session4", "Testing and Deployment"),
+    5: ("session5", "Security, AI Security & Observability"),
 }
 
-# One "Content Review Session N.md" file per session, same dir as the Answer
-# Key -- this is now the primary (and only) question source. See
+# One "Content Review Session N.md" file per session -- the sole question
+# source (the Exam Strategy answer-key files were retired). See
 # .agents/tasks/kc-content-review-reparse-plan.md.
 CONTENT_REVIEW = {
     1: "02 - APCR-DVA - Content Review Session 1.md",
@@ -107,6 +105,39 @@ ANSWER_OVERVIEW_RE = re.compile(r"ANSWER OVERVIEW:\s*[Tt]he answer is\s+(.+?)\."
 OPTION_LINE_RE = re.compile(
     r"^([A-G])\.\s*(.+?)\s*—\s*(Correct|Incorrect)\s*—\s*(.+)$"
 )
+
+# "### Question" ... up to the next "### " heading or a "---" rule.
+QUESTION_BLOCK_RE = re.compile(r"^### Question\s*$", re.MULTILINE)
+LETTERED_OPTION_RE = re.compile(r"^[A-G]\.\s")
+
+
+def extract_stem(block_lines: list[str]) -> str | None:
+    """Return the full scenario paragraph from the first '### Question'
+    block in this question's combined slide block, or None if no such block
+    is present. The block holds the scenario prose, the trailing
+    'Which ...?' line, then a blank line and the lettered option list --
+    only the prose/question line (everything before the first lettered
+    option) is the prompt; the options are parsed separately from the
+    reveal slide."""
+    text = "\n".join(block_lines)
+    m = QUESTION_BLOCK_RE.search(text)
+    if not m:
+        return None
+    rest = text[m.end():]
+    # Stop at the next "### " heading or a "---" rule (end of this slide's
+    # Question block), whichever comes first.
+    end_m = re.search(r"^(### |---\s*$)", rest, re.MULTILINE)
+    body = rest[:end_m.start()] if end_m else rest
+    stem_lines = []
+    for line in body.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if LETTERED_OPTION_RE.match(line):
+            break
+        stem_lines.append(line)
+    stem = " ".join(stem_lines).strip()
+    return stem or None
 
 
 def e(s) -> str:
@@ -234,8 +265,13 @@ def parse_question_block(qnum: int, title: str, block_lines: list[str], label: s
         if url not in sources:
             sources.append(url)
 
+    stem = extract_stem(block_lines)
+    if stem is None:
+        print(f"    warn {label} Q{qnum} ({title}): no '### Question' stem block found, "
+              f"falling back to the slide title as the prompt", file=sys.stderr)
+
     return {
-        "prompt": title,
+        "prompt": stem if stem else title,
         "options": [{"letter": o["letter"], "text": o["text"], "rationale": o["rationale"]} for o in options],
         "correct": answer_letters,
         "multi": len(answer_letters) > 1,
@@ -363,7 +399,7 @@ def build_session(session_n: int, title: str, questions: list[dict]) -> list[dic
 
 def main():
     total_slides = 0
-    for n, (dirname, _answer_key_filename, title) in SESSIONS.items():
+    for n, (dirname, title) in SESSIONS.items():
         md_path = os.path.join(MD_DIR, dirname, CONTENT_REVIEW[n])
         questions = parse_session_markdown(md_path)
         slides = build_session(n, title, questions)

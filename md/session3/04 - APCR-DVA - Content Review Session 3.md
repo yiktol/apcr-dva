@@ -689,6 +689,17 @@ Remind everyone that the four-beat rhythm -- read, find the key phrases, reveal,
 
 ![Slide 29](images/slide-29.png)
 
+### Question
+
+A company runs an event-driven application. When a new user registers, the application must send a welcome email, create a record in a CRM system, and provision a default workspace. Each action is handled by a separate AWS Lambda function. The three functions must all receive the registration event but must process independently. A failure in one function must not affect the others.
+The developer must implement a solution that delivers the event to all three functions.
+Which solution will meet these requirements?
+
+A.  Create an Amazon SNS topic. Subscribe each Lambda function to the topic. Publish the registration event to the topic.
+B.  Create an Amazon SQS queue. Configure each Lambda function to poll the same queue for registration events.
+C.  Create an AWS Step Functions state machine with three parallel branches. Configure each branch to invoke one of the Lambda functions.
+D.  Create a single Lambda function that calls the three processing functions sequentially using the AWS SDK Invoke API.
+
 ### Notes
 
 WHAT'S HERE: put question 1 on screen and give the room about 90 seconds to read it in silence and commit to an answer before anyone speaks aloud. That is close to the pace the exam demands, so this rehearses timing as much as content.
@@ -711,6 +722,17 @@ EXAM MAPPING: Domain 1: Development with AWS Services.
 
 ![Slide 30](images/slide-30.png)
 
+### Question
+
+A company runs an event-driven application. When a new user registers, the application must send a welcome email, create a record in a CRM system, and provision a default workspace. Each action is handled by a separate AWS Lambda function. The three functions must all receive the registration event but must process independently. A failure in one function must not affect the others.
+The developer must implement a solution that delivers the event to all three functions.
+Which solution will meet these requirements?
+
+A.  Create an Amazon SNS topic. Subscribe each Lambda function to the topic. Publish the registration event to the topic.
+B.  Create an Amazon SQS queue. Configure each Lambda function to poll the same queue for registration events.
+C.  Create an AWS Step Functions state machine with three parallel branches. Configure each branch to invoke one of the Lambda functions.
+D.  Create a single Lambda function that calls the three processing functions sequentially using the AWS SDK Invoke API.
+
 ### Notes
 
 KEY PHRASES: walk the question, do not answer it yet. The phrase that decides it is “must all receive the registration event but must process independently”, and it tells you: Deliver one event to many independent consumers points to an SNS topic.
@@ -732,6 +754,17 @@ EXAM MAPPING: Domain 1: Development with AWS Services.
 ## Slide 31 — Question 1: One event, three independent actions
 
 ![Slide 31](images/slide-31.png)
+
+### Question
+
+A company runs an event-driven application. When a new user registers, the application must send a welcome email, create a record in a CRM system, and provision a default workspace. Each action is handled by a separate AWS Lambda function. The three functions must all receive the registration event but must process independently. A failure in one function must not affect the others.
+The developer must implement a solution that delivers the event to all three functions.
+Which solution will meet these requirements?
+
+A.  Create an Amazon SNS topic. Subscribe each Lambda function to the topic. Publish the registration event to the topic.  [CORRECT]
+B.  Create an Amazon SQS queue. Configure each Lambda function to poll the same queue for registration events.
+C.  Create an AWS Step Functions state machine with three parallel branches. Configure each branch to invoke one of the Lambda functions.
+D.  Create a single Lambda function that calls the three processing functions sequentially using the AWS SDK Invoke API.
 
 ### Notes
 
@@ -780,6 +813,17 @@ SOURCE: https://docs.aws.amazon.com/sns/latest/dg/sns-common-scenarios.html
 
 ![Slide 33](images/slide-33.png)
 
+### Question
+
+A developer is implementing caching for a product catalog API. The application reads product data from an Amazon RDS database. Product prices update every hour through a batch process. Between updates, the data remains static. The developer wants to minimize database load while ensuring users always see the most recent prices after a batch update completes.
+The developer must select a caching strategy for Amazon ElastiCache.
+Which caching strategy should the developer implement?
+
+A.  Implement a write-through strategy that updates the cache whenever the application writes to the database.
+B.  Implement a lazy loading strategy with a TTL set to 1 hour. Invalidate the cache keys after the batch process completes.
+C.  Implement a lazy loading strategy without TTL. Rely on the cache to expire items using the default eviction policy.
+D.  Implement a write-behind strategy that queues database writes and updates the cache first.
+
 ### Notes
 
 WHAT'S HERE: put question 2 on screen and give the room about 90 seconds to read it in silence and commit to an answer before anyone speaks aloud. That is close to the pace the exam demands, so this rehearses timing as much as content.
@@ -802,6 +846,17 @@ EXAM MAPPING: Domain 1: Development with AWS Services.
 
 ![Slide 34](images/slide-34.png)
 
+### Question
+
+A developer is implementing caching for a product catalog API. The application reads product data from an Amazon RDS database. Product prices update every hour through a batch process. Between updates, the data remains static. The developer wants to minimize database load while ensuring users always see the most recent prices after a batch update completes.
+The developer must select a caching strategy for Amazon ElastiCache.
+Which caching strategy should the developer implement?
+
+A.  Implement a write-through strategy that updates the cache whenever the application writes to the database.
+B.  Implement a lazy loading strategy with a TTL set to 1 hour. Invalidate the cache keys after the batch process completes.
+C.  Implement a lazy loading strategy without TTL. Rely on the cache to expire items using the default eviction policy.
+D.  Implement a write-behind strategy that queues database writes and updates the cache first.
+
 ### Notes
 
 KEY PHRASES: walk the question, do not answer it yet. The phrase that decides it is “users always see the most recent prices after a batch update completes”, and it tells you: Read-heavy with bounded staleness points to lazy loading plus a TTL.
@@ -823,6 +878,17 @@ EXAM MAPPING: Domain 1: Development with AWS Services.
 ## Slide 35 — Question 2: Cache a catalog that updates hourly
 
 ![Slide 35](images/slide-35.png)
+
+### Question
+
+A developer is implementing caching for a product catalog API. The application reads product data from an Amazon RDS database. Product prices update every hour through a batch process. Between updates, the data remains static. The developer wants to minimize database load while ensuring users always see the most recent prices after a batch update completes.
+The developer must select a caching strategy for Amazon ElastiCache.
+Which caching strategy should the developer implement?
+
+A.  Implement a write-through strategy that updates the cache whenever the application writes to the database.
+B.  Implement a lazy loading strategy with a TTL set to 1 hour. Invalidate the cache keys after the batch process completes.  [CORRECT]
+C.  Implement a lazy loading strategy without TTL. Rely on the cache to expire items using the default eviction policy.
+D.  Implement a write-behind strategy that queues database writes and updates the cache first.
 
 ### Notes
 
@@ -871,6 +937,17 @@ SOURCE: https://docs.aws.amazon.com/whitepapers/latest/database-caching-strategi
 
 ![Slide 37](images/slide-37.png)
 
+### Question
+
+A company is developing a mobile application that requires user authentication. Users must be able to sign in with their email and password. After authentication, the application must access an Amazon S3 bucket on behalf of the user. The company wants to manage its own user directory.
+The developer must implement authentication and authorization with the LEAST operational overhead.
+Which solution will meet these requirements?
+
+A.  Create an Amazon Cognito user pool for authentication. Create an identity pool that uses the user pool as an authentication provider. Configure the identity pool to provide temporary AWS credentials with an IAM role that grants S3 access.
+B.  Deploy an OpenID Connect provider on Amazon EC2. Create a Cognito identity pool that federates with the provider. Configure IAM roles for S3 access.
+C.  Create IAM users for each application user. Generate access keys for each user. Embed the access keys in the mobile application for S3 access.
+D.  Create a Lambda function that validates user credentials against a DynamoDB table. Issue custom JWT tokens. Configure S3 bucket policies to validate the JWT on each request.
+
 ### Notes
 
 WHAT'S HERE: put question 3 on screen and give the room about 90 seconds to read it in silence and commit to an answer before anyone speaks aloud. That is close to the pace the exam demands, so this rehearses timing as much as content.
@@ -893,6 +970,17 @@ EXAM MAPPING: Domain 2: Security.
 
 ![Slide 38](images/slide-38.png)
 
+### Question
+
+A company is developing a mobile application that requires user authentication. Users must be able to sign in with their email and password. After authentication, the application must access an Amazon S3 bucket on behalf of the user. The company wants to manage its own user directory.
+The developer must implement authentication and authorization with the LEAST operational overhead.
+Which solution will meet these requirements?
+
+A.  Create an Amazon Cognito user pool for authentication. Create an identity pool that uses the user pool as an authentication provider. Configure the identity pool to provide temporary AWS credentials with an IAM role that grants S3 access.
+B.  Deploy an OpenID Connect provider on Amazon EC2. Create a Cognito identity pool that federates with the provider. Configure IAM roles for S3 access.
+C.  Create IAM users for each application user. Generate access keys for each user. Embed the access keys in the mobile application for S3 access.
+D.  Create a Lambda function that validates user credentials against a DynamoDB table. Issue custom JWT tokens. Configure S3 bucket policies to validate the JWT on each request.
+
 ### Notes
 
 KEY PHRASES: walk the question, do not answer it yet. The phrase that decides it is “manage its own user directory”, and it tells you: Own directory plus temporary AWS credentials points to Cognito pools.
@@ -914,6 +1002,17 @@ EXAM MAPPING: Domain 2: Security.
 ## Slide 39 — Question 3: Sign in, then reach S3 as the user
 
 ![Slide 39](images/slide-39.png)
+
+### Question
+
+A company is developing a mobile application that requires user authentication. Users must be able to sign in with their email and password. After authentication, the application must access an Amazon S3 bucket on behalf of the user. The company wants to manage its own user directory.
+The developer must implement authentication and authorization with the LEAST operational overhead.
+Which solution will meet these requirements?
+
+A.  Create an Amazon Cognito user pool for authentication. Create an identity pool that uses the user pool as an authentication provider. Configure the identity pool to provide temporary AWS credentials with an IAM role that grants S3 access.  [CORRECT]
+B.  Deploy an OpenID Connect provider on Amazon EC2. Create a Cognito identity pool that federates with the provider. Configure IAM roles for S3 access.
+C.  Create IAM users for each application user. Generate access keys for each user. Embed the access keys in the mobile application for S3 access.
+D.  Create a Lambda function that validates user credentials against a DynamoDB table. Issue custom JWT tokens. Configure S3 bucket policies to validate the JWT on each request.
 
 ### Notes
 
@@ -962,6 +1061,17 @@ SOURCE: https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-identi
 
 ![Slide 41](images/slide-41.png)
 
+### Question
+
+A developer has deployed an application that uses Amazon CloudWatch for monitoring. The application emits a custom metric named OrderProcessingTime for each order. The developer must create a CloudWatch alarm that triggers when the average order processing time exceeds 5 seconds over a 5-minute period. When the alarm triggers, it must send a notification to the operations team through an existing Amazon SNS topic.
+Which two steps should the developer take to meet these requirements? (Select TWO.)
+
+A.  Create a CloudWatch alarm on the OrderProcessingTime metric with a threshold of 5 seconds, a period of 5 minutes, and the Average statistic. Configure the alarm action to publish to the SNS topic.
+B.  Ensure the application publishes the OrderProcessingTime metric data points with the correct namespace and dimensions using the PutMetricData API.
+C.  Create a CloudWatch Logs metric filter that extracts OrderProcessingTime values from application log entries and creates the custom metric.
+D.  Create an Amazon EventBridge rule that matches CloudWatch alarm state change events. Configure the rule target to invoke the SNS topic.
+E.  Configure CloudWatch to use the Sum statistic with a 1-minute period and set the threshold to 25 seconds.
+
 ### Notes
 
 WHAT'S HERE: put question 4 on screen and give the room about 90 seconds to read it in silence and commit to an answer before anyone speaks aloud. Note this is a select-two question, so tell the room to expect more than one answer. That is close to the pace the exam demands, so this rehearses timing as much as content.
@@ -984,6 +1094,17 @@ EXAM MAPPING: Domain 4: Troubleshooting and Optimization.
 
 ![Slide 42](images/slide-42.png)
 
+### Question
+
+A developer has deployed an application that uses Amazon CloudWatch for monitoring. The application emits a custom metric named OrderProcessingTime for each order. The developer must create a CloudWatch alarm that triggers when the average order processing time exceeds 5 seconds over a 5-minute period. When the alarm triggers, it must send a notification to the operations team through an existing Amazon SNS topic.
+Which two steps should the developer take to meet these requirements? (Select TWO.)
+
+A.  Create a CloudWatch alarm on the OrderProcessingTime metric with a threshold of 5 seconds, a period of 5 minutes, and the Average statistic. Configure the alarm action to publish to the SNS topic.
+B.  Ensure the application publishes the OrderProcessingTime metric data points with the correct namespace and dimensions using the PutMetricData API.
+C.  Create a CloudWatch Logs metric filter that extracts OrderProcessingTime values from application log entries and creates the custom metric.
+D.  Create an Amazon EventBridge rule that matches CloudWatch alarm state change events. Configure the rule target to invoke the SNS topic.
+E.  Configure CloudWatch to use the Sum statistic with a 1-minute period and set the threshold to 25 seconds.
+
 ### Notes
 
 KEY PHRASES: walk the question, do not answer it yet. The phrase that decides it is “average order processing time exceeds 5 seconds over a 5-minute period”, and it tells you: An average over a window plus a notification points to an alarm with an SNS action.
@@ -1005,6 +1126,17 @@ EXAM MAPPING: Domain 4: Troubleshooting and Optimization.
 ## Slide 43 — Question 4: Alarm when orders run slow
 
 ![Slide 43](images/slide-43.png)
+
+### Question
+
+A developer has deployed an application that uses Amazon CloudWatch for monitoring. The application emits a custom metric named OrderProcessingTime for each order. The developer must create a CloudWatch alarm that triggers when the average order processing time exceeds 5 seconds over a 5-minute period. When the alarm triggers, it must send a notification to the operations team through an existing Amazon SNS topic.
+Which two steps should the developer take to meet these requirements? (Select TWO.)
+
+A.  Create a CloudWatch alarm on the OrderProcessingTime metric with a threshold of 5 seconds, a period of 5 minutes, and the Average statistic. Configure the alarm action to publish to the SNS topic.  [CORRECT]
+B.  Ensure the application publishes the OrderProcessingTime metric data points with the correct namespace and dimensions using the PutMetricData API.  [CORRECT]
+C.  Create a CloudWatch Logs metric filter that extracts OrderProcessingTime values from application log entries and creates the custom metric.
+D.  Create an Amazon EventBridge rule that matches CloudWatch alarm state change events. Configure the rule target to invoke the SNS topic.
+E.  Configure CloudWatch to use the Sum statistic with a 1-minute period and set the threshold to 25 seconds.
 
 ### Notes
 
@@ -1056,6 +1188,16 @@ SOURCE: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/AlarmThat
 
 ![Slide 45](images/slide-45.png)
 
+### Question
+
+A company runs an application that spans several AWS services. The application returns elevated error rates for short periods. When an Amazon CloudWatch alarm enters the ALARM state, an on-call developer searches metrics, logs, and traces across each service by hand to find the cause, which delays recovery. The company wants related signals gathered and probable causes suggested automatically when the alarm triggers.
+Which solution will meet these requirements?
+
+A.  Create a CloudWatch Logs Insights query that the developer runs against each log group.
+B.  Configure the alarm to publish to a notification topic so the on-call developer is paged.
+C.  Enable AWS X-Ray active tracing so the developer can review the trace map after the alarm.
+D.  Start a CloudWatch investigation from the alarm so that related signals and probable causes are surfaced.
+
 ### Notes
 
 WHAT'S HERE: put question 5 on screen and give the room about 90 seconds to read it in silence and commit to an answer before anyone speaks aloud. That is close to the pace the exam demands, so this rehearses timing as much as content.
@@ -1078,6 +1220,16 @@ EXAM MAPPING: Domain 4: Troubleshooting and Optimization.
 
 ![Slide 46](images/slide-46.png)
 
+### Question
+
+A company runs an application that spans several AWS services. The application returns elevated error rates for short periods. When an Amazon CloudWatch alarm enters the ALARM state, an on-call developer searches metrics, logs, and traces across each service by hand to find the cause, which delays recovery. The company wants related signals gathered and probable causes suggested automatically when the alarm triggers.
+Which solution will meet these requirements?
+
+A.  Create a CloudWatch Logs Insights query that the developer runs against each log group.
+B.  Configure the alarm to publish to a notification topic so the on-call developer is paged.
+C.  Enable AWS X-Ray active tracing so the developer can review the trace map after the alarm.
+D.  Start a CloudWatch investigation from the alarm so that related signals and probable causes are surfaced.
+
 ### Notes
 
 KEY PHRASES: walk the question, do not answer it yet. The phrase that decides it is “related signals gathered and probable causes suggested automatically”, and it tells you: Auto-correlate signals and suggest causes points to a CloudWatch investigation.
@@ -1099,6 +1251,16 @@ EXAM MAPPING: Domain 4: Troubleshooting and Optimization.
 ## Slide 47 — Question 5: Cut the hunt when an alarm fires
 
 ![Slide 47](images/slide-47.png)
+
+### Question
+
+A company runs an application that spans several AWS services. The application returns elevated error rates for short periods. When an Amazon CloudWatch alarm enters the ALARM state, an on-call developer searches metrics, logs, and traces across each service by hand to find the cause, which delays recovery. The company wants related signals gathered and probable causes suggested automatically when the alarm triggers.
+Which solution will meet these requirements?
+
+A.  Create a CloudWatch Logs Insights query that the developer runs against each log group.
+B.  Configure the alarm to publish to a notification topic so the on-call developer is paged.
+C.  Enable AWS X-Ray active tracing so the developer can review the trace map after the alarm.
+D.  Start a CloudWatch investigation from the alarm so that related signals and probable causes are surfaced.  [CORRECT]
 
 ### Notes
 
@@ -1147,6 +1309,16 @@ SOURCE: https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Start-Inv
 
 ![Slide 49](images/slide-49.png)
 
+### Question
+
+A company runs a service on AWS Lambda that writes plain-text log lines to Amazon CloudWatch Logs. When an order fails, an on-call developer must find every log event for one customer identifier, but that identifier appears in a different position in each line. The team must be able to filter log events by customer identifier and by severity, and the logs must continue to go to the same log group.
+Which solution will meet these requirements?
+
+A.  Increase the retention period of the CloudWatch log group so that more historical log events stay searchable.
+B.  Create a separate CloudWatch log group for each severity level, and write each plain-text line to its group.
+C.  Enable AWS X-Ray active tracing on the function, and review the trace map for the customer's failed orders.
+D.  Emit each log event as a structured JSON object with the customer identifier and the severity as named fields.
+
 ### Notes
 
 WHAT'S HERE: put question 6 on screen and give the room about 90 seconds to read it in silence and commit to an answer before anyone speaks aloud. That is close to the pace the exam demands, so this rehearses timing as much as content.
@@ -1169,6 +1341,16 @@ EXAM MAPPING: Domain 4: Troubleshooting and Optimization.
 
 ![Slide 50](images/slide-50.png)
 
+### Question
+
+A company runs a service on AWS Lambda that writes plain-text log lines to Amazon CloudWatch Logs. When an order fails, an on-call developer must find every log event for one customer identifier, but that identifier appears in a different position in each line. The team must be able to filter log events by customer identifier and by severity, and the logs must continue to go to the same log group.
+Which solution will meet these requirements?
+
+A.  Increase the retention period of the CloudWatch log group so that more historical log events stay searchable.
+B.  Create a separate CloudWatch log group for each severity level, and write each plain-text line to its group.
+C.  Enable AWS X-Ray active tracing on the function, and review the trace map for the customer's failed orders.
+D.  Emit each log event as a structured JSON object with the customer identifier and the severity as named fields.
+
 ### Notes
 
 KEY PHRASES: walk the question, do not answer it yet. The phrase that decides it is “filter log events by customer identifier and by severity”, and it tells you: Filter by a field regardless of position points to structured JSON logs.
@@ -1190,6 +1372,16 @@ EXAM MAPPING: Domain 4: Troubleshooting and Optimization.
 ## Slide 51 — Question 6: Find one customer across messy logs
 
 ![Slide 51](images/slide-51.png)
+
+### Question
+
+A company runs a service on AWS Lambda that writes plain-text log lines to Amazon CloudWatch Logs. When an order fails, an on-call developer must find every log event for one customer identifier, but that identifier appears in a different position in each line. The team must be able to filter log events by customer identifier and by severity, and the logs must continue to go to the same log group.
+Which solution will meet these requirements?
+
+A.  Increase the retention period of the CloudWatch log group so that more historical log events stay searchable.
+B.  Create a separate CloudWatch log group for each severity level, and write each plain-text line to its group.
+C.  Enable AWS X-Ray active tracing on the function, and review the trace map for the customer's failed orders.
+D.  Emit each log event as a structured JSON object with the customer identifier and the severity as named fields.  [CORRECT]
 
 ### Notes
 
