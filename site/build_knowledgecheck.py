@@ -331,6 +331,14 @@ def extract_format_b(paras: list[str]):
             marker_idx = i
             break
 
+    # Paragraphs that appear AFTER the "correct answer is **X: ...**" marker
+    # but BEFORE the first lettered incorrect option (and before the
+    # "incorrect options are:" header) explain why the correct answer is
+    # correct. Collect them as the correct option's rationale -- previously
+    # these were dropped because no option had been seen yet.
+    correct_rationale_parts = []
+    seen_first_option = False
+
     for i, p in enumerate(paras):
         if i == marker_idx:
             continue
@@ -338,6 +346,7 @@ def extract_format_b(paras: list[str]):
             continue
         mo = re.match(r"^([A-G])[.):]\s*(.+)$", p.strip())
         if mo:
+            seen_first_option = True
             letter, rest = mo.group(1), mo.group(2).strip()
             text, rationale = split_dash(rest)
             if ":" in text and not rationale:
@@ -349,17 +358,25 @@ def extract_format_b(paras: list[str]):
             else:
                 options[letter]["rationale"] = (options[letter]["rationale"] + " " + rest).strip()
             continue
-        if order:
+        # Non-option paragraph. Before the first option (and after the marker)
+        # it belongs to the correct answer; after, it continues the last option.
+        if marker_idx is not None and not seen_first_option:
+            correct_rationale_parts.append(p.strip())
+        elif order:
             last = order[-1]
             options[last]["rationale"] = (options[last]["rationale"] + " " + p).strip()
 
     if correct_letter is not None:
+        correct_rationale = " ".join(correct_rationale_parts).strip()
         if correct_letter not in options:
-            options[correct_letter] = {"letter": correct_letter, "text": correct_inline_text, "rationale": ""}
+            options[correct_letter] = {"letter": correct_letter, "text": correct_inline_text, "rationale": correct_rationale}
             order.insert(0, correct_letter)
-        elif correct_inline_text:
-            # Inline text from "The correct answer is **C: text**" wins.
-            options[correct_letter]["text"] = correct_inline_text
+        else:
+            if correct_inline_text:
+                # Inline text from "The correct answer is **C: text**" wins.
+                options[correct_letter]["text"] = correct_inline_text
+            if correct_rationale and not options[correct_letter]["rationale"].strip():
+                options[correct_letter]["rationale"] = correct_rationale
 
     order.sort()
     opts = [options[l] for l in order]
