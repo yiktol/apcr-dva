@@ -333,7 +333,7 @@
       judgeChoice({
         prompt: judgeData.prompt, options: judgeData.options,
         pick: pickText, answer: judgeData.answer, why: judgeData.why,
-        correct: !!correct, sources,
+        correct: !!correct, sources, explanations: (judgeData.explanations || {}),
       })
         .then((res) => {
           if (!res) { why.innerHTML = original; return; }

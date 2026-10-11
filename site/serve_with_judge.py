@@ -37,6 +37,7 @@ import json
 import os
 import re
 import socketserver
+import string
 import sys
 import urllib.error
 import urllib.request
@@ -61,6 +62,13 @@ has just picked an option. You are given the question, its options, the \
 option the learner picked, the answer key's correct answer, a short static \
 rationale, whether the pick was correct, and excerpts fetched live from \
 official AWS documentation pages.
+
+You are also given the course's own PPTX answer-key rationale for the \
+picked option, under "PPTX ANSWER-KEY RATIONALE". This is the authoritative \
+source of truth for this course -- ground your verdict primarily in it. \
+Treat any live AWS doc excerpts as supplementary, corroborating evidence \
+only; fall back to them, or to general AWS knowledge, only where the pptx \
+rationale is silent on a point.
 
 Write a DIRECT verdict on the LEARNER'S PICKED OPTION as a few brief bullet \
 points, in the terse style of an exam answer key.
@@ -190,7 +198,46 @@ def extract_first_json(text: str) -> dict | None:
     return None
 
 
-def build_user_message(payload: dict, docs: list[tuple[str, str]]) -> str:
+def match_rationale(payload: dict) -> str:
+    """Match the learner's `pick` (option text, possibly several joined by
+    "; " for a multi-select) to its letter(s) via `payload["options"]`
+    (option texts in letter order), then look up each matched letter's own
+    rationale in `payload["explanations"]` (letter -> rationale). Returns
+    the joined rationale text for the picked letter(s) only (empty string
+    if nothing matched) -- callers must only ever pass this the picked
+    option(s), never the correct option(s), so the wrong-pick withholding
+    guarantee stays mechanical rather than prompt-based."""
+    options = payload.get("options") or []
+    if options and isinstance(options[0], dict):
+        texts = [str(o.get("text", "")) for o in options]
+    else:
+        texts = [str(o) for o in options]
+    explanations = payload.get("explanations") or {}
+    pick = payload.get("pick", "")
+    candidates = [c.strip() for c in str(pick).split("; ") if c.strip()]
+
+    def find_index(candidate: str) -> int | None:
+        if candidate in texts:
+            return texts.index(candidate)
+        norm = candidate.strip().casefold()
+        for i, t in enumerate(texts):
+            if t.strip().casefold() == norm:
+                return i
+        return None
+
+    rationales = []
+    for candidate in candidates:
+        idx = find_index(candidate)
+        if idx is None or idx >= len(string.ascii_uppercase):
+            continue
+        letter = string.ascii_uppercase[idx]
+        rationale = str(explanations.get(letter, "") or "").strip()
+        if rationale:
+            rationales.append(rationale)
+    return "\n".join(rationales)
+
+
+def build_user_message(payload: dict, docs: list[tuple[str, str]], pptx_rationale: str = "") -> str:
     # Reference "choice" contract: a single learner pick is judged for a
     # Socratic nudge (wrong) or grounded affirmation (correct).
     options = payload.get("options") or []
@@ -230,7 +277,12 @@ def build_user_message(payload: dict, docs: list[tuple[str, str]]) -> str:
             "the picked option is wrong on its own terms; do not infer, name, "
             "or hint at what the correct answer is.\n"
         )
-    return head + f"\nDOCUMENTATION EXCERPTS:\n{doc_text}\n"
+    pptx_text = pptx_rationale.strip() or "(no pptx rationale available for this pick)"
+    return (
+        head
+        + f"\nPPTX ANSWER-KEY RATIONALE:\n{pptx_text}\n"
+        + f"\nDOCUMENTATION EXCERPTS:\n{doc_text}\n"
+    )
 
 
 def run_judge(payload: dict) -> dict:
@@ -245,9 +297,10 @@ def run_judge(payload: dict) -> dict:
             if text:
                 docs.append((url, text))
         sources_used = [url for url, _ in docs]
-        grounded = len(sources_used) > 0
+        pptx_rationale = match_rationale(payload)
+        grounded = bool(pptx_rationale.strip()) or bool(sources_used)
 
-        user_message = build_user_message(payload, docs)
+        user_message = build_user_message(payload, docs, pptx_rationale)
         client = bedrock_client()
 
         def call(temperature: float) -> dict | None:
