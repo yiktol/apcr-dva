@@ -266,17 +266,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         out = json.dumps(result).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(out)
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "content-type")
         self.end_headers()
 
+    # end_headers runs for every response, so set the always-on headers here
+    # (Cache-Control + CORS origin) rather than repeating them per handler.
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
