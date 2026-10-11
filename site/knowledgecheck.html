@@ -75,6 +75,23 @@
     .sm-check-fb .retry { background: transparent; border: none; color: var(--aws-blue); font: inherit; font-weight: 600; cursor: pointer; padding: 0; margin-top: .3em; }
     .sm-check-fb { max-height: 7.5em; overflow-y: auto; }
 
+    /* ---- AI judge (serve_with_judge.py /judge; absent on plain serve.sh) ---- */
+    .judge-pending { margin-top: .5em; font-size: 0.36em; color: var(--muted); font-style: italic; display: flex; align-items: center; gap: .4em; }
+    .judge-pending i { animation: judge-spin 1s linear infinite; }
+    @keyframes judge-spin { to { transform: rotate(360deg); } }
+    .judge-block { margin-top: .5em; padding-top: .45em; border-top: 1px dashed var(--line); font-size: 0.36em; line-height: 1.45; }
+    .judge-block .judge-title { font-weight: 700; color: var(--aws-navy); display: flex; align-items: center; gap: .35em; margin-bottom: .3em; }
+    .judge-block .judge-title i { color: var(--accent, var(--aws-blue)); }
+    .judge-opt { margin: .18em 0; padding-left: .1em; }
+    .judge-opt .jl { font-weight: 700; margin-right: .3em; }
+    .judge-opt.ok .jl, .judge-opt.ok .jv { color: var(--ok); }
+    .judge-opt.bad .jl, .judge-opt.bad .jv { color: var(--miss); }
+    .judge-support { margin-top: .3em; color: #40506a; }
+    .judge-warn { margin-top: .4em; padding: .4em .6em; border-radius: 7px; background: var(--warnbg); border: 1px solid #f1dcb3; color: #6b4710; font-weight: 600; }
+    .judge-cites { margin-top: .35em; display: flex; flex-direction: column; gap: .15em; }
+    .judge-cites a { color: var(--aws-teal); text-decoration: none; word-break: break-all; }
+    .judge-cites a:hover { text-decoration: underline; }
+
     /* ---- per-question countdown timer (check slides) ---- */
     /* A corner pill the deck JS injects into the active check slide. Positioned
        relative to the slide-native shell. Click to pause/resume. Turns amber in
@@ -256,10 +273,110 @@
       if (card.scrollHeight > H - 24) card.classList.add("sm-compact-2");
     }
 
+    // Optional AI judge call (POST /judge, served only by
+    // serve_with_judge.py -- plain serve.sh / file:// has no backend, so
+    // this is expected to fail there and that failure path is deliberately
+    // silent). Strictly additive: local grading above always fires first
+    // and is never blocked or delayed by this. On ANY failure (network
+    // error, timeout, non-200, parse error, backend absent) it quietly
+    // removes its own pending indicator and leaves local feedback as the
+    // only thing shown -- no console errors, no broken UI.
+    const JUDGE_TIMEOUT_MS = 25000;
+    function judgeQuestion(card, fb, picked) {
+      try {
+        if (card.dataset.judged) return; // once per interaction
+        card.dataset.judged = "1";
+        let sources = [];
+        try { sources = JSON.parse(card.dataset.sources || "[]"); } catch (e) { sources = []; }
+        let judgeData = null;
+        try { judgeData = JSON.parse(card.dataset.judge || "null"); } catch (e) { judgeData = null; }
+        const correct = (card.dataset.correct || "").split(",").filter(Boolean);
+        const opts = Array.from(card.querySelectorAll(".sm-opt")).map((o) => ({
+          letter: o.dataset.ltr,
+          text: (o.querySelector(".sm-opt-t") || {}).textContent || "",
+        }));
+        const promptEl = card.querySelector(".sm-check-q");
+        const prompt = (promptEl && promptEl.textContent) || (judgeData && judgeData.prompt) || "";
+
+        const pending = document.createElement("div");
+        pending.className = "judge-pending";
+        pending.innerHTML = '<i class="fa-solid fa-spinner"></i> Checking against AWS docs&hellip;';
+        fb.appendChild(pending);
+        refitCard(card);
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), JUDGE_TIMEOUT_MS);
+
+        fetch("/judge", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            prompt,
+            options: opts,
+            keyedCorrect: correct,
+            sources,
+          }),
+        })
+          .then((res) => {
+            if (!res.ok) throw new Error("judge http " + res.status);
+            return res.json();
+          })
+          .then((data) => {
+            clearTimeout(timer);
+            pending.remove();
+            if (!data || data.error) return; // silent fallback
+            renderJudge(card, fb, data, picked);
+          })
+          .catch(() => {
+            clearTimeout(timer);
+            pending.remove(); // silent fallback -- local explanation stands
+          });
+      } catch (e) {
+        // Never let a judge-call bug affect the page.
+      }
+    }
+
+    // Append the AI judge's doc-grounded verdict to the existing feedback
+    // block (never replaces it). Renders per-option verdicts, a "docs
+    // support" line, an outdated-answer warning when the key disagrees with
+    // the docs, and clickable citation links.
+    function renderJudge(card, fb, data, picked) {
+      try {
+        const perOption = Array.isArray(data.perOption) ? data.perOption : [];
+        const rows = perOption.map((o) => {
+          const cls = o.verdict === "correct" ? "ok" : "bad";
+          const why = esc(o.why || "");
+          return `<div class="judge-opt ${cls}"><span class="jl">${esc(o.letter)}</span><span class="jv">${esc(o.verdict || "")}</span> &mdash; ${why}</div>`;
+        }).join("");
+        const supported = Array.isArray(data.docSupportedCorrect) ? data.docSupportedCorrect.join(", ") : "";
+        const supportLine = supported ? `<div class="judge-support">Docs support correct answer: <strong>${esc(supported)}</strong></div>` : "";
+        let warn = "";
+        if (data.keyAgreesWithDocs === false) {
+          warn = `<div class="judge-warn">&#9888; The keyed answer may be outdated vs current AWS docs. ${esc(data.keyNote || "")}</div>`;
+        } else if (data.keyNote) {
+          warn = `<div class="judge-support">${esc(data.keyNote)}</div>`;
+        }
+        const sourcesUsed = Array.isArray(data.sourcesUsed) ? data.sourcesUsed : [];
+        const cites = sourcesUsed.length
+          ? `<div class="judge-cites">${sourcesUsed.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join("")}</div>`
+          : "";
+        const block = document.createElement("div");
+        block.className = "judge-block";
+        block.innerHTML = `<div class="judge-title"><i class="fa-solid fa-robot"></i> AI judge (live AWS docs)</div>${rows}${supportLine}${warn}${cites}`;
+        fb.appendChild(block);
+        refitCard(card);
+      } catch (e) {
+        // Rendering failure should never break the page -- local feedback
+        // (already shown) remains the source of truth.
+      }
+    }
+
     // Interactive "Check yourself" slides: click an option to grade in place.
-    // No backend judge call -- this is a static site, so feedback is drawn
-    // entirely from the slide's local data-rationale / data-judge "why", and
-    // never blocks on (or depends on) a network call.
+    // Local grading (below) is drawn entirely from the slide's
+    // data-rationale / data-judge "why" and never depends on a network
+    // call. The optional judgeQuestion() call layered on top is additive --
+    // see its own comment above for the full fallback contract.
     function wireChecks() {
       document.querySelectorAll(".sm-check").forEach((card) => {
         const correct = (card.dataset.correct || "").split(",").filter(Boolean);
@@ -323,6 +440,7 @@
             why = single ? `<div class="why">${single}</div>` : "";
           }
           showFb("correct", `<span class="lbl">Correct.</span>${why}`);
+          judgeQuestion(card, fb, picked && picked.length ? picked : correct.slice());
         };
         // Mark a wrong pick but DO NOT reveal the answer or lock -- let them
         // retry. Shows the clicked option's own explanation when available,
@@ -335,6 +453,7 @@
           if (submit) submit.disabled = true;
           const why = explFor(wrongLetters[0]) || "Try another option.";
           showFb("wrong", `<span class="lbl">Not quite.</span> <span class="why">${why}</span>`);
+          judgeQuestion(card, fb, wrongLetters);
         };
         if (multi) {
           opts.forEach((o) => o.addEventListener("click", () => {
@@ -354,6 +473,7 @@
               opts.forEach(o => o.classList.remove("sel"));
               if (submit) submit.disabled = true;
               showFb("wrong", `<span class="lbl">Not quite.</span> <span class="why">That combination is not right &mdash; adjust your selection and submit again.</span>${list}`);
+              judgeQuestion(card, fb, picked);
             }
           });
         } else {
@@ -369,6 +489,7 @@
     }
     function resetCheck(card, opts, submit, fb) {
       delete card.dataset.locked;
+      delete card.dataset.judged;
       opts.forEach((o) => { o.classList.remove("sel","correct","wrong","dim","locked"); o.querySelector(".sm-opt-m").innerHTML = ""; });
       if (submit) { submit.style.display = ""; submit.disabled = true; }
       fb.style.display = "none"; fb.innerHTML = "";

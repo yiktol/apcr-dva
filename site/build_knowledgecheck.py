@@ -91,6 +91,80 @@ SESSIONS = {
         "Security, AI Security & Observability"),
 }
 
+# One "Content Review Session N.md" file per session, same dir as the Answer
+# Key, holding slide-by-slide teaching notes. These are NOT parsed for
+# questions -- only scanned for the docs.aws.amazon.com URLs they cite on
+# "REFERENCE:" / "Verified against" / "EXAM MAPPING:" / "Service pages:"
+# lines, which seed SERVICE_URL_MAP below. See ai-judge-plan.md decision 1.
+CONTENT_REVIEW = {
+    1: "02 - APCR-DVA - Content Review Session 1.md",
+    2: "03 - APCR-DVA - Content Review Session 2.md",
+    3: "04 - APCR-DVA - Content Review Session 3.md",
+    4: "05 - APCR-DVA - Content Review Session 4.md",
+    5: "06 - APCR-DVA - Content Review Session 5.md",
+}
+
+DOC_URL_RE = re.compile(r"https://docs\.aws\.amazon\.com/[^\s)\"'>\u00b7]+")
+
+
+def harvest_doc_urls() -> set[str]:
+    """Read all 5 Content Review files and return the set of distinct
+    docs.aws.amazon.com URLs they cite (trailing .,; and whitespace
+    stripped). This is the authoritative "real URL" set -- every URL
+    SERVICE_URL_MAP emits must come from here (asserted at module load)."""
+    urls = set()
+    for n, filename in CONTENT_REVIEW.items():
+        dirname = SESSIONS[n][0]
+        path = os.path.join(MD_DIR, dirname, filename)
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        for m in DOC_URL_RE.finditer(text):
+            urls.add(m.group(0).rstrip(".,;"))
+    return urls
+
+
+HARVESTED_URLS = harvest_doc_urls()
+
+# Curated service/concept-keyword -> canonical AWS doc URL map, in match
+# order. Every URL here MUST be one of HARVESTED_URLS (asserted below) so the
+# map can never drift to a dead/invented link. Covers the services the 30
+# Knowledge Check questions actually mention.
+SERVICE_URL_MAP: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bAPI Gateway\b", re.I), "https://docs.aws.amazon.com/apigateway/latest/developerguide/welcome.html"),
+    (re.compile(r"\bDynamoDB\b", re.I), "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Introduction.html"),
+    (re.compile(r"\bAWS Lambda\b|\bLambda\b", re.I), "https://docs.aws.amazon.com/lambda/latest/dg/welcome.html"),
+    (re.compile(r"\bAmazon S3\b|\bS3 bucket\b|\bAmazon S3 bucket\b", re.I), "https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html"),
+    (re.compile(r"\bEFS\b|Elastic File System", re.I), "https://docs.aws.amazon.com/efs/latest/ug/whatisefs.html"),
+    (re.compile(r"\bCloudWatch\b", re.I), "https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/WhatIsCloudWatch.html"),
+    (re.compile(r"\bIAM role\b|\bIAM\b", re.I), "https://docs.aws.amazon.com/IAM/latest/UserGuide/introduction.html"),
+    (re.compile(r"\bEC2\b", re.I), "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/concepts.html"),
+    (re.compile(r"\bX-Ray\b", re.I), "https://docs.aws.amazon.com/xray/latest/devguide/aws-xray.html"),
+    (re.compile(r"\bCloudTrail\b", re.I), "https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-event-reference-record-contents.html"),
+    (re.compile(r"\bSAM\b|Serverless Application Model", re.I), "https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-specification-template-anatomy.html"),
+    (re.compile(r"Step Functions", re.I), "https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html"),
+    (re.compile(r"\bSQS\b", re.I), "https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html"),
+    (re.compile(r"\bSNS\b", re.I), "https://docs.aws.amazon.com/sns/latest/dg/welcome.html"),
+    (re.compile(r"EventBridge", re.I), "https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-what-is.html"),
+    (re.compile(r"ElastiCache", re.I), "https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/elasticache-use-cases.html"),
+    (re.compile(r"\bCognito\b", re.I), "https://docs.aws.amazon.com/cognito/latest/developerguide/what-is-amazon-cognito.html"),
+    (re.compile(r"\bVPC\b", re.I), "https://docs.aws.amazon.com/vpc/latest/userguide/what-is-amazon-vpc.html"),
+    (re.compile(r"\bRDS\b", re.I), "https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Welcome.html"),
+    (re.compile(r"\bECS\b|Fargate", re.I), "https://docs.aws.amazon.com/AmazonECS/latest/developerguide/Welcome.html"),
+    (re.compile(r"\bECR\b", re.I), "https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html"),
+    (re.compile(r"\bEKS\b", re.I), "https://docs.aws.amazon.com/eks/latest/userguide/what-is-eks.html"),
+    (re.compile(r"CloudFront", re.I), "https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/Introduction.html"),
+    (re.compile(r"Route 53|Route53", re.I), "https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/Welcome.html"),
+    (re.compile(r"\bBedrock\b", re.I), "https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html"),
+    (re.compile(r"Auto Scaling", re.I), "https://docs.aws.amazon.com/autoscaling/ec2/userguide/what-is-amazon-ec2-auto-scaling.html"),
+    (re.compile(r"load balanc|\bELB\b|\bALB\b", re.I), "https://docs.aws.amazon.com/elasticloadbalancing/latest/userguide/what-is-load-balancing.html"),
+]
+
+_unmapped = [url for _, url in SERVICE_URL_MAP if url not in HARVESTED_URLS]
+assert not _unmapped, (
+    f"SERVICE_URL_MAP has URL(s) not found in the harvested Content Review "
+    f"corpus (not real / possibly a dead link): {_unmapped}"
+)
+
 # Accent CSS vars, as defined in knowledgecheck.html's own :root (mirrors the
 # per-session accent mapping already in site/index.html's .card.d1..d5 rules).
 ACCENTS = {
@@ -481,6 +555,19 @@ def extract_format_a_positional(paras: list[str]):
 # Normalization
 # ---------------------------------------------------------------------------
 
+def match_sources(*texts: str) -> list[str]:
+    """Scan the given text(s) against SERVICE_URL_MAP in map order and return
+    the matched URLs, deduplicated, first-seen order."""
+    combined = "\n".join(texts)
+    sources = []
+    for pattern, url in SERVICE_URL_MAP:
+        if url in sources:
+            continue
+        if pattern.search(combined):
+            sources.append(url)
+    return sources
+
+
 def parse_block(heading_text: str, block_lines: list[str]) -> dict:
     stem, rest_lines = assemble_stem(heading_text, block_lines)
     paras = paragraphs_of(rest_lines)
@@ -500,12 +587,17 @@ def parse_block(heading_text: str, block_lines: list[str]) -> dict:
 
     correct = [o["letter"] for o in opts if o.get("correct")]
     options = [{"letter": o["letter"], "text": o["text"], "rationale": o.get("rationale", "")} for o in opts]
+    # sources: scan the full block text (stem + every option's text/rationale)
+    # against SERVICE_URL_MAP, deduplicated, first-seen order.
+    option_text = " ".join(f"{o['text']} {o.get('rationale', '')}" for o in options)
+    sources = match_sources(stem, option_text)
     return {
         "prompt": stem,
         "options": options,
         "correct": correct,
         "multi": len(correct) > 1,
         "format": fmt,
+        "sources": sources,
     }
 
 
@@ -565,18 +657,21 @@ def check_slide(session_n: int, session_title: str, q: dict, idx: int, total: in
 
     by_letter = {o["letter"]: o["text"] for o in q["options"]}
     explanations = {o["letter"]: o.get("rationale", "") or "" for o in q["options"]}
+    sources = q.get("sources", [])
     judge = {
         "prompt": q.get("prompt", ""),
         "options": [o["text"] for o in q["options"]],
         "answer": "; ".join(by_letter.get(l, "") for l in q["correct"]),
         "why": rat,
         "explanations": explanations,
+        "sources": sources,
     }
     judge_attr = e(json.dumps(judge, ensure_ascii=False))
+    sources_attr = e(json.dumps(sources, ensure_ascii=False))
     return (
         f'<div class="slide-native sm-skill sm-check" style="--accent:{accent};" '
         f'data-correct="{correct}" data-multi="{"1" if multi else ""}" '
-        f'data-rationale="{e(rat)}" data-judge="{judge_attr}">'
+        f'data-rationale="{e(rat)}" data-judge="{judge_attr}" data-sources="{sources_attr}">'
         f'<div class="kicker">{kicker}</div>'
         f'<h2>Check yourself {hint}</h2>'
         f'<p class="sm-check-q">{e(q["prompt"])}</p>'
