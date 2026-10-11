@@ -62,39 +62,33 @@ option the learner picked, the answer key's correct answer, a short static \
 rationale, whether the pick was correct, and excerpts fetched live from \
 official AWS documentation pages.
 
-Write a DIRECT verdict on the LEARNER'S PICKED OPTION, in the exact style of \
-an exam answer key. Match this style precisely:
+Write a DIRECT verdict on the LEARNER'S PICKED OPTION as a few brief bullet \
+points, in the terse style of an exam answer key.
 
-  "Correct. Lambda functions can be invoked from S3 events and can read from \
-S3 buckets. An event-based invocation allows the S3 objects to be processed \
-as soon as they arrive."
-
-  "Incorrect. Lambda functions can run on a schedule and connect to Amazon \
-EFS file systems. However, a scheduled or polling process would not process \
-the files as soon as they arrive."
-
-Rules for the "explanation" text:
-- Begin with exactly "Correct." or "Incorrect." (based on the `correct` \
-flag), then one or two factual sentences stating WHY the picked option is or \
-is not right.
-- Be direct and declarative. State facts. Do NOT coach, do NOT ask questions, \
-do NOT say "consider", "think about", "reconsider", or "look again". Do NOT \
-address the learner ("you"). No preamble, no filler.
-- For an INCORRECT pick, explain why THAT option is wrong on its own terms. \
-You do not need to hide the correct answer, but keep the focus on the picked \
-option -- do not enumerate the other options.
+Rules for the "verdict" and "points":
+- "verdict" is exactly "Correct" or "Incorrect" (based on the `correct` \
+flag) -- one word, no period.
+- "points" is a list of 1 to 3 SHORT bullet strings (each a single factual \
+sentence or clause, roughly under 20 words) stating WHY the picked option is \
+or is not right.
+- Be direct and declarative. State facts. Do NOT coach, do NOT ask \
+questions, do NOT say "consider", "think about", "reconsider", or "look \
+again". Do NOT address the learner ("you"). No preamble, no filler, no \
+restating the question.
+- For an INCORRECT pick, explain why THAT option is wrong on its own terms; \
+keep the focus on the picked option and do not enumerate the other options.
 - Ground every claim in the provided documentation excerpts. If no excerpts \
 were provided, state the fact from general AWS knowledge accurately.
-- Plain text only, no markdown.
+- Plain text in each bullet, no markdown, no leading "-" or bullet glyphs.
 
 Separately, pick the single most relevant source URL from the provided \
 documentation excerpts for this verdict (or null if none was provided).
 
 Respond with STRICT JSON ONLY -- no prose before or after, no markdown code \
 fences -- in exactly this shape:
-{"explanation": "Correct. ...", "citation": "https://docs.aws.amazon.com/... or null"}
-"explanation" is a single plain-text string; "citation" is one URL string \
-drawn from the provided excerpts, or null."""
+{"verdict": "Correct", "points": ["...", "..."], "citation": "https://docs.aws.amazon.com/... or null"}
+"verdict" is one word; "points" is an array of short strings; "citation" is \
+one URL string drawn from the provided excerpts, or null."""
 
 
 # ---------------------------------------------------------------------------
@@ -253,16 +247,28 @@ def run_judge(payload: dict) -> dict:
         if result is None:
             return {"error": "judge: could not parse an explanation from the model response", "grounded": False}
 
-        explanation = (result.get("explanation") or "").strip()
-        if not explanation:
-            return {"error": "judge: empty explanation", "grounded": False}
+        verdict = (result.get("verdict") or "").strip().rstrip(".")
+        points = result.get("points") or []
+        if isinstance(points, str):
+            points = [points]
+        points = [str(p).strip().lstrip("-\u2022 ").strip() for p in points if str(p).strip()]
+        if not points:
+            return {"error": "judge: empty verdict points", "grounded": False}
+        # Normalize the verdict word to the two expected values.
+        if verdict.lower().startswith("correct"):
+            verdict = "Correct"
+        elif verdict.lower().startswith("incorrect"):
+            verdict = "Incorrect"
+        else:
+            verdict = "Correct" if payload.get("correct") else "Incorrect"
         # Only trust a citation that is actually one of the pages we fetched,
         # so the model can't fabricate a plausible-looking doc URL.
         citation = result.get("citation")
         if citation not in sources_used:
             citation = sources_used[0] if sources_used else None
         return {
-            "explanation": explanation,
+            "verdict": verdict,
+            "points": points,
             "citation": citation,
             "grounded": bool(grounded),
             "sourcesUsed": sources_used,

@@ -81,6 +81,11 @@
     .sm-think { display: inline-flex; align-items: center; gap: .5em; color: #6b4310; font-style: italic; }
     .sm-spin { width: 0.9em; height: 0.9em; border: 2px solid #e4c38a; border-top-color: #b4690e; border-radius: 50%; display: inline-block; animation: sm-spin 0.7s linear infinite; }
     @keyframes sm-spin { to { transform: rotate(360deg); } }
+    .judge-verdict { display: inline-block; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+    .judge-verdict.jv-ok { color: var(--ok); }
+    .judge-verdict.jv-bad { color: var(--miss); }
+    .judge-points { margin: .2em 0 0; padding-left: 1.1em; }
+    .judge-points li { margin: .12em 0; line-height: 1.35; }
     .judge-cite { margin-top: .35em; display: flex; align-items: baseline; gap: .35em; }
     .judge-cite i { color: var(--accent, var(--aws-blue)); }
     .judge-cite a { color: var(--aws-teal); text-decoration: none; word-break: break-all; }
@@ -301,8 +306,9 @@
         });
         if (!res.ok) return null;
         const data = await res.json();
-        if (!data || !data.explanation) return null;
-        return { explanation: String(data.explanation), citation: data.citation || "" };
+        const points = Array.isArray(data && data.points) ? data.points.filter(Boolean) : [];
+        if (!points.length) return null;
+        return { verdict: String((data && data.verdict) || ""), points, citation: (data && data.citation) || "" };
       } catch (e) { return null; }
       finally { clearTimeout(timer); }
     }
@@ -331,7 +337,10 @@
       })
         .then((res) => {
           if (!res) { why.innerHTML = original; return; }
-          let html = esc(res.explanation);
+          const vcls = /^correct/i.test(res.verdict) ? "jv-ok" : "jv-bad";
+          const head = res.verdict ? `<span class="judge-verdict ${vcls}">${esc(res.verdict)}</span>` : "";
+          const lis = res.points.map((p) => `<li>${esc(p)}</li>`).join("");
+          let html = `${head}<ul class="judge-points">${lis}</ul>`;
           if (res.citation) {
             html += `<div class="judge-cite"><i class="fa-solid fa-book"></i> `
               + `<a href="${esc(res.citation)}" target="_blank" rel="noopener">${esc(res.citation)}</a></div>`;
