@@ -81,6 +81,10 @@
     .sm-think { display: inline-flex; align-items: center; gap: .5em; color: #6b4310; font-style: italic; }
     .sm-spin { width: 0.9em; height: 0.9em; border: 2px solid #e4c38a; border-top-color: #b4690e; border-radius: 50%; display: inline-block; animation: sm-spin 0.7s linear infinite; }
     @keyframes sm-spin { to { transform: rotate(360deg); } }
+    .judge-cite { margin-top: .35em; display: flex; align-items: baseline; gap: .35em; }
+    .judge-cite i { color: var(--accent, var(--aws-blue)); }
+    .judge-cite a { color: var(--aws-teal); text-decoration: none; word-break: break-all; }
+    .judge-cite a:hover { text-decoration: underline; }
 
     /* ---- per-question countdown timer (check slides) ---- */
     /* A corner pill the deck JS injects into the active check slide. Positioned
@@ -283,7 +287,7 @@
     const JUDGE_ENABLED = !!JUDGE_URL;
     const JUDGE_TIMEOUT_MS = 25000;
 
-    // Returns the coaching explanation string, or null on any failure.
+    // Returns {explanation, citation} from the judge, or null on any failure.
     async function judgeChoice(payload) {
       if (!JUDGE_ENABLED) return null;
       const body = JSON.stringify({ mode: "choice", ...payload });
@@ -297,7 +301,8 @@
         });
         if (!res.ok) return null;
         const data = await res.json();
-        return (data && data.explanation) ? String(data.explanation) : null;
+        if (!data || !data.explanation) return null;
+        return { explanation: String(data.explanation), citation: data.citation || "" };
       } catch (e) { return null; }
       finally { clearTimeout(timer); }
     }
@@ -324,7 +329,16 @@
         pick: pickText, answer: judgeData.answer, why: judgeData.why,
         correct: !!correct, sources,
       })
-        .then((exp) => { why.innerHTML = exp ? esc(exp) : original; refitCard(card); })
+        .then((res) => {
+          if (!res) { why.innerHTML = original; return; }
+          let html = esc(res.explanation);
+          if (res.citation) {
+            html += `<div class="judge-cite"><i class="fa-solid fa-book"></i> `
+              + `<a href="${esc(res.citation)}" target="_blank" rel="noopener">${esc(res.citation)}</a></div>`;
+          }
+          why.innerHTML = html;
+          refitCard(card);
+        })
         .catch(() => { why.innerHTML = original; });
     }
 

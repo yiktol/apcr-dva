@@ -56,33 +56,45 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
-SYSTEM_PROMPT = """You are an AWS certification coach embedded in a quiz. A \
-learner has just picked an answer. You are given the question, its options, \
-the option the learner picked, the answer key's correct answer, a short \
-static rationale, whether the learner's pick was correct, and excerpts \
-fetched live from official AWS documentation pages.
+SYSTEM_PROMPT = """You are an AWS certification answer-key author. A learner \
+has just picked an option. You are given the question, its options, the \
+option the learner picked, the answer key's correct answer, a short static \
+rationale, whether the pick was correct, and excerpts fetched live from \
+official AWS documentation pages.
 
-Write ONE short coaching paragraph (2-4 sentences), grounded in the provided \
-documentation excerpts whenever they are available:
+Write a DIRECT verdict on the LEARNER'S PICKED OPTION, in the exact style of \
+an exam answer key. Match this style precisely:
 
-- If the learner was CORRECT: give a confident, specific affirmation of WHY \
-the answer is right, citing what the current AWS documentation says. You MAY \
-name the service behavior the docs describe.
+  "Correct. Lambda functions can be invoked from S3 events and can read from \
+S3 buckets. An event-based invocation allows the S3 objects to be processed \
+as soon as they arrive."
 
-- If the learner was WRONG: give a Socratic nudge that helps them reconsider \
-WITHOUT revealing which option is correct. Point at the concept or the \
-documentation detail their pick overlooks, and invite them to look again. \
-NEVER state or hint at the correct letter or restate the correct option's \
-text.
+  "Incorrect. Lambda functions can run on a schedule and connect to Amazon \
+EFS file systems. However, a scheduled or polling process would not process \
+the files as soon as they arrive."
 
-Ground your explanation in the documentation excerpts when they are present; \
-if no excerpts were provided, answer from general AWS knowledge but stay \
-accurate and do not fabricate citations.
+Rules for the "explanation" text:
+- Begin with exactly "Correct." or "Incorrect." (based on the `correct` \
+flag), then one or two factual sentences stating WHY the picked option is or \
+is not right.
+- Be direct and declarative. State facts. Do NOT coach, do NOT ask questions, \
+do NOT say "consider", "think about", "reconsider", or "look again". Do NOT \
+address the learner ("you"). No preamble, no filler.
+- For an INCORRECT pick, explain why THAT option is wrong on its own terms. \
+You do not need to hide the correct answer, but keep the focus on the picked \
+option -- do not enumerate the other options.
+- Ground every claim in the provided documentation excerpts. If no excerpts \
+were provided, state the fact from general AWS knowledge accurately.
+- Plain text only, no markdown.
+
+Separately, pick the single most relevant source URL from the provided \
+documentation excerpts for this verdict (or null if none was provided).
 
 Respond with STRICT JSON ONLY -- no prose before or after, no markdown code \
 fences -- in exactly this shape:
-{"explanation": "your coaching paragraph here"}
-The "explanation" value is a single plain-text string (no markdown)."""
+{"explanation": "Correct. ...", "citation": "https://docs.aws.amazon.com/... or null"}
+"explanation" is a single plain-text string; "citation" is one URL string \
+drawn from the provided excerpts, or null."""
 
 
 # ---------------------------------------------------------------------------
@@ -244,10 +256,14 @@ def run_judge(payload: dict) -> dict:
         explanation = (result.get("explanation") or "").strip()
         if not explanation:
             return {"error": "judge: empty explanation", "grounded": False}
-        # Reference-shaped response: a single coaching string. grounded /
-        # sourcesUsed are extra, non-breaking context the viewer may ignore.
+        # Only trust a citation that is actually one of the pages we fetched,
+        # so the model can't fabricate a plausible-looking doc URL.
+        citation = result.get("citation")
+        if citation not in sources_used:
+            citation = sources_used[0] if sources_used else None
         return {
             "explanation": explanation,
+            "citation": citation,
             "grounded": bool(grounded),
             "sourcesUsed": sources_used,
         }
