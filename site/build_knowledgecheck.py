@@ -1,67 +1,50 @@
 #!/usr/bin/env python3
 """
 Build the per-session Knowledge Check decks for knowledgecheck.html by
-parsing the five Exam Strategy "Answer Key" markdown files under ../md and
-emitting one slide-array bundle per session (knowledgecheck/d<N>.{json,js}),
-in the same dual-emit shape as site/build_decks.py and the reference
+parsing the five Content Review markdown files under ../md and emitting one
+slide-array bundle per session (knowledgecheck/d<N>.{json,js}), in the same
+dual-emit shape as site/build_decks.py and the reference
 aib-c01/build_knowledgecheck.py.
 
-Source files (one per session):
-    ../md/session1/02 - APCR-DVA - Exam Strategy Session 1 - Answer Key.md
-    ../md/session2/03 - APCR-DVA - Exam Strategy Session 2 - Answer Key.md
-    ../md/session3/04 - APCR-DVA - Exam Strategy Session 3 - Answer Key.md
-    ../md/session4/05 - APCR-DVA - Exam Strategy Session 4 - Answer Key.md
-    ../md/session5/06 - APCR-DVA - Exam Strategy Session 5 - Answer Key.md
+Source files (one per session, see CONTENT_REVIEW below):
+    ../md/session1/02 - APCR-DVA - Content Review Session 1.md
+    ../md/session2/03 - APCR-DVA - Content Review Session 2.md
+    ../md/session3/04 - APCR-DVA - Content Review Session 3.md
+    ../md/session4/05 - APCR-DVA - Content Review Session 4.md
+    ../md/session5/06 - APCR-DVA - Content Review Session 5.md
 
-Each file is a sequence of "## <heading>" question blocks. The heading style
-is NOT consistent across (or even within) files -- session 2 alone uses three
-different styles ("## 1)", "## Q4:", and a bare "## 5 <title>") -- so the
-heading regex is deliberately permissive: QUESTION_HEADING_RE matches an
-optional "Q", digits, and an optional ":"/")" separator, keeping the rest of
-the line as the stem.
+Each file is a sequence of "## Slide N — <title>" blocks (an image plus a
+"### Notes" section). The practice questions appear near the end of each
+file as a run of 4 consecutive slides that all share the exact same title
+"Question K: <short title>": a timed stem slide, a "key phrases" slide, a
+"reveal" slide, and an "elimination" slide.
 
-Within a block, the correct/incorrect answer markup appears in one of four
-observed shapes ("formats"), detected in this order (first match wins):
+The reveal slide's Notes hold everything needed to build the question:
+  - A line "ANSWER OVERVIEW: [Tt]he answer is X." (or multi-answer
+    "...is A and B." / "...is A, B, and C.") -- the authoritative correct
+    letter(s).
+  - One paragraph per option, in the form
+    "A. <clean option text> — Correct — <rationale>" or
+    "A. <clean option text> — Incorrect — <rationale>" (em-dash delimited).
+    The text before the first em-dash is the clean option text; the
+    Correct/Incorrect word must agree with the ANSWER OVERVIEW line; the
+    text after the second em-dash is that option's rationale.
 
-  Format C   -- named-service, letter-in-parens: "The correct answer(s)
-               are:" / "The incorrect answer(s) are:" followed by paragraphs
-               like "**Amazon API Gateway (B)**: explanation...". Option text
-               is the bolded service name; letter comes from the parens.
-               (session1 Q1, Q5 variant with plain "A." dot-letter paragraphs)
+No slide anywhere restates the full scenario prose as text -- the scenario
+only exists as the slide IMAGE. The question's title string (e.g.
+"Question 1: a download link that expires in 15 minutes") is therefore used
+verbatim as the question prompt; nothing is fabricated.
 
-  Format B   -- inline-stated correct answer: "The correct answer is
-               **C: text**" (or just "**A**:" with no inline text), plus an
-               "incorrect options are:" paragraph list "A. text: expl" or
-               "A) text - expl". (session1 Q2, Q3, Q6)
+Doc reference URLs: every full "https://docs.aws.amazon.com/..." URL that
+appears anywhere in the question's own 4-slide block (most often on a
+"REFERENCE:"/"SOURCE:" line on the reveal or elimination slide, sometimes a
+second URL on an "Also verified against:" line) is captured as that
+question's source, deduplicated, in first-seen order.
 
-  Format D   -- bare letter-paren option paragraphs "A) text", correctness
-               shown by bold-wrapping the whole correct paragraph and/or an
-               inline "Correct"/"Incorrect" word. No "correct answer is"
-               lead-in sentence. (session2 Q1, Q2)
-
-  Format A   -- colon-letter (or paren-letter) option paragraphs: "A:
-               Incorrect. ..." / "D: **Correct**. ..." where the rationale
-               sentence doubles as the option text (there is no separate,
-               shorter option label). Falls back to "A-positional" when NO
-               letter markers are present at all but 2+ paragraphs each
-               begin with "Correct."/"Incorrect." -- letters are then
-               assigned A, B, C... in document order. (session1 Q4; session2
-               Q4 colon-letter, Q5 positional; session3 Q1-4 colon-letter,
-               Q5 paren-letter; session4 and session5, all colon-letter)
-
-A paragraph that does not start with a new letter marker (and is not a
-"The correct/incorrect answer(s)..." marker line) is treated as a
-continuation of the PREVIOUS option's rationale -- this is how trailing
-"For more information about X, see Y." footer sentences attach to the
-option that precedes them, in every format.
-
-Known source quirks (kept as-is, not "fixed"):
-  - Session 1 Q2 and Q3 are verbatim duplicate questions in the source; both
-    are emitted as separate questions (no de-duplication).
-  - Session 2's heading styles are inconsistent ("## 1)"/"## 2)" for Q1/Q2,
-    "## Q4:" for Q4, a bare "## 5 Amazon RDS..." for Q5 -- Q3 does not exist
-    in the source at all, so session 2 has only 4 questions.
-  - Session 5's source has only 5 questions (Q1-Q5); there is no "Q6".
+A question is skipped (and reported on stderr) if its block has no reveal
+slide, no ANSWER OVERVIEW line, or if the Correct/Incorrect markers on its
+option paragraphs disagree with the ANSWER OVERVIEW letters -- no answer,
+option text, rationale or URL is ever invented.
 
 Usage:  python3 build_knowledgecheck.py   (run from the site/ directory, or
         anywhere -- paths are resolved relative to this script's location)
@@ -92,10 +75,8 @@ SESSIONS = {
 }
 
 # One "Content Review Session N.md" file per session, same dir as the Answer
-# Key, holding slide-by-slide teaching notes. These are NOT parsed for
-# questions -- only scanned for the docs.aws.amazon.com URLs they cite on
-# "REFERENCE:" / "Verified against" / "EXAM MAPPING:" / "Service pages:"
-# lines, which seed SERVICE_URL_MAP below. See ai-judge-plan.md decision 1.
+# Key -- this is now the primary (and only) question source. See
+# .agents/tasks/kc-content-review-reparse-plan.md.
 CONTENT_REVIEW = {
     1: "02 - APCR-DVA - Content Review Session 1.md",
     2: "03 - APCR-DVA - Content Review Session 2.md",
@@ -105,65 +86,6 @@ CONTENT_REVIEW = {
 }
 
 DOC_URL_RE = re.compile(r"https://docs\.aws\.amazon\.com/[^\s)\"'>\u00b7]+")
-
-
-def harvest_doc_urls() -> set[str]:
-    """Read all 5 Content Review files and return the set of distinct
-    docs.aws.amazon.com URLs they cite (trailing .,; and whitespace
-    stripped). This is the authoritative "real URL" set -- every URL
-    SERVICE_URL_MAP emits must come from here (asserted at module load)."""
-    urls = set()
-    for n, filename in CONTENT_REVIEW.items():
-        dirname = SESSIONS[n][0]
-        path = os.path.join(MD_DIR, dirname, filename)
-        with open(path, encoding="utf-8") as f:
-            text = f.read()
-        for m in DOC_URL_RE.finditer(text):
-            urls.add(m.group(0).rstrip(".,;"))
-    return urls
-
-
-HARVESTED_URLS = harvest_doc_urls()
-
-# Curated service/concept-keyword -> canonical AWS doc URL map, in match
-# order. Every URL here MUST be one of HARVESTED_URLS (asserted below) so the
-# map can never drift to a dead/invented link. Covers the services the 30
-# Knowledge Check questions actually mention.
-SERVICE_URL_MAP: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"\bAPI Gateway\b", re.I), "https://docs.aws.amazon.com/apigateway/latest/developerguide/welcome.html"),
-    (re.compile(r"\bDynamoDB\b", re.I), "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Introduction.html"),
-    (re.compile(r"\bAWS Lambda\b|\bLambda\b", re.I), "https://docs.aws.amazon.com/lambda/latest/dg/welcome.html"),
-    (re.compile(r"\bAmazon S3\b|\bS3 bucket\b|\bAmazon S3 bucket\b", re.I), "https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html"),
-    (re.compile(r"\bEFS\b|Elastic File System", re.I), "https://docs.aws.amazon.com/efs/latest/ug/whatisefs.html"),
-    (re.compile(r"\bCloudWatch\b", re.I), "https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/WhatIsCloudWatch.html"),
-    (re.compile(r"\bIAM role\b|\bIAM\b", re.I), "https://docs.aws.amazon.com/IAM/latest/UserGuide/introduction.html"),
-    (re.compile(r"\bEC2\b", re.I), "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/concepts.html"),
-    (re.compile(r"\bX-Ray\b", re.I), "https://docs.aws.amazon.com/xray/latest/devguide/aws-xray.html"),
-    (re.compile(r"\bCloudTrail\b", re.I), "https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-event-reference-record-contents.html"),
-    (re.compile(r"\bSAM\b|Serverless Application Model", re.I), "https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-specification-template-anatomy.html"),
-    (re.compile(r"Step Functions", re.I), "https://docs.aws.amazon.com/step-functions/latest/dg/welcome.html"),
-    (re.compile(r"\bSQS\b", re.I), "https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html"),
-    (re.compile(r"\bSNS\b", re.I), "https://docs.aws.amazon.com/sns/latest/dg/welcome.html"),
-    (re.compile(r"EventBridge", re.I), "https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-what-is.html"),
-    (re.compile(r"ElastiCache", re.I), "https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/elasticache-use-cases.html"),
-    (re.compile(r"\bCognito\b", re.I), "https://docs.aws.amazon.com/cognito/latest/developerguide/what-is-amazon-cognito.html"),
-    (re.compile(r"\bVPC\b", re.I), "https://docs.aws.amazon.com/vpc/latest/userguide/what-is-amazon-vpc.html"),
-    (re.compile(r"\bRDS\b", re.I), "https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Welcome.html"),
-    (re.compile(r"\bECS\b|Fargate", re.I), "https://docs.aws.amazon.com/AmazonECS/latest/developerguide/Welcome.html"),
-    (re.compile(r"\bECR\b", re.I), "https://docs.aws.amazon.com/AmazonECR/latest/userguide/what-is-ecr.html"),
-    (re.compile(r"\bEKS\b", re.I), "https://docs.aws.amazon.com/eks/latest/userguide/what-is-eks.html"),
-    (re.compile(r"CloudFront", re.I), "https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/Introduction.html"),
-    (re.compile(r"Route 53|Route53", re.I), "https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/Welcome.html"),
-    (re.compile(r"\bBedrock\b", re.I), "https://docs.aws.amazon.com/bedrock/latest/userguide/what-is-bedrock.html"),
-    (re.compile(r"Auto Scaling", re.I), "https://docs.aws.amazon.com/autoscaling/ec2/userguide/what-is-amazon-ec2-auto-scaling.html"),
-    (re.compile(r"load balanc|\bELB\b|\bALB\b", re.I), "https://docs.aws.amazon.com/elasticloadbalancing/latest/userguide/what-is-load-balancing.html"),
-]
-
-_unmapped = [url for _, url in SERVICE_URL_MAP if url not in HARVESTED_URLS]
-assert not _unmapped, (
-    f"SERVICE_URL_MAP has URL(s) not found in the harvested Content Review "
-    f"corpus (not real / possibly a dead link): {_unmapped}"
-)
 
 # Accent CSS vars, as defined in knowledgecheck.html's own :root (mirrors the
 # per-session accent mapping already in site/index.html's .card.d1..d5 rules).
@@ -177,12 +99,14 @@ ACCENTS = {
 
 LETTERS = "ABCDEFG"
 
-# Matches "## 1:", "## Q4:", "## 1)", "## #5", "## 5 Amazon RDS...".
-QUESTION_HEADING_RE = re.compile(r"^##\s*#?[Qq]?\s*(\d+)\s*[:).]?\s*(.*)$")
+# "## Slide 51 — Question 1: Session state across instances"
+SLIDE_HEADING_RE = re.compile(r"^##\s*Slide\s+\d+\s*—\s*(.*)$")
+QUESTION_TITLE_RE = re.compile(r"^Question\s+(\d+):\s*(.*)$")
 
-BOLD_LINE_RE = re.compile(r"^\*\*(.+)\*\*$")
-
-WORD_COUNTS = {"TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
+ANSWER_OVERVIEW_RE = re.compile(r"ANSWER OVERVIEW:\s*[Tt]he answer is\s+(.+?)\.")
+OPTION_LINE_RE = re.compile(
+    r"^([A-G])\.\s*(.+?)\s*—\s*(Correct|Incorrect)\s*—\s*(.+)$"
+)
 
 
 def e(s) -> str:
@@ -200,59 +124,6 @@ def strip_bold(s: str) -> str:
 # Markdown -> question blocks
 # ---------------------------------------------------------------------------
 
-def split_questions(text: str):
-    """Split a session's markdown body into (heading_text, block_lines)
-    tuples, one per '## ...' question heading, in document order."""
-    lines = text.split("\n")
-    heading_idxs = []
-    for i, line in enumerate(lines):
-        m = QUESTION_HEADING_RE.match(line)
-        if m:
-            heading_idxs.append((i, m))
-
-    blocks = []
-    for idx, (line_i, m) in enumerate(heading_idxs):
-        heading_text = m.group(2).strip()
-        block_start = line_i + 1
-        block_end = heading_idxs[idx + 1][0] if idx + 1 < len(heading_idxs) else len(lines)
-        block_lines = lines[block_start:block_end]
-        blocks.append((heading_text, block_lines))
-    return blocks
-
-
-def assemble_stem(heading_text: str, block_lines: list[str]) -> tuple[str, list[str]]:
-    """Combine the heading text with any immediately-following standalone
-    bold prompt line(s) (e.g. extra scenario context lines plus "**Which
-    solution...(SELECT THREE)**") into the final question stem. Several
-    source blocks (session1 Q1, Q5) have more than one such bold line in a
-    row before the first non-bold paragraph; all of them are appended in
-    order. Returns (stem, remaining_lines_after_the_prompt)."""
-    stem = heading_text
-    rest = block_lines
-    i = 0
-    while i < len(rest) and rest[i].strip() == "":
-        i += 1
-    while i < len(rest):
-        candidate = rest[i].strip()
-        if candidate == "":
-            i += 1
-            continue
-        m = BOLD_LINE_RE.match(candidate)
-        if not m:
-            break
-        inner = m.group(1).strip()
-        # A bold line that is itself an answer/option paragraph (starts with
-        # a letter marker, or with "Correct."/"Incorrect.") is NOT part of
-        # the stem -- stop absorbing before it (session2 Q5's sole option
-        # paragraph is fully bold-wrapped and would otherwise be eaten).
-        if re.match(r"^([A-G])[.):]\s", inner) or re.match(r"^(Correct|Incorrect)\.", inner):
-            break
-        stem = f"{stem} {inner}".strip()
-        i += 1
-    rest = rest[i:]
-    return stem, rest
-
-
 def paragraphs_of(block_lines: list[str]) -> list[str]:
     """Join a block's lines into blank-line-delimited paragraphs, each with
     internal newlines collapsed to single spaces."""
@@ -266,337 +137,108 @@ def paragraphs_of(block_lines: list[str]) -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Format detection
-# ---------------------------------------------------------------------------
-
-CORRECT_ARE_RE = re.compile(r"[Tt]he correct answers? are")
-INCORRECT_ARE_RE = re.compile(r"[Tt]he incorrect answers?( is| are)?:?")
-CORRECT_IS_BOLD_RE = re.compile(r"[Tt]he correct answer is\s*\*\*")
-SERVICE_PAREN_RE = re.compile(r"\*\*([^*(]+?)\s*\(([A-G])\)\*\*\s*:?\s*(.*)$")
-BARE_LETTER_PAREN_RE = re.compile(r"^([A-G])\)\s+(.+)$")
-BARE_LETTER_COLON_RE = re.compile(r"^([A-G])\*{0,2}\s*[:)]\s*(.*)$")
-CORRECT_WORD_RE = re.compile(r"^Correct\.?\s*(.*)$", re.DOTALL)
-INCORRECT_WORD_RE = re.compile(r"^Incorrect\.?\s*(.*)$", re.DOTALL)
-
-
-def detect_format(block_text: str, paras: list[str]) -> str:
-    if CORRECT_ARE_RE.search(block_text) and SERVICE_PAREN_RE.search(block_text):
-        return "C"
-    # Format C-variant: "The correct answers are **A, C, and E**:" headline
-    # (a bolded letter list, no per-option parens) followed by plain
-    # "A. text - rationale" paragraphs.
-    if CORRECT_ARE_RE.search(block_text) and re.search(r"are\s*\*\*[A-G](,\s*[A-G])*,?\s*(and\s*[A-G])?\*\*", block_text):
-        return "C"
-    if CORRECT_IS_BOLD_RE.search(block_text):
-        return "B"
-    # Format D: bare "A) text" paragraphs with no "correct answer is" lead-in.
-    letter_paren_paras = [p for p in paras if BARE_LETTER_PAREN_RE.match(p.strip())]
-    if len(letter_paren_paras) >= 2:
-        return "D"
-    # Format A (colon/paren letter options with inline Correct./Incorrect.)
-    lettered = [p for p in paras if BARE_LETTER_COLON_RE.match(p.strip())]
-    if lettered:
-        return "A"
-    # Format A-positional: no letters at all, but Correct./Incorrect. markers.
-    marked = [p for p in paras if re.match(r"^\**\s*(Correct|Incorrect)\.", p.strip())]
-    if len(marked) >= 2:
-        return "A-positional"
-    return "A"
-
-
-# ---------------------------------------------------------------------------
-# Per-format extraction -> list of {"letter","text","rationale","correct":bool}
-# ---------------------------------------------------------------------------
-
-def extract_format_c(stem: str, paras: list[str]):
-    # Split paragraphs into "correct" vs "incorrect" sections on the marker
-    # lines, then pull every "**Service (Letter)**: rationale" paragraph.
-    correct_letters = []
-    options = {}
-    order = []
-    section = None
-    for p in paras:
-        if CORRECT_ARE_RE.match(p) or re.match(r"^The correct answers? are", p):
-            section = "correct"
-            # "The correct answers are **A, C, and E**:" - no per-option text
-            # here, just the headline; letters (if present) recorded below.
-            m = re.search(r"are\s*\*\*([^*]+)\*\*", p)
-            if m:
-                for l in re.findall(r"[A-G]", m.group(1)):
-                    if l not in correct_letters:
-                        correct_letters.append(l)
-            continue
-        if INCORRECT_ARE_RE.match(p) or re.match(r"^The incorrect answers? (is|are)", p):
-            section = "incorrect"
-            continue
-        m = SERVICE_PAREN_RE.search(p)
+def split_slides(text: str):
+    """Split a Content Review markdown file into (title, body_lines) tuples,
+    one per '## Slide N — <title>' heading, in document order."""
+    lines = text.split("\n")
+    heading_idxs = []
+    for i, line in enumerate(lines):
+        m = SLIDE_HEADING_RE.match(line)
         if m:
-            name, letter, rest = m.group(1).strip(), m.group(2), m.group(3).strip()
-            if letter not in options:
-                options[letter] = {"letter": letter, "text": name, "rationale": rest}
-                order.append(letter)
-            else:
-                options[letter]["rationale"] = (options[letter]["rationale"] + " " + rest).strip()
-            if section == "correct" and letter not in correct_letters:
-                correct_letters.append(letter)
-            continue
-        # Plain "A. text - rationale" paragraph (Q5 variant: no bold wrap).
-        m2 = re.match(r"^([A-G])\.\s*(.+)$", p)
-        if m2:
-            letter, rest = m2.group(1), m2.group(2).strip()
-            text, rationale = split_dash(rest)
-            if letter not in options:
-                options[letter] = {"letter": letter, "text": text, "rationale": rationale}
-                order.append(letter)
-            else:
-                options[letter]["rationale"] = (options[letter]["rationale"] + " " + rest).strip()
-            continue
-        # Continuation paragraph: attach to the most recently seen option.
-        if order:
-            last = order[-1]
-            options[last]["rationale"] = (options[last]["rationale"] + " " + p).strip()
+            heading_idxs.append((i, m.group(1).strip()))
 
-    order_sorted = sorted(order)
-    opts = [options[l] for l in order_sorted]
-    for o in opts:
-        o["correct"] = o["letter"] in correct_letters
-
-    # Sanity check the stated SELECT count against the number of correct
-    # letters found; warn (not raise) on mismatch.
-    m = re.search(r"[Ss]elect\s+(\w+)", stem)
-    if m and m.group(1).upper() in WORD_COUNTS:
-        expected = WORD_COUNTS[m.group(1).upper()]
-        if expected != len(correct_letters):
-            print(f"    warning: stem says SELECT {m.group(1)} ({expected}) but "
-                  f"found {len(correct_letters)} correct letters: {correct_letters}",
-                  file=sys.stderr)
-    return opts
+    slides = []
+    for idx, (line_i, title) in enumerate(heading_idxs):
+        block_start = line_i + 1
+        block_end = heading_idxs[idx + 1][0] if idx + 1 < len(heading_idxs) else len(lines)
+        slides.append((title, lines[block_start:block_end]))
+    return slides
 
 
-def split_dash(rest: str) -> tuple[str, str]:
-    """Split 'option text - rationale' on the first ' - '; else no rationale."""
-    if " - " in rest:
-        text, rationale = rest.split(" - ", 1)
-        return text.strip(), rationale.strip()
-    return rest.strip(), ""
-
-
-def split_colon(rest: str) -> tuple[str, str]:
-    """Split 'option text: rationale' on the first ': '; else no rationale."""
-    if ": " in rest:
-        text, rationale = rest.split(": ", 1)
-        return text.strip(), rationale.strip()
-    return rest.strip(), ""
-
-
-def extract_format_b(paras: list[str]):
-    options = {}
-    order = []
-    correct_letter = None
-    correct_inline_text = ""
-    marker_idx = None
-
-    for i, p in enumerate(paras):
-        m = re.search(r"[Tt]he correct answer is\s*\*\*([A-G])\s*[:.)]?\s*(.*?)\*\*", p)
-        if m:
-            correct_letter = m.group(1)
-            correct_inline_text = m.group(2).strip()
-            marker_idx = i
-            break
-
-    # Paragraphs that appear AFTER the "correct answer is **X: ...**" marker
-    # but BEFORE the first lettered incorrect option (and before the
-    # "incorrect options are:" header) explain why the correct answer is
-    # correct. Collect them as the correct option's rationale -- previously
-    # these were dropped because no option had been seen yet.
-    correct_rationale_parts = []
-    seen_first_option = False
-
-    for i, p in enumerate(paras):
-        if i == marker_idx:
-            continue
-        if re.match(r"^[Tt]he incorrect (options|answers?)( is| are)?:?\s*$", p.strip()):
-            continue
-        mo = re.match(r"^([A-G])[.):]\s*(.+)$", p.strip())
-        if mo:
-            seen_first_option = True
-            letter, rest = mo.group(1), mo.group(2).strip()
-            text, rationale = split_dash(rest)
-            if ":" in text and not rationale:
-                text2, rationale2 = split_colon(rest)
-                text, rationale = text2, rationale2
-            if letter not in options:
-                options[letter] = {"letter": letter, "text": text, "rationale": rationale}
-                order.append(letter)
-            else:
-                options[letter]["rationale"] = (options[letter]["rationale"] + " " + rest).strip()
-            continue
-        # Non-option paragraph. Before the first option (and after the marker)
-        # it belongs to the correct answer; after, it continues the last option.
-        if marker_idx is not None and not seen_first_option:
-            correct_rationale_parts.append(p.strip())
-        elif order:
-            last = order[-1]
-            options[last]["rationale"] = (options[last]["rationale"] + " " + p).strip()
-
-    if correct_letter is not None:
-        correct_rationale = " ".join(correct_rationale_parts).strip()
-        if correct_letter not in options:
-            options[correct_letter] = {"letter": correct_letter, "text": correct_inline_text, "rationale": correct_rationale}
-            order.insert(0, correct_letter)
-        else:
-            if correct_inline_text:
-                # Inline text from "The correct answer is **C: text**" wins.
-                options[correct_letter]["text"] = correct_inline_text
-            if correct_rationale and not options[correct_letter]["rationale"].strip():
-                options[correct_letter]["rationale"] = correct_rationale
-
-    order.sort()
-    opts = [options[l] for l in order]
-    for o in opts:
-        o["correct"] = o["letter"] == correct_letter
-    return opts
-
-
-def extract_format_d(paras: list[str]):
-    options = {}
-    order = []
-    for p in paras:
-        p = p.strip()
-        is_bold_wrapped = p.startswith("**") and p.endswith("**")
-        probe = strip_bold(p) if is_bold_wrapped else p
-        m = BARE_LETTER_PAREN_RE.match(probe)
+def group_question_slides(slides: list[tuple[str, list[str]]]):
+    """Group consecutive slides sharing an identical title that starts with
+    'Question K: ...' into one (question_num, title, combined_lines) block
+    per question, in document order. Non-"Question N:" titled slides
+    (teaching slides) are skipped entirely."""
+    groups = []
+    i = 0
+    n = len(slides)
+    while i < n:
+        title, lines = slides[i]
+        m = QUESTION_TITLE_RE.match(title)
         if not m:
-            if order:
-                last = order[-1]
-                options[last]["rationale"] = (options[last]["rationale"] + " " + p).strip()
+            i += 1
             continue
-        letter, rest = m.group(1), m.group(2).strip()
-        correct = is_bold_wrapped or bool(re.search(r"\bCorrect\b", rest)) and not re.search(r"\bIncorrect\b", rest)
-        # Text vs rationale: split at the first sentence boundary that
-        # precedes a standalone "Incorrect"/"Correct" marker word; else the
-        # whole remainder is both text and rationale (no explicit marker).
-        mm = re.search(r"\b(Incorrect|Correct)\b\.?\s*(.*)$", rest)
-        if mm and mm.start() > 0:
-            text = rest[:mm.start()].strip().rstrip(".")
-            rationale = (mm.group(2) or "").strip()
-        else:
-            text = rest
-            rationale = rest
-        options[letter] = {"letter": letter, "text": text, "rationale": rationale, "correct": correct}
-        order.append(letter)
-    return [options[l] for l in order]
+        qnum = int(m.group(1))
+        combined = list(lines)
+        j = i + 1
+        while j < n and slides[j][0] == title:
+            combined.extend(slides[j][1])
+            j += 1
+        groups.append((qnum, title, combined))
+        i = j
+    return groups
 
 
-def extract_format_a(paras: list[str]):
-    options = {}
-    order = []
-    for p in paras:
-        p = p.strip()
-        probe = p[2:] if p.startswith("**") else p
-        m = BARE_LETTER_COLON_RE.match(probe)
-        if not m:
-            if order:
-                last = order[-1]
-                options[last]["rationale"] = (options[last]["rationale"] + " " + p).strip()
-                options[last]["text"] = options[last]["rationale"]
-            continue
-        letter, rest = m.group(1), m.group(2).strip()
-        rest = strip_bold_prefix_run(rest)
-        correct = False
-        cm = CORRECT_WORD_RE.match(rest)
-        im = INCORRECT_WORD_RE.match(rest)
-        if cm:
-            correct = True
-            rest = cm.group(1).strip()
-        elif im:
-            correct = False
-            rest = im.group(1).strip()
-        rest = rest.lstrip(".").strip()
-        options[letter] = {"letter": letter, "text": rest, "rationale": rest, "correct": correct}
-        order.append(letter)
-    return [options[l] for l in order]
+# ---------------------------------------------------------------------------
+# Per-question extraction
+# ---------------------------------------------------------------------------
+
+def parse_answer_letters(fragment: str) -> list[str]:
+    """Parse the captured text after 'the answer is' (e.g. 'A', 'A and B',
+    'A, B, and C') into an ordered list of letters."""
+    return re.findall(r"[A-G]", fragment)
 
 
-def strip_bold_prefix_run(rest: str) -> str:
-    """Bolding placement around the Correct./Incorrect. marker varies: the
-    whole sentence may be bold ('**D: Correct**. ...' already had its 'D:'
-    letter prefix consumed by the caller), just the word may be bold
-    ('A: **Correct.** text'), or the bold run may exclude the trailing
-    period ('**A: Correct**. text'). Since Format A never uses bold for
-    anything other than marking Correct/Incorrect, it is safe to strip ALL
-    '**' markers from the remainder up front so CORRECT_WORD_RE/
-    INCORRECT_WORD_RE can match a plain leading 'Correct'/'Incorrect'."""
-    return rest.replace("**", "")
+def parse_question_block(qnum: int, title: str, block_lines: list[str], label: str):
+    """Parse one question's combined 4-slide block. Returns a question dict
+    in the shape check_slide()/write() expect, or None (with a reason
+    printed to stderr) if the block is missing a required piece or its
+    Correct/Incorrect markers disagree with the ANSWER OVERVIEW letters."""
+    block_text = "\n".join(block_lines)
 
+    m = ANSWER_OVERVIEW_RE.search(block_text)
+    if not m:
+        print(f"    skip {label} Q{qnum} ({title}): no ANSWER OVERVIEW line found", file=sys.stderr)
+        return None
+    answer_letters = parse_answer_letters(m.group(1))
+    if not answer_letters:
+        print(f"    skip {label} Q{qnum} ({title}): could not parse letters from "
+              f"ANSWER OVERVIEW {m.group(1)!r}", file=sys.stderr)
+        return None
 
-def extract_format_a_positional(paras: list[str]):
     options = []
-    idx = 0
-    for p in paras:
-        p = p.strip().replace("**", "")
-        cm = CORRECT_WORD_RE.match(p)
-        im = INCORRECT_WORD_RE.match(p)
-        if cm or im:
-            correct = bool(cm)
-            rest = (cm or im).group(1).strip()
-            letter = LETTERS[idx]
-            idx += 1
-            options.append({"letter": letter, "text": rest, "rationale": rest, "correct": correct})
+    marked_correct = []
+    for p in paragraphs_of(block_lines):
+        om = OPTION_LINE_RE.match(p.strip())
+        if not om:
             continue
-        # Continuation paragraph (e.g. "For more information..." footer).
-        if options:
-            options[-1]["rationale"] = (options[-1]["rationale"] + " " + p).strip()
-    return options
+        letter, text, verdict, rationale = om.group(1), om.group(2).strip(), om.group(3), om.group(4).strip()
+        is_correct = verdict == "Correct"
+        if is_correct:
+            marked_correct.append(letter)
+        options.append({"letter": letter, "text": text, "rationale": rationale, "correct": is_correct})
 
+    if not options:
+        print(f"    skip {label} Q{qnum} ({title}): no option lines found on the reveal slide", file=sys.stderr)
+        return None
 
-# ---------------------------------------------------------------------------
-# Normalization
-# ---------------------------------------------------------------------------
+    if sorted(marked_correct) != sorted(answer_letters):
+        print(f"    skip {label} Q{qnum} ({title}): ANSWER OVERVIEW says {answer_letters} but "
+              f"option Correct/Incorrect markers say {marked_correct}", file=sys.stderr)
+        return None
 
-def match_sources(*texts: str) -> list[str]:
-    """Scan the given text(s) against SERVICE_URL_MAP in map order and return
-    the matched URLs, deduplicated, first-seen order."""
-    combined = "\n".join(texts)
     sources = []
-    for pattern, url in SERVICE_URL_MAP:
-        if url in sources:
-            continue
-        if pattern.search(combined):
+    for url_m in DOC_URL_RE.finditer(block_text):
+        url = url_m.group(0).rstrip(".,;")
+        if url not in sources:
             sources.append(url)
-    return sources
 
-
-def parse_block(heading_text: str, block_lines: list[str]) -> dict:
-    stem, rest_lines = assemble_stem(heading_text, block_lines)
-    paras = paragraphs_of(rest_lines)
-    block_text = "\n".join(rest_lines)
-
-    fmt = detect_format(block_text, paras)
-    if fmt == "C":
-        opts = extract_format_c(stem, paras)
-    elif fmt == "B":
-        opts = extract_format_b(paras)
-    elif fmt == "D":
-        opts = extract_format_d(paras)
-    elif fmt == "A-positional":
-        opts = extract_format_a_positional(paras)
-    else:
-        opts = extract_format_a(paras)
-
-    correct = [o["letter"] for o in opts if o.get("correct")]
-    options = [{"letter": o["letter"], "text": o["text"], "rationale": o.get("rationale", "")} for o in opts]
-    # sources: scan the full block text (stem + every option's text/rationale)
-    # against SERVICE_URL_MAP, deduplicated, first-seen order.
-    option_text = " ".join(f"{o['text']} {o.get('rationale', '')}" for o in options)
-    sources = match_sources(stem, option_text)
     return {
-        "prompt": stem,
-        "options": options,
-        "correct": correct,
-        "multi": len(correct) > 1,
-        "format": fmt,
+        "prompt": title,
+        "options": [{"letter": o["letter"], "text": o["text"], "rationale": o["rationale"]} for o in options],
+        "correct": answer_letters,
+        "multi": len(answer_letters) > 1,
         "sources": sources,
     }
 
@@ -604,10 +246,12 @@ def parse_block(heading_text: str, block_lines: list[str]) -> dict:
 def parse_session_markdown(path: str) -> list[dict]:
     with open(path, encoding="utf-8") as f:
         text = f.read()
+    label = os.path.basename(path)
+    slides = split_slides(text)
     questions = []
-    for heading_text, block_lines in split_questions(text):
-        q = parse_block(heading_text, block_lines)
-        if q["options"] and q["correct"]:
+    for qnum, title, block_lines in group_question_slides(slides):
+        q = parse_question_block(qnum, title, block_lines, label)
+        if q is not None:
             questions.append(q)
     return questions
 
@@ -679,7 +323,7 @@ def check_slide(session_n: int, session_title: str, q: dict, idx: int, total: in
         f'{submit}'
         f'<div class="sm-check-fb" style="display:none"></div>'
         f'<div class="sm-source"><i class="fa-solid fa-circle-question"></i> '
-        f'Knowledge check &middot; Exam Strategy Session {session_n} Answer Key</div>'
+        f'Knowledge check &middot; Content Review Session {session_n}</div>'
         "</div>"
     )
 
@@ -719,14 +363,13 @@ def build_session(session_n: int, title: str, questions: list[dict]) -> list[dic
 
 def main():
     total_slides = 0
-    for n, (dirname, filename, title) in SESSIONS.items():
-        md_path = os.path.join(MD_DIR, dirname, filename)
+    for n, (dirname, _answer_key_filename, title) in SESSIONS.items():
+        md_path = os.path.join(MD_DIR, dirname, CONTENT_REVIEW[n])
         questions = parse_session_markdown(md_path)
         slides = build_session(n, title, questions)
         write(n, slides)
         total_slides += len(slides)
-        note = "  (note: Q2 and Q3 are duplicate questions in the source)" if n == 1 else ""
-        print(f"  d{n} ({title}): {len(slides)} slides = 1 divider + {len(questions)} questions{note}")
+        print(f"  d{n} ({title}): {len(slides)} slides = 1 divider + {len(questions)} questions")
     print(f"Built 5 Knowledge Check decks, {total_slides} slides total -> knowledgecheck/d1..d5.json")
 
 
