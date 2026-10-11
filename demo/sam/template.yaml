@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Sample serverless application demonstrating an API Gateway API, two Lambda
+  functions, and a DynamoDB table. Built to be validated and tested locally
+  with the AWS SAM CLI before deploying to AWS.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 10
+    MemorySize: 128
+    Tracing: Active
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref ItemsTable
+        # Declared so `sam local --env-vars` can inject a local DynamoDB
+        # endpoint (e.g. http://dynamodb-local:8000). Empty on AWS, so boto3
+        # uses the real regional endpoint. SAM only passes an --env-vars value
+        # for a variable that is declared here.
+        DYNAMODB_ENDPOINT: ""
+  Api:
+    TracingEnabled: true
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # API Gateway (REST API) - implicitly created by the function Api events,
+  # but declared explicitly here so we can set a stage name and reference it.
+  # ---------------------------------------------------------------------------
+  ItemsApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      EndpointConfiguration:
+        Type: REGIONAL
+
+  # ---------------------------------------------------------------------------
+  # Lambda function #1: create an item (POST /items)
+  # ---------------------------------------------------------------------------
+  CreateItemFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sam-demo-create-item
+      Handler: app.create_handler
+      CodeUri: src/create_item/
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ItemsTable
+      Events:
+        CreateItem:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ItemsApi
+            Path: /items
+            Method: post
+
+  # ---------------------------------------------------------------------------
+  # Lambda function #2: get an item (GET /items/{id})
+  # ---------------------------------------------------------------------------
+  GetItemFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sam-demo-get-item
+      Handler: app.get_handler
+      CodeUri: src/get_item/
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ItemsTable
+      Events:
+        GetItem:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ItemsApi
+            Path: /items/{id}
+            Method: get
+
+  # ---------------------------------------------------------------------------
+  # DynamoDB table
+  # ---------------------------------------------------------------------------
+  ItemsTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: sam-demo-items
+      PrimaryKey:
+        Name: id
+        Type: String
+
+Outputs:
+  ApiBaseUrl:
+    Description: Base URL for the Prod stage of the API
+    Value: !Sub "https://${ItemsApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+  CreateItemFunctionArn:
+    Description: ARN of the CreateItem Lambda function
+    Value: !GetAtt CreateItemFunction.Arn
+  GetItemFunctionArn:
+    Description: ARN of the GetItem Lambda function
+    Value: !GetAtt GetItemFunction.Arn
+  ItemsTableName:
+    Description: Name of the DynamoDB table
+    Value: !Ref ItemsTable

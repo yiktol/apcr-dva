@@ -1,0 +1,8 @@
+{
+  "resource": "/items/{id}",
+  "path": "/items/demo-1",
+  "httpMethod": "GET",
+  "headers": { "Content-Type": "application/json" },
+  "pathParameters": { "id": "demo-1" },
+  "body": null
+}

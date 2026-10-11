@@ -1,0 +1,8 @@
+{
+  "resource": "/items",
+  "path": "/items",
+  "httpMethod": "POST",
+  "headers": { "Content-Type": "application/json" },
+  "pathParameters": null,
+  "body": "{\"id\": \"demo-1\", \"name\": \"Flat White\", \"description\": \"Sample item for local testing\"}"
+}

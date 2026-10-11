@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Generate Unit Test on Python Save",
+      "trigger": "PostFileSave",
+      "description": "When a .py file is saved, generate (or update) a corresponding unit test for it using the project's test framework.",
+      "matcher": "\\.py$",
+      "action": {
+        "type": "agent",
+        "prompt": "A Python file was just saved. Generate a unit test for the code in that file.\n\nInstructions:\n1. Identify the saved Python file from the session context.\n2. Read the file and understand its functions, classes, and public behavior.\n3. Create or update a corresponding test file. Use the project's existing test framework and conventions if any are present (check for pytest, unittest, a tests/ directory, or existing test_*.py files). If none exist, default to pytest and place the test next to the source as test_<filename>.py (or in a tests/ directory mirroring the source layout if one exists).\n4. Write meaningful tests that cover the main functions/classes, including typical cases and relevant edge cases. Mock external dependencies (network, filesystem, AWS/boto3 calls, databases) rather than invoking them for real.\n5. Do not modify the source file. Only create or update the test file.\n6. Skip generation if the saved file is itself a test file, a migration, or an __init__.py with no logic.\n7. After writing, run the new test if the environment allows and report the result briefly."
+      }
+    }
+  ]
+}

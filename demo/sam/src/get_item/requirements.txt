@@ -1,0 +1,2 @@
+# boto3 is provided by the Lambda Python runtime; listed here for local parity.
+boto3>=1.34

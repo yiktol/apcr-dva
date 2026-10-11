@@ -15,6 +15,9 @@ import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 import * as codepipeline_actions from 'aws-cdk-lib/aws-codepipeline-actions';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53_targets from 'aws-cdk-lib/aws-route53-targets';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as events_targets from 'aws-cdk-lib/aws-events-targets';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -352,10 +355,69 @@ export class AppPipelineStack extends cdk.Stack {
     );
 
     // ---------------------------------------------------------------------
+    // Custom domains for the two CloudFront distributions.
+    //   PROD -> prod.aws.yikyakyuk.com
+    //   TEST -> test.aws.yikyakyuk.com
+    // Both are covered by the wildcard ACM certificate *.aws.yikyakyuk.com.
+    // CloudFront REQUIRES the certificate to live in us-east-1 regardless of
+    // the stack's region, so we reference it by its us-east-1 ARN. The domain
+    // names are stack parameters so they can be overridden at deploy time.
+    // ---------------------------------------------------------------------
+    const prodDomainName = new cdk.CfnParameter(this, 'ProdDomainName', {
+      type: 'String',
+      default: 'prod.aws.yikyakyuk.com',
+      description: 'Custom domain for the PROD CloudFront distribution',
+    });
+    const testDomainName = new cdk.CfnParameter(this, 'TestDomainName', {
+      type: 'String',
+      default: 'test.aws.yikyakyuk.com',
+      description: 'Custom domain for the TEST CloudFront distribution',
+    });
+    const cloudFrontCertArn = new cdk.CfnParameter(this, 'CloudFrontCertificateArn', {
+      type: 'String',
+      default:
+        'arn:aws:acm:us-east-1:875692608981:certificate/417df345-28ea-4c39-8e5d-d985abb59908',
+      description:
+        'ACM certificate ARN (MUST be in us-east-1 for CloudFront) covering the custom domains; the issued *.aws.yikyakyuk.com wildcard',
+    });
+    const cloudFrontCertificate = acm.Certificate.fromCertificateArn(
+      this,
+      'CoffeeShopCloudFrontCert',
+      cloudFrontCertArn.valueAsString,
+    );
+
+    // Existing public hosted zone for aws.yikyakyuk.com. The custom domains
+    // (prod.aws / test.aws) are records inside it, so we import the zone by its
+    // id + name (parameterised) and add the alias records to the template so
+    // CloudFormation owns them and tears them down with the stack.
+    const hostedZoneId = new cdk.CfnParameter(this, 'HostedZoneId', {
+      type: 'String',
+      default: 'Z09170582IZGKC67IAX17',
+      description: 'Route 53 hosted zone id for aws.yikyakyuk.com (holds the custom-domain records)',
+    });
+    const hostedZoneName = new cdk.CfnParameter(this, 'HostedZoneName', {
+      type: 'String',
+      default: 'aws.yikyakyuk.com',
+      description: 'Route 53 hosted zone name for the custom-domain records',
+    });
+    const hostedZone = route53.HostedZone.fromHostedZoneAttributes(this, 'CoffeeShopHostedZone', {
+      hostedZoneId: hostedZoneId.valueAsString,
+      zoneName: hostedZoneName.valueAsString,
+    });
+    // CDK's ARecord.recordName is RELATIVE to the zone (it appends the zone
+    // name itself). The domain parameters hold the full FQDN (used verbatim as
+    // the CloudFront alias), so for the record name we take the first label:
+    // 'prod.aws.yikyakyuk.com' -> 'prod', 'test.aws.yikyakyuk.com' -> 'test'.
+    const prodRecordName = cdk.Fn.select(0, cdk.Fn.split('.', prodDomainName.valueAsString));
+    const testRecordName = cdk.Fn.select(0, cdk.Fn.split('.', testDomainName.valueAsString));
+
+    // ---------------------------------------------------------------------
     // CloudFront in front of the PROD ALB (ALB is the custom origin over HTTP).
     // ---------------------------------------------------------------------
     const distribution = new cloudfront.Distribution(this, 'CoffeeShopCdn', {
       comment: 'coffee-shop: CloudFront in front of the PROD ALB',
+      domainNames: [prodDomainName.valueAsString],
+      certificate: cloudFrontCertificate,
       defaultBehavior: {
         origin: new origins.LoadBalancerV2Origin(prodAlb, {
           protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
@@ -369,8 +431,22 @@ export class AppPipelineStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'CloudFrontUrl', {
-      value: `https://${distribution.distributionDomainName}`,
-      description: 'Public entry point (PROD): CloudFront distribution URL (use this, not the ALB)',
+      value: `https://${prodDomainName.valueAsString}`,
+      description: 'Public entry point (PROD): custom-domain URL (point this record at the CloudFront distribution domain)',
+    });
+    new cdk.CfnOutput(this, 'CloudFrontDistributionDomainName', {
+      value: distribution.distributionDomainName,
+      description: 'PROD CloudFront distribution domain name (DNS alias record points here)',
+    });
+
+    // Route 53 alias: prod.aws.yikyakyuk.com -> PROD CloudFront distribution.
+    new route53.ARecord(this, 'ProdAliasRecord', {
+      zone: hostedZone,
+      recordName: prodRecordName,
+      target: route53.RecordTarget.fromAlias(
+        new route53_targets.CloudFrontTarget(distribution),
+      ),
+      comment: 'coffee-shop PROD custom domain -> CloudFront',
     });
     new cdk.CfnOutput(this, 'CloudFrontDistributionId', {
       value: distribution.distributionId,
@@ -385,6 +461,8 @@ export class AppPipelineStack extends cdk.Stack {
     // ---------------------------------------------------------------------
     const testCdn = new cloudfront.Distribution(this, 'CoffeeShopTestCdn', {
       comment: 'coffee-shop: CloudFront in front of the TEST ALB',
+      domainNames: [testDomainName.valueAsString],
+      certificate: cloudFrontCertificate,
       defaultBehavior: {
         origin: new origins.LoadBalancerV2Origin(testService.loadBalancer, {
           protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
@@ -398,8 +476,22 @@ export class AppPipelineStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'TestCloudFrontUrl', {
-      value: `https://${testCdn.distributionDomainName}`,
-      description: 'Public entry point (TEST): CloudFront distribution URL for the test environment',
+      value: `https://${testDomainName.valueAsString}`,
+      description: 'Public entry point (TEST): custom-domain URL (point this record at the CloudFront distribution domain)',
+    });
+    new cdk.CfnOutput(this, 'TestCloudFrontDistributionDomainName', {
+      value: testCdn.distributionDomainName,
+      description: 'TEST CloudFront distribution domain name (DNS alias record points here)',
+    });
+
+    // Route 53 alias: test.aws.yikyakyuk.com -> TEST CloudFront distribution.
+    new route53.ARecord(this, 'TestAliasRecord', {
+      zone: hostedZone,
+      recordName: testRecordName,
+      target: route53.RecordTarget.fromAlias(
+        new route53_targets.CloudFrontTarget(testCdn),
+      ),
+      comment: 'coffee-shop TEST custom domain -> CloudFront',
     });
 
     // ---------------------------------------------------------------------
