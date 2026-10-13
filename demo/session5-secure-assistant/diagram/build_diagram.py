@@ -32,7 +32,15 @@ Output: diagram/architecture.svg (next to this script).
 import base64
 import os
 
-ICON_BASE = "/Users/erictole/demo/apcr-dva/aws-icons/Architecture-Service-Icons_04302026"
+# Resolve the AWS icon set relative to the repo root (…/apcr-dva/aws-icons)
+# so the build is portable across machines. Can be overridden with ICON_BASE.
+_REPO_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")
+)
+ICON_BASE = os.environ.get(
+    "ICON_BASE",
+    os.path.join(_REPO_ROOT, "aws-icons", "Architecture-Service-Icons_04302026"),
+)
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "architecture.svg")
 
 ICONS = {
