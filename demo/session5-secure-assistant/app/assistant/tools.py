@@ -114,9 +114,38 @@ def derive_status(created_at: int, now: int) -> str:
     return "READY"
 
 
-def make_place_order(orders_table, req_ctx):
+def build_receipt_pdf(order_id: str, summary: str, total) -> bytes:
+    """Build a minimal, valid single-page PDF for an order receipt.
+
+    Plain ASCII only — `summary` is already the PII-masked server summary, so no
+    raw PII reaches the object. Mirrors the tiny demo PDF deploy.sh seeds; this
+    is a demo artifact, not a production invoice.
+    """
+    try:
+        total_str = f"{float(total):.2f}"
+    except (TypeError, ValueError):
+        total_str = str(total)
+    # Keep the body ASCII and short. A couple of plain comment lines carrying
+    # the order details is enough for a browser/curl GET to return 200 bytes.
+    body = (
+        "%PDF-1.4\n"
+        "%% session5 demo receipt\n"
+        f"%% orderId: {order_id}\n"
+        f"%% summary: {summary}\n"
+        f"%% total: {total_str}\n"
+    )
+    return body.encode("ascii", "replace")
+
+
+def make_place_order(orders_table, req_ctx, receipts_bucket=None, region=None):
     """Factory → @tool place_order, bound to the real OrdersTable + the request
-    side channel. Mirrors make_initiate_refund."""
+    side channel. Mirrors make_initiate_refund.
+
+    When `receipts_bucket` is provided, a minimal receipt PDF is uploaded to
+    receipts/{orderId}.pdf after a successful order write so the in-session
+    order has a downloadable receipt. `receipts_bucket=None` (the default) skips
+    the upload, keeping the old two-arg signature working for existing tests.
+    """
 
     @tool
     def place_order(items: str) -> dict:
@@ -177,6 +206,28 @@ def make_place_order(orders_table, req_ctx):
                     "status": "RECEIVED",
                 }
             )
+
+            # Write the receipt PDF so an in-session order has a downloadable
+            # receipt (receipts/{orderId}.pdf). The object inherits the bucket's
+            # default CMK encryption (aws:kms), so no SSE params are passed; the
+            # role's kms:GenerateDataKey*/Encrypt grant covers the write.
+            # Upload failures MUST NOT break order placement — the order is
+            # already committed to DynamoDB — so this is best-effort.
+            if receipts_bucket:
+                try:
+                    client = presign_handler.make_s3_client(region)
+                    client.put_object(
+                        Bucket=receipts_bucket,
+                        Key=presign_handler.receipt_key(order_id),
+                        Body=build_receipt_pdf(order_id, summary, total),
+                        ContentType="application/pdf",
+                    )
+                except Exception:  # best-effort: order already placed
+                    # botocore ClientError (and any other error) is swallowed so
+                    # the committed order still returns RECEIVED. No raw PII is
+                    # in the summary (already masked), nothing is logged here.
+                    pass
+
             return {
                 "status": "RECEIVED",
                 "orderId": order_id,
@@ -321,6 +372,22 @@ def make_get_receipt_url(req_ctx, bucket, region=None, orders_table=None):
             got = orders_table.get_item(Key={"orderId": order_id})
             if not got.get("Item"):
                 return {"status": "NOT_FOUND", "orderId": order_id}
+
+        # Verify the receipt object actually exists BEFORE handing out a link,
+        # so a user never gets a URL that 403s. With only s3:GetObject (no
+        # s3:ListBucket) head_object returns 403 for a missing key rather than
+        # 404 — treat any ClientError (403/404/NoSuchKey) as 'not found' for UX.
+        # botocore is referenced defensively WITHOUT a top-level import so this
+        # module stays importable for py_compile / unit tests.
+        head_client = presign_handler.make_s3_client(region)
+        try:
+            head_client.head_object(
+                Bucket=bucket, Key=presign_handler.receipt_key(order_id)
+            )
+        except Exception:
+            # Missing object (or no permission to confirm) → surface NOT_FOUND
+            # and append NOTHING to the side channel.
+            return {"status": "NOT_FOUND", "orderId": order_id}
 
         # Build the signing client + URL from the single shared presign source.
         client = presign_handler.make_s3_presign_client(region)

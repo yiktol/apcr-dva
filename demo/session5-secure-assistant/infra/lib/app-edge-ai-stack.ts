@@ -315,14 +315,18 @@ export class AppEdgeAIStack extends cdk.Stack {
     kmsKey.grantEncryptDecrypt(assistantRole);
     // s3:GetObject on receipts objects so the in-process get_receipt_url tool's
     // presigned URL has a valid signature (mirrors the presignRole 'ReadReceipts'
-    // statement). kms:Decrypt is ALREADY covered by the
+    // statement), PLUS s3:PutObject so place_order can write receipts/{id}.pdf
+    // when a NEW order is placed. Both are scoped to the receipts/* objects of
+    // this one bucket — NOT s3:ListBucket, and NOT any other bucket.
+    // kms:Decrypt AND kms:GenerateDataKey*/Encrypt (needed to WRITE a
+    // CMK-encrypted object) are ALREADY covered by the
     // kmsKey.grantEncryptDecrypt(assistantRole) call above, so no new KMS grant
     // is required for the CMK-encrypted receipts bucket.
     assistantRole.addToPolicy(
       new iam.PolicyStatement({
         sid: 'ReadReceipts',
         effect: iam.Effect.ALLOW,
-        actions: ['s3:GetObject'],
+        actions: ['s3:GetObject', 's3:PutObject'],
         resources: [receiptsBucket.arnForObjects('*')],
       }),
     );

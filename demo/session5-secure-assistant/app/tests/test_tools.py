@@ -58,12 +58,46 @@ class _FakePresignS3:
         return f"https://example-bucket.s3.amazonaws.com/{Params['Key']}?sig=abc"
 
 
+class _FakeS3Client:
+    """A plain (non-presign) S3 client stub: records put_object calls and
+    answers head_object from a set of existing keys.
+
+    `existing_keys` is the set of keys that exist; head_object raises a
+    ClientError-like error for anything else (mirroring 403/404 on a missing
+    key). `fail_put` makes put_object raise, exercising the best-effort path.
+    """
+
+    def __init__(self, existing_keys=None, fail_put=False):
+        self.existing_keys = set(existing_keys or [])
+        self.fail_put = fail_put
+        self.put_calls = []
+        self.head_calls = []
+
+    def put_object(self, **kwargs):
+        self.put_calls.append(kwargs)
+        if self.fail_put:
+            raise _FakeClientError("AccessDenied")
+        # A successful write makes the object exist for later head_object.
+        self.existing_keys.add(kwargs["Key"])
+        return {}
+
+    def head_object(self, Bucket, Key):
+        self.head_calls.append({"Bucket": Bucket, "Key": Key})
+        if Key not in self.existing_keys:
+            raise _FakeClientError("404")
+        return {"ContentLength": 42}
+
+
 def test_get_receipt_url_ok_populates_side_channel(monkeypatch):
-    # Inject a fake presign client so no real AWS/boto3 is touched.
+    # Inject fake presign + plain clients so no real AWS/boto3 is touched.
     from presign import handler as presign_handler
 
+    fake_s3 = _FakeS3Client(existing_keys={"receipts/ORD-000123.pdf"})
     monkeypatch.setattr(
         presign_handler, "make_s3_presign_client", lambda region=None: _FakePresignS3()
+    )
+    monkeypatch.setattr(
+        presign_handler, "make_s3_client", lambda region=None: fake_s3
     )
 
     req_ctx = {"receipts": []}
@@ -75,12 +109,38 @@ def test_get_receipt_url_ok_populates_side_channel(monkeypatch):
     assert result["orderId"] == "ORD-000123"
     assert result["url"]
     assert result["expiresIn"] == tools.EXPIRES_IN == 900
+    # head_object was consulted for existence against the right key.
+    assert fake_s3.head_calls[-1] == {
+        "Bucket": "bucket",
+        "Key": "receipts/ORD-000123.pdf",
+    }
     # Authoritative side-channel record.
     assert req_ctx["receipts"][-1] == {
         "orderId": "ORD-000123",
         "url": result["url"],
         "expiresIn": tools.EXPIRES_IN,
     }
+
+
+def test_get_receipt_url_missing_object_returns_not_found(monkeypatch):
+    from presign import handler as presign_handler
+
+    fake_s3 = _FakeS3Client(existing_keys=set())  # object does not exist
+    monkeypatch.setattr(
+        presign_handler, "make_s3_presign_client", lambda region=None: _FakePresignS3()
+    )
+    monkeypatch.setattr(
+        presign_handler, "make_s3_client", lambda region=None: fake_s3
+    )
+
+    req_ctx = {"receipts": []}
+    get_receipt = tools.make_get_receipt_url(req_ctx, "bucket")
+
+    result = get_receipt("ORD-079522")
+
+    # Graceful NOT_FOUND, no URL, nothing appended to the side channel.
+    assert result == {"status": "NOT_FOUND", "orderId": "ORD-079522"}
+    assert req_ctx["receipts"] == []
 
 
 def test_get_receipt_url_rejects_bad_order_id(monkeypatch):
@@ -247,6 +307,71 @@ def test_place_order_writes_and_appends():
         "total": result["total"],
         "status": "RECEIVED",
     }
+
+
+def test_place_order_writes_receipt_object(monkeypatch):
+    from presign import handler as presign_handler
+
+    fake_s3 = _FakeS3Client()
+    monkeypatch.setattr(
+        presign_handler, "make_s3_client", lambda region=None: fake_s3
+    )
+
+    table = _StubTable()
+    req_ctx = {"placed_orders": []}
+    place = tools.make_place_order(table, req_ctx, receipts_bucket="receipts-bucket")
+
+    result = place("2x Latte, 1x Croissant")
+
+    assert result["status"] == "RECEIVED"
+    # A receipt PDF was uploaded for exactly this order.
+    assert len(fake_s3.put_calls) == 1
+    put = fake_s3.put_calls[0]
+    assert put["Bucket"] == "receipts-bucket"
+    assert put["Key"] == f"receipts/{result['orderId']}.pdf"
+    assert put["ContentType"] == "application/pdf"
+    assert put["Body"].startswith(b"%PDF-")
+    assert result["orderId"].encode("ascii") in put["Body"]
+
+
+def test_place_order_still_received_when_receipt_upload_fails(monkeypatch):
+    from presign import handler as presign_handler
+
+    fake_s3 = _FakeS3Client(fail_put=True)
+    monkeypatch.setattr(
+        presign_handler, "make_s3_client", lambda region=None: fake_s3
+    )
+
+    table = _StubTable()
+    req_ctx = {"placed_orders": []}
+    place = tools.make_place_order(table, req_ctx, receipts_bucket="receipts-bucket")
+
+    result = place("1x Latte")
+
+    # Order placement is unaffected by a failed (best-effort) receipt upload.
+    assert result["status"] == "RECEIVED"
+    assert len(table.put_items) == 1
+    assert req_ctx["placed_orders"][-1]["orderId"] == result["orderId"]
+    assert len(fake_s3.put_calls) == 1  # attempted, raised, swallowed
+
+
+def test_place_order_no_bucket_skips_upload(monkeypatch):
+    # The old two-arg signature must still work and must NOT touch S3.
+    from presign import handler as presign_handler
+
+    fake_s3 = _FakeS3Client()
+    monkeypatch.setattr(
+        presign_handler, "make_s3_client", lambda region=None: fake_s3
+    )
+
+    table = _StubTable()
+    req_ctx = {"placed_orders": []}
+    place = tools.make_place_order(table, req_ctx)  # no receipts_bucket
+
+    result = place("1x Latte")
+
+    assert result["status"] == "RECEIVED"
+    assert fake_s3.put_calls == []
 
 
 def test_place_order_rejected_input_writes_nothing():

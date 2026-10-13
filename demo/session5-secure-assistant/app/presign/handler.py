@@ -60,6 +60,33 @@ def make_s3_presign_client(region: str = None):
     )
 
 
+def make_s3_client(region: str = None):
+    """Build a plain regional boto3 S3 client (SigV4) for non-presign calls.
+
+    SINGLE SOURCE OF TRUTH for S3 client construction lives in this module.
+    The presigning path uses make_s3_presign_client (which also forces virtual
+    addressing for a browser-followable URL); server-side calls that are made
+    IN-PROCESS (head_object existence checks, put_object receipt writes) use
+    this plain client. Keeping both constructors here means no other module
+    scatters its own boto3.client('s3', ...) config.
+
+    SigV4 + the regional endpoint are forced because the receipts bucket is
+    CMK-encrypted in ap-southeast-1 and requires SigV4.
+    """
+    region = region or os.environ.get("AWS_REGION_PINNED", "ap-southeast-1")
+    return boto3.client(
+        "s3",
+        region_name=region,
+        endpoint_url=f"https://s3.{region}.amazonaws.com",
+        config=Config(signature_version="s3v4"),
+    )
+
+
+def receipt_key(order_id: str) -> str:
+    """The S3 key for an order's receipt PDF. ONE definition of the layout."""
+    return f"receipts/{order_id}.pdf"
+
+
 def generate_url(s3_client, bucket: str, order_id: str, expires_in: int = EXPIRES_IN):
     """Generate a presigned GET URL for receipts/{order_id}.pdf.
 
@@ -67,7 +94,7 @@ def generate_url(s3_client, bucket: str, order_id: str, expires_in: int = EXPIRE
     """
     if not order_id or not ORDER_ID_RE.match(order_id):
         return None, _response(400, {"error": "invalid order id"})
-    key = f"receipts/{order_id}.pdf"
+    key = receipt_key(order_id)
     url = s3_client.generate_presigned_url(
         "get_object",
         Params={"Bucket": bucket, "Key": key},

@@ -142,9 +142,9 @@ def _build_agent(req_ctx: dict):  # pragma: no cover - requires strands + boto3
         pending_table, req_ctx, max_refund=_max_refund()
     )
     look_up_order = make_look_up_order(orders_table)
-    place_order = make_place_order(orders_table, req_ctx)
     bucket = os.environ["RECEIPTS_BUCKET"]
     region = os.environ.get("AWS_REGION_PINNED", "ap-southeast-1")
+    place_order = make_place_order(orders_table, req_ctx, bucket, region)
     get_receipt_url = make_get_receipt_url(req_ctx, bucket, region, orders_table)
     return Agent(
         model=model,
