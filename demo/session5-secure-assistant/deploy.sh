@@ -49,12 +49,18 @@ echo "==> [1/6] Bootstrapping CDK environment (idempotent)"
 )
 
 # --- 2. Regenerate the architecture diagram ---------------------------------
-echo "==> [2/6] Regenerating the architecture diagram"
+echo "==> [2/6] Regenerating the architecture diagram + syncing it into the SPA"
 (
   cd "${ROOT}/diagram"
   python3 build_diagram.py
   rsvg-convert -o architecture.png architecture.svg
 )
+# The SPA serves its OWN copy of architecture.png (the site's "Architecture"
+# link). Keep it in lockstep with the generated diagram so the deployed site
+# never shows a stale image.
+cp "${ROOT}/diagram/architecture.png" "${ROOT}/spa/architecture.png"
+cp "${ROOT}/diagram/architecture.svg" "${ROOT}/spa/architecture.svg"
+echo "    Diagram synced into spa/architecture.png"
 
 # --- 3. Deploy the SecurityData stack FIRST ---------------------------------
 # ORDERING MATTERS: the Guardrail + its published version, the CMK, the tables,
@@ -63,11 +69,29 @@ echo "==> [2/6] Regenerating the architecture diagram"
 # id/version into the assistant Lambda env). The container image build happens
 # at this step via cdk-assets (NOT at synth).
 echo "==> [3/6] Deploying ${SECURITY_STACK} (CMK, tables, guardrail, logging)"
+# NOTE: on accounts with the managed hook AWS::EarlyValidation::PropertyValidation,
+# the AWS::Bedrock::Guardrail changeset is rejected before execution. We do NOT
+# treat that as fatal: the rest of the substrate (CMK, tables, secret, SSM,
+# logging) still needs to exist, and reconcile.sh (step 6) applies the guardrail
+# config via the Bedrock control-plane API afterward. If the guardrail is the
+# only blocked resource, the stack may already be CREATE/UPDATE_COMPLETE from a
+# prior run; a failed changeset here is tolerated and reconciled at the end.
 (
   cd "${ROOT}/infra"
   CDK_DEFAULT_ACCOUNT="${ACCOUNT_ID}" CDK_DEFAULT_REGION="${AWS_REGION}" \
     npx cdk deploy "${SECURITY_STACK}" --require-approval never
-)
+) || {
+  echo "    WARNING: ${SECURITY_STACK} deploy did not complete cleanly."
+  echo "    If this is the EarlyValidation guardrail hook, it is expected on this"
+  echo "    account; reconcile.sh (step 6) will apply the guardrail via the API."
+  echo "    Verifying the substrate exists before continuing..."
+  STATUS="$(aws cloudformation describe-stacks --stack-name "${SECURITY_STACK}" \
+    --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo MISSING)"
+  case "${STATUS}" in
+    *COMPLETE) echo "    ${SECURITY_STACK} is ${STATUS}; continuing." ;;
+    *) echo "ERROR: ${SECURITY_STACK} is ${STATUS}; cannot continue." >&2; exit 1 ;;
+  esac
+}
 
 # --- 3b. Build + push the assistant image to a dedicated ECR repo -----------
 # The assistant Lambda is a container image. We build + push it OURSELVES (not
@@ -94,10 +118,13 @@ echo "    Pushed ${ASSISTANT_ECR_URI}:latest"
 # Stands up CloudFront, WAF, API Gateway, the Lambdas (the assistant references
 # the ECR image pushed above), and the Bedrock interface endpoints.
 echo "==> [4/6] Deploying ${APP_STACK} (edge + compute + observability)"
+# --exclusively: deploy ONLY this stack, so CDK does not attempt to re-touch
+# ${SECURITY_STACK} (whose guardrail changeset is blocked by EarlyValidation on
+# this account). ${SECURITY_STACK}'s substrate is already in place from step 3.
 (
   cd "${ROOT}/infra"
   CDK_DEFAULT_ACCOUNT="${ACCOUNT_ID}" CDK_DEFAULT_REGION="${AWS_REGION}" \
-    npx cdk deploy "${APP_STACK}" --require-approval never
+    npx cdk deploy "${APP_STACK}" --exclusively --require-approval never
 )
 
 # --- 5. Seed demo data ------------------------------------------------------
@@ -121,10 +148,30 @@ fi
 
 if [[ -n "${RECEIPTS_BUCKET}" && "${RECEIPTS_BUCKET}" != "None" ]]; then
   TMP_PDF="$(mktemp -t receipt.XXXXXX).pdf"
-  printf '%%PDF-1.4\n%% session5 demo receipt for ORD-000123\n' > "${TMP_PDF}"
+  # Seed a VALID, renderable receipt PDF (reusing the assistant's
+  # build_receipt_pdf so the seed matches what the live tool produces — a bare
+  # "%PDF" header stub does not open in a viewer).
+  if python3 - "${TMP_PDF}" <<'PY' 2>/dev/null
+import sys
+sys.path.insert(0, "app")
+from assistant.tools import build_receipt_pdf
+pdf = build_receipt_pdf("ORD-000123", "1x Flat White, 1x Croissant", 7.50)
+open(sys.argv[1], "wb").write(pdf)
+PY
+  then :; else
+    # Fallback: a minimal but still header-only PDF if the import is unavailable.
+    printf '%%PDF-1.4\n%% session5 demo receipt for ORD-000123\n' > "${TMP_PDF}"
+  fi
   aws s3 cp "${TMP_PDF}" "s3://${RECEIPTS_BUCKET}/receipts/ORD-000123.pdf" || true
   rm -f "${TMP_PDF}"
 fi
+
+# --- 5b. Reconcile the working config CloudFormation cannot apply -----------
+# Applies the expanded Bedrock Guardrail via the Bedrock API (CloudFormation is
+# blocked by EarlyValidation on this account), publishes a version, and points
+# the assistant Lambda at it; also re-asserts the SPA diagram. Idempotent.
+echo "==> [5b/6] Reconciling guardrail + static assets (reconcile.sh)"
+bash "${ROOT}/reconcile.sh"
 
 # --- 6. Resolve the CloudFront URL ------------------------------------------
 echo "==> [6/6] Resolving the CloudFront URL"

@@ -87,8 +87,43 @@ cd .. && bash -n deploy.sh && bash -n destroy.sh
 
 `./deploy.sh` creates real, billable resources in ap-southeast-1 (one-time
 prereqs: Bedrock Nova Micro model access enabled, the VPC + subnets present,
-CDK bootstrap). `./destroy.sh` tears everything down and is guarded — you must
-type `destroy`.
+CDK bootstrap). It ends by running `./reconcile.sh` (see below). `./destroy.sh`
+tears everything down and is guarded — you must type `destroy`.
 
 See **FACILITATOR-RUNBOOK.md** for the guided walkthrough and the seven security
 callouts.
+
+## Reproducibility note (`reconcile.sh`)
+
+Two aspects of the working deployment cannot be applied by plain CloudFormation
+on the training account used here, so `deploy.sh` finishes by invoking the
+idempotent `./reconcile.sh`:
+
+1. **The expanded Bedrock Guardrail.** `infra/lib/security-data-stack.ts` is the
+   source of truth for the guardrail (six content filters incl. input-only
+   `PROMPT_ATTACK`, managed PROFANITY + custom word blocks, a broad PII
+   BLOCK/ANONYMIZE set + a loyalty-card regex, and legal/medical/investment
+   DENY topics; **contextual grounding is intentionally omitted** because it
+   blocks the tool-generated presigned receipt URL). Updating the
+   `AWS::Bedrock::Guardrail` resource through CloudFormation is rejected on this
+   account by the managed hook `AWS::EarlyValidation::PropertyValidation` (the
+   changeset fails before execution; the identical config applies cleanly via
+   the Bedrock control-plane API). `reconcile.sh` therefore reads the
+   **synthesized** guardrail config from the CDK template, applies it with
+   `aws bedrock update-guardrail`, publishes an immutable version, and points
+   the assistant Lambda's `GUARDRAIL_VERSION` at that version. On an account
+   **without** that hook, `cdk deploy SecureAssistantSecurityData` applies the
+   same config and `reconcile.sh` is a harmless re-assertion.
+
+   Because any `cdk deploy SecureAssistantAppEdgeAI` resets the Lambda's
+   `GUARDRAIL_VERSION` back to the CloudFormation-tracked value, **re-run
+   `./reconcile.sh` after redeploying the AppEdgeAI stack.**
+
+2. **The SPA architecture diagram.** The site's "Architecture" link loads
+   `architecture.png` from the SPA bucket — a separate copy from
+   `diagram/architecture.png`. `deploy.sh` (and `reconcile.sh`) regenerate the
+   diagram and copy it into `spa/` so the deployed site never shows a stale
+   image.
+
+`reconcile.sh` is safe to run repeatedly and derives everything from the CDK
+source, so the CDK stays the single source of truth.

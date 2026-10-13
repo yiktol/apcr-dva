@@ -1,0 +1,4 @@
+# Workflow/agent scratch output (plans, reviews, verification notes). These are
+# generated per run and are not part of the deployable app, so they are not
+# tracked — keeping them out of commits avoids churn on every workflow run.
+.agents/

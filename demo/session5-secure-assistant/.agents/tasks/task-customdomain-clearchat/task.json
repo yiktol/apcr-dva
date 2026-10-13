@@ -1,7 +1,0 @@
-{
-  "task_id": "task-customdomain-clearchat",
-  "task_description": "Two independent changes to the live session5-secure-assistant CDK demo: (TASK 1) add custom domain cafe-nova.aws.yikyakyuk.com to the CloudFront distribution using the existing us-east-1 wildcard ACM cert (imported by ARN) plus Route53 A+AAAA alias records in the existing hosted zone; (TASK 2) add a client-side 'Clear chat' control to the SPA chat panel. Then deploy the AppEdgeAI stack.",
-  "status": "pending",
-  "feature_order": ["FEAT-001", "FEAT-002"],
-  "blocked_reason": null
-}
