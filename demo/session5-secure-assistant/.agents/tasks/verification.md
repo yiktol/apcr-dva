@@ -1,115 +1,76 @@
-# Verification — Session 5 Storefront Frontend
+# FEAT-001 verification — expanded AssistantGuardrail CfnGuardrail
 
-Iteration: FIRST (no `.agents/tasks/review.json` present at start).
+## Scope
 
-Scope shipped: FRONTEND ONLY. Changed files, all under
-`demo/session5-secure-assistant/spa/`:
-- `index.html` — rewritten into a coffee-shop storefront (navbar, hero, "What
-  We Offer" cards, menu/specials, footer) with the chat as a floating widget +
-  overlay panel.
-- `styles.css` — rewritten self-authored stylesheet (coffee palette + accent
-  `#8c4fff`); retains every class `app.js` depends on (`.msg`, `.msg.user`,
-  `.msg.bot`, `.msg.sys`, `.pending`, `.receipt`, `.row`, `.chat`).
-- `ui.js` — NEW: panel open/close + Esc + focus logic, bound only to the new
-  opener/close elements. Does not touch the five chat ids or the chat logic.
-- `app.js` — UNCHANGED (git diff empty). All chat/refund/receipt logic and
-  fetch calls byte-for-byte intact; the five required ids
-  (`log`/`chatForm`/`message`/`orderId`/`receiptBtn`) are present in the panel
-  markup before the `<script src="app.js">` tag.
+Expanded the `AssistantGuardrail` `CfnGuardrail` in
+`infra/lib/security-data-stack.ts` to exercise the full guardrail feature
+surface supported by the **installed** `aws-cdk-lib 2.160.0`, verified against
+`infra/node_modules/aws-cdk-lib/aws-bedrock/lib/bedrock.generated.d.ts`. Also
+extended the `Bedrock Guardrail ...` assertion in
+`infra/test/template.test.ts`. The `CfnGuardrailVersion` wiring and the
+`guardrailId` / `guardrailVersion` public-readonly cross-stack contract are
+unchanged (still exactly one `AWS::Bedrock::GuardrailVersion`).
 
-No backend/API/infra/Lambda/SecurityData changes. `destroy.sh` was NOT run.
-Changes left staged on disk (not committed per instructions — see note).
+## What was added
 
-## Local checks
-- `node --check spa/app.js` → OK
-- `node --check spa/ui.js` → OK
-- `git status` confirms only `index.html`, `styles.css` modified and `ui.js`
-  added under `spa/`; `git diff spa/app.js` is empty (app.js untouched).
+- **contentPolicyConfig.filtersConfig** — all six content filters:
+  HATE, VIOLENCE, INSULTS, MISCONDUCT, SEXUAL at `inputStrength: HIGH /
+  outputStrength: HIGH`, plus PROMPT_ATTACK at `inputStrength: HIGH /
+  outputStrength: NONE` (PROMPT_ATTACK is input-filtering only — Bedrock
+  rejects an output strength for it).
+- **wordPolicyConfig** — `managedWordListsConfig: [{ type: PROFANITY }]` and
+  three custom `wordsConfig` entries.
+- **sensitiveInformationPolicyConfig.piiEntitiesConfig** — kept the existing
+  US_BANK_ACCOUNT_NUMBER / US_SOCIAL_SECURITY_NUMBER / EMAIL (ANONYMIZE); added
+  BLOCK for CREDIT_DEBIT_CARD_NUMBER, CREDIT_DEBIT_CARD_CVV, PIN, PASSWORD,
+  AWS_ACCESS_KEY, AWS_SECRET_KEY; added ANONYMIZE for CREDIT_DEBIT_CARD_EXPIRY,
+  PHONE, ADDRESS, NAME, US_BANK_ROUTING_NUMBER, AGE, USERNAME.
+- **sensitiveInformationPolicyConfig.regexesConfig** — one `loyalty-card`
+  regex (`LOYALTY-[0-9]{8}`, ANONYMIZE).
+- **topicPolicyConfig.topicsConfig** — kept legal-advice (DENY) and added
+  medical-advice and financial-investment-advice as DENY topics, each with a
+  definition and two examples.
+- **contextualGroundingPolicyConfig.filtersConfig** — GROUNDING and RELEVANCE
+  filters, each `threshold: 0.7`.
 
-## Redeploy (app stack only)
-Command run from `demo/session5-secure-assistant/infra`:
-```
-AWS_REGION=ap-southeast-1 AWS_DEFAULT_REGION=ap-southeast-1 \
-CDK_DEFAULT_ACCOUNT=875692608981 CDK_DEFAULT_REGION=ap-southeast-1 \
-npx cdk deploy SecureAssistantAppEdgeAI --require-approval never
-```
-Result: deploy succeeded (Total time ~87s). Re-ran the `SpaDeployment`
-BucketDeployment + CloudFront `/*` invalidation; did NOT rebuild the Lambda
-image. Stack outputs confirmed:
-- CloudFrontUrl = https://d1o0u6nv8iqp83.cloudfront.net
-- AssistantApiEndpoint = https://6y7dnxp43k.execute-api.ap-southeast-1.amazonaws.com/prod/
+## Intentional omission: contentPolicyConfig.tierConfig
 
-`aws sts get-caller-identity` succeeded (account 875692608981, ap-southeast-1)
-before deploy — no SSO re-auth needed.
+`contentPolicyConfig.tierConfig` is **NOT present** in `aws-cdk-lib 2.160.0`.
+The installed `CfnGuardrail.ContentPolicyConfigProperty` exposes **only**
+`filtersConfig`, so `tierConfig` was intentionally skipped — including it would
+be a `tsc --noEmit` error. (Confirmed by reading
+`infra/node_modules/aws-cdk-lib/aws-bedrock/lib/bedrock.generated.d.ts`.)
 
-## Live verification against https://d1o0u6nv8iqp83.cloudfront.net
+## Included because supported: contextualGroundingPolicyConfig
 
-Method: all checks were **curl-verified** (no real browser available in this
-environment). Static assets and the three API contracts were exercised live
-through CloudFront. Browser-only interactions (click-to-open, Esc, focus) were
-verified by inspecting the shipped markup/CSS/JS that implement them.
+`contextualGroundingPolicyConfig` (`ContextualGroundingPolicyConfigProperty`
+with `filtersConfig` of `ContextualGroundingFilterConfigProperty { type,
+threshold }`) **is** supported in 2.160.0 and was included.
 
-### 1. Storefront is live (curl-verified)
-`curl https://d1o0u6nv8iqp83.cloudfront.net/?cb=<ts>` and grep:
-- "Coffee — Makes you Love" → 3 matches (title/hero/meta)
-- `openChatFab` (floating button id) → 1 match
-- `chatPanel` → 6 matches
-- `ui.js` script tag → 1 match
-- `id="log"` → 1 match (chat log present in panel)
-Asset HTTP status: `styles.css` 200, `app.js` 200, `ui.js` 200.
-=> The NEW storefront markup is live (not the old bare chat page).
+## Known-failing, deliberately-unchanged test
 
-### 2. Chat end-to-end — POST /api/chat (curl-verified)
-Request `{"message":"where is my order ORD-000123?"}` → HTTP 200. Reply names
-the order: "1x Flat White and 1x Croissant", status OK. Proves
-Strands → Nova → Bedrock path works through CloudFront `/api/*`.
+The pre-existing template assertion
+**`raw Bedrock invocation-logging config on CMK-encrypted destinations`**
+fails on the baseline and was deliberately left unchanged. It asserts an
+`AWS::Bedrock::ModelInvocationLoggingConfiguration` CloudFormation resource,
+but this stack provisions model-invocation logging via an `AwsCustomResource`
+(the Bedrock control-plane `PutModelInvocationLoggingConfiguration` API), not a
+CFN resource type — so no such resource is synthesized. This is out of scope
+for FEAT-001; it must stay the single known failure.
 
-### 3. Human-in-the-loop refund — POST /api/chat then /api/refunds/confirm (curl-verified)
-- `{"message":"Refund the full 12.50 for ORD-000123"}` → HTTP 200 with a
-  structured `pendingRefund`:
-  `{"token":"717af2ec-...","amountMasked":"12.50","orderMasked":"ORD-000123"}`.
-  (Masked order + amount present; the reply text says "No money has moved yet.")
-- `POST /api/refunds/confirm` with `{"token":"717af2ec-..."}` (the opaque token
-  echoed back unchanged) → HTTP 200 `{"status":"CONFIRMED","token":"717af2ec-..."}`.
-  Confirms the opaque-token confirm path. In the UI this renders the
-  "Refund confirmed." system message (app.js `confirmRefund`).
-- Note: the assistant only emits `pendingRefund` once an amount is given; a bare
-  "I want a refund" first asks for the amount (expected agent behavior).
+## Verification results
 
-### 4. Receipt — GET /api/receipts/ORD-000123/url (curl-verified)
-Request → HTTP 200 `{"url":"https://...receiptsbucket.../receipts/ORD-000123.pdf?...","expiresIn":900}`.
-The API returns a presigned S3 URL per the contract; the frontend opens it with
-`window.open(data.url, "_blank")`.
-Caveat (BACKEND, out of frontend scope): the presigned URL is signed SigV2 and
-the receipts bucket is KMS-encrypted in ap-southeast-1, so following S3's 307
-regional redirect yields a SigV4-required error. This is a property of the
-backend's URL generation (Lambda), which this frontend-only task must not
-change, and does not affect the frontend contract (API returns 200 + a url).
+Run from `infra/`:
 
-### 5. Security re-check (curl-verified on live assets)
-- Fetched live `app.js`/`ui.js` + HTML and scanned: NO hardcoded API
-  keys/secrets/tokens/passwords (only a comment stating "No secrets ... live in
-  the browser").
-- All `fetch(...)` targets are relative and same-origin: `/api/chat`,
-  `/api/refunds/confirm`, `/api/receipts/.../url`. No absolute or cross-origin
-  URLs in the served HTML/JS. No external CDN links.
-- The refund token is handled as an opaque string: app.js passes
-  `pending.token` straight to `confirmRefund` and sends `{"token":token}` — it
-  is never parsed from the reply text. (app.js unchanged.)
+1. `npx tsc --noEmit` — **clean** (no errors).
+2. `CDK_DEFAULT_ACCOUNT=875692608981 JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 npx cdk synth SecureAssistantSecurityData` — **synthesizes without error**. The `AWS::Bedrock::Guardrail` resource contains all six content filters (PROMPT_ATTACK with OutputStrength NONE), the word policy (PROFANITY + custom words), the expanded PII entities + loyalty regex, three DENY topics, and the contextual-grounding GROUNDING + RELEVANCE filters.
+3. `npm test` — **exactly 1 failure**, the pre-existing `raw Bedrock invocation-logging config on CMK-encrypted destinations` assertion. Every other assertion passes, including the extended Guardrail assertion and `published Guardrail version` (`AWS::Bedrock::GuardrailVersion` count still 1).
 
-## Accessibility (verified by inspecting shipped markup/CSS/JS)
-- Floating button `#openChatFab` has `aria-label="Chat with us to order coffee"`.
-- Openers have `aria-haspopup="dialog"`, `aria-controls="chatPanel"`,
-  `aria-expanded` toggled by `ui.js`.
-- Panel is `role="dialog" aria-modal="true" aria-labelledby="chatPanelTitle"`,
-  `hidden` when closed (`.chat-panel[hidden]{display:none}`).
-- `ui.js` closes the panel on the × button and on `Escape`, moves focus into the
-  panel on open and returns focus to the opener on close.
-- `#log` keeps `aria-live="polite"`.
+### Test-authoring note
 
-## Summary
-All three live API contracts return 200 and behave as specified; the new
-storefront markup/CSS/JS is confirmed live over HTTPS through CloudFront; no
-secrets and all same-origin relative `/api/...` calls preserved; `app.js`
-unchanged. The one caveat (presigned-URL S3 redirect signature) is pre-existing
-backend behavior outside this frontend-only task's scope.
+`Match.arrayWith` matches its patterns **positionally** (in array order), not as
+an unordered subset. The extended PII assertion therefore lists its patterns in
+the order the entities appear in the synthesized `PiiEntitiesConfig` array (the
+BLOCK `CREDIT_DEBIT_CARD_NUMBER` first, then the ANONYMIZE entities). Nested
+policy-config objects in the assertion are wrapped in `Match.objectLike` so that
+only the asserted keys are required.

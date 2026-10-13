@@ -57,26 +57,47 @@ check('two DynamoDB tables with customer-managed KMS', () => {
   });
 });
 
-check('Bedrock Guardrail with Hate+Violence HIGH + PII mask + BLOCK topic', () => {
+check('Bedrock Guardrail with full feature surface (filters + words + PII + regex + topics + grounding)', () => {
   sec.hasResourceProperties('AWS::Bedrock::Guardrail', {
-    ContentPolicyConfig: {
+    ContentPolicyConfig: Match.objectLike({
       FiltersConfig: Match.arrayWith([
         Match.objectLike({ Type: 'HATE', InputStrength: 'HIGH', OutputStrength: 'HIGH' }),
         Match.objectLike({ Type: 'VIOLENCE', InputStrength: 'HIGH', OutputStrength: 'HIGH' }),
+        // PROMPT_ATTACK is input-filtering only => OutputStrength NONE.
+        Match.objectLike({ Type: 'PROMPT_ATTACK', InputStrength: 'HIGH', OutputStrength: 'NONE' }),
       ]),
-    },
-    SensitiveInformationPolicyConfig: {
+    }),
+    WordPolicyConfig: Match.objectLike({
+      ManagedWordListsConfig: Match.arrayWith([
+        Match.objectLike({ Type: 'PROFANITY' }),
+      ]),
+    }),
+    SensitiveInformationPolicyConfig: Match.objectLike({
+      // NOTE: Match.arrayWith matches patterns positionally (in order), so the
+      // patterns below follow the order entities appear in the synthesized
+      // array: the BLOCK entity first, then the ANONYMIZE ones.
       PiiEntitiesConfig: Match.arrayWith([
-        Match.objectLike({ Type: 'US_BANK_ACCOUNT_NUMBER' }),
-        Match.objectLike({ Type: 'US_SOCIAL_SECURITY_NUMBER' }),
-        Match.objectLike({ Type: 'EMAIL' }),
+        // At least one BLOCK entity.
+        Match.objectLike({ Type: 'CREDIT_DEBIT_CARD_NUMBER', Action: 'BLOCK' }),
+        Match.objectLike({ Type: 'US_BANK_ACCOUNT_NUMBER', Action: 'ANONYMIZE' }),
+        Match.objectLike({ Type: 'US_SOCIAL_SECURITY_NUMBER', Action: 'ANONYMIZE' }),
+        Match.objectLike({ Type: 'EMAIL', Action: 'ANONYMIZE' }),
       ]),
-    },
-    TopicPolicyConfig: {
+      RegexesConfig: Match.arrayWith([
+        Match.objectLike({ Name: 'loyalty-card', Pattern: 'LOYALTY-[0-9]{8}' }),
+      ]),
+    }),
+    TopicPolicyConfig: Match.objectLike({
       TopicsConfig: Match.arrayWith([
         Match.objectLike({ Name: 'legal-advice', Type: 'DENY' }),
+        Match.objectLike({ Name: 'medical-advice', Type: 'DENY' }),
       ]),
-    },
+    }),
+    ContextualGroundingPolicyConfig: Match.objectLike({
+      FiltersConfig: Match.arrayWith([
+        Match.objectLike({ Type: 'GROUNDING' }),
+      ]),
+    }),
   });
 });
 

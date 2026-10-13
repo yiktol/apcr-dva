@@ -141,38 +141,89 @@ export class SecurityDataStack extends cdk.Stack {
     });
 
     // ---- Bedrock Guardrail + published version ----------------------------
-    // Content filters Hate + Violence at HIGH (input+output); PII MASK for
-    // bank-account / SSN / email on both input and output; a BLOCK example via
-    // a denied topic ("legal-advice"). Published as a version so it can be
-    // referenced by id+version from the Strands BedrockModel.
+    // Exercises the FULL guardrail feature surface supported by the installed
+    // aws-cdk-lib 2.160.0 CfnGuardrail (verified against the generated L1
+    // bedrock.generated.d.ts):
+    //   - contentPolicyConfig: all six content filters (HATE, VIOLENCE,
+    //     INSULTS, MISCONDUCT, SEXUAL at HIGH/HIGH; PROMPT_ATTACK input-only
+    //     HIGH/NONE — PROMPT_ATTACK supports input filtering only),
+    //   - wordPolicyConfig: the PROFANITY managed list + custom blocked words,
+    //   - sensitiveInformationPolicyConfig: PII BLOCK/ANONYMIZE entities plus a
+    //     custom loyalty-card regex,
+    //   - topicPolicyConfig: three DENY topics (legal/medical/investment advice),
+    //   - contextualGroundingPolicyConfig: GROUNDING + RELEVANCE filters.
+    // NOTE: contentPolicyConfig.tierConfig is NOT present in 2.160.0's
+    // ContentPolicyConfigProperty (filtersConfig only), so it is intentionally
+    // omitted. Published as a version so it can be referenced by id+version
+    // from the Strands BedrockModel.
     const guardrail = new bedrock.CfnGuardrail(this, 'AssistantGuardrail', {
       name: 'session5-secure-assistant',
       description:
-        'session5 secure assistant guardrail: Hate+Violence HIGH, PII mask, legal-advice blocked.',
+        'session5 secure assistant guardrail: six content filters (HATE/VIOLENCE/INSULTS/MISCONDUCT/SEXUAL HIGH + PROMPT_ATTACK input-only), PROFANITY + custom word blocks, expanded PII BLOCK/ANONYMIZE + loyalty regex, legal/medical/investment-advice DENY topics, and contextual-grounding filters.',
       blockedInputMessaging:
-        'I can only help with coffee-shop orders, receipts, and refunds.',
+        'I can only help with coffee-shop orders, receipts, and refunds. I cannot help with that request.',
       blockedOutputsMessaging:
-        'I can only help with coffee-shop orders, receipts, and refunds.',
+        'I can only help with coffee-shop orders, receipts, and refunds. I cannot share that response.',
       contentPolicyConfig: {
+        // All six content filters. PROMPT_ATTACK is input-filtering only, so its
+        // outputStrength must be NONE (Bedrock rejects an output strength here).
         filtersConfig: [
           { type: 'HATE', inputStrength: 'HIGH', outputStrength: 'HIGH' },
           { type: 'VIOLENCE', inputStrength: 'HIGH', outputStrength: 'HIGH' },
+          { type: 'INSULTS', inputStrength: 'HIGH', outputStrength: 'HIGH' },
+          { type: 'MISCONDUCT', inputStrength: 'HIGH', outputStrength: 'HIGH' },
+          { type: 'SEXUAL', inputStrength: 'HIGH', outputStrength: 'HIGH' },
+          { type: 'PROMPT_ATTACK', inputStrength: 'HIGH', outputStrength: 'NONE' },
+        ],
+      },
+      wordPolicyConfig: {
+        // Managed PROFANITY list plus a few demo-specific blocked words.
+        managedWordListsConfig: [{ type: 'PROFANITY' }],
+        wordsConfig: [
+          { text: 'competitorcafe' },
+          { text: 'freecoffeehack' },
+          { text: 'voucherabuse' },
         ],
       },
       sensitiveInformationPolicyConfig: {
-        // MASK PII on both input and output. NOTE: the valid Bedrock entity for
-        // a bank account number is US_BANK_ACCOUNT_NUMBER (there is no generic
-        // ACCOUNT_NUMBER entity). These guardrail masks cover the MODEL channel
-        // only — they do NOT see tool-call arguments/results (the "tool-call
-        // blind spot"); the Lambda tool handlers mask PII themselves.
+        // BLOCK outright for the highest-risk secrets/credentials; ANONYMIZE
+        // (mask) everything else. NOTE: the valid Bedrock entity for a bank
+        // account number is US_BANK_ACCOUNT_NUMBER (there is no generic
+        // ACCOUNT_NUMBER entity). These guardrail actions cover the MODEL
+        // channel only — they do NOT see tool-call arguments/results (the
+        // "tool-call blind spot"); the Lambda tool handlers mask PII themselves.
         piiEntitiesConfig: [
+          // BLOCK: payment-card secrets, PINs, passwords, and AWS keys.
+          { type: 'CREDIT_DEBIT_CARD_NUMBER', action: 'BLOCK' },
+          { type: 'CREDIT_DEBIT_CARD_CVV', action: 'BLOCK' },
+          { type: 'PIN', action: 'BLOCK' },
+          { type: 'PASSWORD', action: 'BLOCK' },
+          { type: 'AWS_ACCESS_KEY', action: 'BLOCK' },
+          { type: 'AWS_SECRET_KEY', action: 'BLOCK' },
+          // ANONYMIZE: identifying + financial-adjacent PII.
           { type: 'US_BANK_ACCOUNT_NUMBER', action: 'ANONYMIZE' },
+          { type: 'US_BANK_ROUTING_NUMBER', action: 'ANONYMIZE' },
           { type: 'US_SOCIAL_SECURITY_NUMBER', action: 'ANONYMIZE' },
+          { type: 'CREDIT_DEBIT_CARD_EXPIRY', action: 'ANONYMIZE' },
           { type: 'EMAIL', action: 'ANONYMIZE' },
+          { type: 'PHONE', action: 'ANONYMIZE' },
+          { type: 'ADDRESS', action: 'ANONYMIZE' },
+          { type: 'NAME', action: 'ANONYMIZE' },
+          { type: 'AGE', action: 'ANONYMIZE' },
+          { type: 'USERNAME', action: 'ANONYMIZE' },
+        ],
+        // Custom regex: mask demo loyalty-card ids like LOYALTY-00123456.
+        regexesConfig: [
+          {
+            name: 'loyalty-card',
+            description: 'Demo loyalty-card id pattern',
+            pattern: 'LOYALTY-[0-9]{8}',
+            action: 'ANONYMIZE',
+          },
         ],
       },
       topicPolicyConfig: {
-        // The BLOCK example: refuse legal-advice requests outright.
+        // BLOCK examples: refuse professional-advice topics outright.
         topicsConfig: [
           {
             name: 'legal-advice',
@@ -184,6 +235,34 @@ export class SecurityDataStack extends cdk.Stack {
               'What are my legal rights to sue the coffee shop?',
             ],
           },
+          {
+            name: 'medical-advice',
+            definition:
+              'Requests for medical advice, diagnosis, treatment recommendations, or interpretation of symptoms or health conditions.',
+            type: 'DENY',
+            examples: [
+              'Is it safe to drink this much caffeine with my heart condition?',
+              'What medication should I take for my headache?',
+            ],
+          },
+          {
+            name: 'financial-investment-advice',
+            definition:
+              'Requests for financial, investment, or trading advice, including recommendations to buy, sell, or hold securities or other assets.',
+            type: 'DENY',
+            examples: [
+              'Should I invest my refund in stocks or crypto?',
+              'Which coffee-company shares should I buy right now?',
+            ],
+          },
+        ],
+      },
+      // Contextual grounding: flag responses that are not grounded in the
+      // provided context (GROUNDING) or not relevant to the query (RELEVANCE).
+      contextualGroundingPolicyConfig: {
+        filtersConfig: [
+          { type: 'GROUNDING', threshold: 0.7 },
+          { type: 'RELEVANCE', threshold: 0.7 },
         ],
       },
     });
