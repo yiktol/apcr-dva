@@ -4,4 +4,3 @@ dev-requirements.txt
 *.pyc
 .pytest_cache/
 refund_confirm/
-presign/
