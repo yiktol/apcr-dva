@@ -39,6 +39,29 @@ function renderPendingRefund(pending) {
   log.scrollTop = log.scrollHeight;
 }
 
+// Render the receipt-download link. The `url` is an OPAQUE presigned URL from
+// the server-side side channel (data.receipt), never parsed from the assistant's
+// reply text. Built via createElement + textContent (no innerHTML) so no value
+// is interpolated into markup.
+function renderReceipt(receipt) {
+  const box = document.createElement("div");
+  box.className = "receipt";
+
+  const label = document.createElement("div");
+  label.textContent = "Receipt for " + receipt.orderId;
+  box.appendChild(label);
+
+  const link = document.createElement("a");
+  link.href = receipt.url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.textContent = "Download receipt";
+  box.appendChild(link);
+
+  log.appendChild(box);
+  log.scrollTop = log.scrollHeight;
+}
+
 async function sendMessage(text) {
   append("user", text);
   try {
@@ -65,6 +88,9 @@ async function sendMessage(text) {
           data.placedOrder.summary
       );
       if (window.refreshRecentOrders) window.refreshRecentOrders();
+    }
+    if (data.receipt && data.receipt.url) {
+      renderReceipt(data.receipt);
     }
   } catch (e) {
     append("sys", "Network error. Please try again.");

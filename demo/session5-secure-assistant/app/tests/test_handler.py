@@ -56,6 +56,35 @@ def test_build_response_no_placed_order():
     assert "placedOrder" not in body
 
 
+def test_build_response_receipt_from_side_channel():
+    req_ctx = {
+        "pending_refunds": [],
+        "placed_orders": [],
+        "receipts": [
+            {
+                "orderId": "ORD-000123",
+                "url": "https://example-bucket.s3.amazonaws.com/receipts/ORD-000123.pdf?sig=abc",
+                "expiresIn": 900,
+            }
+        ],
+    }
+    # reply_text names a DIFFERENT fake url; the envelope must ignore it and use
+    # ONLY the side-channel record.
+    body = handler.build_response("Here is http://evil.example/x.pdf", req_ctx)
+
+    assert "receipt" in body
+    assert body["receipt"] == {
+        "orderId": "ORD-000123",
+        "url": "https://example-bucket.s3.amazonaws.com/receipts/ORD-000123.pdf?sig=abc",
+        "expiresIn": 900,
+    }
+
+
+def test_build_response_no_receipt_when_empty():
+    body = handler.build_response("hi", {"receipts": []})
+    assert "receipt" not in body
+
+
 def test_handler_module_imports_without_strands_or_boto3():
     # The module imported above (handler) proves import-safety under the test
     # env where strands/boto3 are absent; _build_agent is NOT run at import.

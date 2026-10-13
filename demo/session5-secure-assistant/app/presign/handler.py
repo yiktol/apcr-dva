@@ -38,6 +38,28 @@ def _response(status: int, body: dict) -> dict:
     }
 
 
+def make_s3_presign_client(region: str = None):
+    """Build the SigV4 + regional-endpoint boto3 S3 client used for presigning.
+
+    SINGLE SOURCE OF TRUTH for the signing client: both this Lambda's handler()
+    and the assistant's get_receipt_url tool obtain their client here, so there
+    is exactly ONE copy of the SigV4 + regional-addressing configuration.
+
+    Force SigV4 + the regional endpoint. The receipts bucket is CMK-encrypted
+    in ap-southeast-1, which REQUIRES SigV4; a default (SigV2) presigned URL
+    fails the KMS/regional-redirect signature check when the browser follows
+    S3's 307. s3v4 + region_name + regional addressing produces a URL that
+    resolves and validates directly against the regional endpoint.
+    """
+    region = region or os.environ.get("AWS_REGION_PINNED", "ap-southeast-1")
+    return boto3.client(
+        "s3",
+        region_name=region,
+        endpoint_url=f"https://s3.{region}.amazonaws.com",
+        config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+    )
+
+
 def generate_url(s3_client, bucket: str, order_id: str, expires_in: int = EXPIRES_IN):
     """Generate a presigned GET URL for receipts/{order_id}.pdf.
 
@@ -58,18 +80,9 @@ def handler(event, _context):  # pragma: no cover - exercised live only
     params = event.get("pathParameters") or {}
     order_id = params.get("orderId")
     bucket = os.environ["RECEIPTS_BUCKET"]
-    # Force SigV4 + the regional endpoint. The receipts bucket is CMK-encrypted
-    # in ap-southeast-1, which REQUIRES SigV4; a default (SigV2) presigned URL
-    # fails the KMS/regional-redirect signature check when the browser follows
-    # S3's 307. s3v4 + region_name + regional addressing produces a URL that
-    # resolves and validates directly against the regional endpoint.
-    region = os.environ.get("AWS_REGION_PINNED", "ap-southeast-1")
-    s3_client = boto3.client(
-        "s3",
-        region_name=region,
-        endpoint_url=f"https://s3.{region}.amazonaws.com",
-        config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
-    )
+    # SigV4 + regional-endpoint signing client, built from the single shared
+    # helper (same configuration used by the assistant's get_receipt_url tool).
+    s3_client = make_s3_presign_client()
     try:
         url, err = generate_url(s3_client, bucket, order_id)
     except Exception:

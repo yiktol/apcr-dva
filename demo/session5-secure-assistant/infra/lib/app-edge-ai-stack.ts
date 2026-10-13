@@ -228,6 +228,10 @@ export class AppEdgeAIStack extends cdk.Stack {
         PENDING_REFUNDS_TABLE: pendingRefundsTable.tableName,
         PAYMENT_SECRET_NAME: paymentSecret.secretName,
         CONFIG_PARAM_NAME: configParam.parameterName,
+        // The receipts bucket the get_receipt_url tool presigns against (same
+        // bucket the presign Lambda uses). receiptsBucket is declared above, so
+        // this is not a forward reference.
+        RECEIPTS_BUCKET: receiptsBucket.bucketName,
       },
     });
 
@@ -309,6 +313,19 @@ export class AppEdgeAIStack extends cdk.Stack {
     paymentSecret.grantRead(assistantRole);
     configParam.grantRead(assistantRole);
     kmsKey.grantEncryptDecrypt(assistantRole);
+    // s3:GetObject on receipts objects so the in-process get_receipt_url tool's
+    // presigned URL has a valid signature (mirrors the presignRole 'ReadReceipts'
+    // statement). kms:Decrypt is ALREADY covered by the
+    // kmsKey.grantEncryptDecrypt(assistantRole) call above, so no new KMS grant
+    // is required for the CMK-encrypted receipts bucket.
+    assistantRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'ReadReceipts',
+        effect: iam.Effect.ALLOW,
+        actions: ['s3:GetObject'],
+        resources: [receiptsBucket.arnForObjects('*')],
+      }),
+    );
     // X-Ray write (ACTIVE tracing wires the managed policy, but keep an explicit
     // scoped grant too for teaching clarity).
     assistantRole.addToPolicy(

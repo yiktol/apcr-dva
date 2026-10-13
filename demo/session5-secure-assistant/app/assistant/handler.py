@@ -44,7 +44,12 @@ except Exception:  # pragma: no cover
     _STRANDS = False
 
 from . import pii
-from .tools import make_initiate_refund, make_look_up_order, make_place_order
+from .tools import (
+    make_get_receipt_url,
+    make_initiate_refund,
+    make_look_up_order,
+    make_place_order,
+)
 
 MAX_MESSAGE_LEN = 2000
 
@@ -102,6 +107,14 @@ def build_response(reply_text: str, req_ctx: dict) -> dict:
             "total": latest["total"],
             "status": latest["status"],
         }
+    receipts = req_ctx.get("receipts") or []
+    if receipts:
+        latest = receipts[-1]
+        body["receipt"] = {
+            "orderId": latest["orderId"],
+            "url": latest["url"],
+            "expiresIn": latest["expiresIn"],
+        }
     return body
 
 
@@ -130,7 +143,13 @@ def _build_agent(req_ctx: dict):  # pragma: no cover - requires strands + boto3
     )
     look_up_order = make_look_up_order(orders_table)
     place_order = make_place_order(orders_table, req_ctx)
-    return Agent(model=model, tools=[look_up_order, place_order, initiate_refund])
+    bucket = os.environ["RECEIPTS_BUCKET"]
+    region = os.environ.get("AWS_REGION_PINNED", "ap-southeast-1")
+    get_receipt_url = make_get_receipt_url(req_ctx, bucket, region, orders_table)
+    return Agent(
+        model=model,
+        tools=[look_up_order, place_order, initiate_refund, get_receipt_url],
+    )
 
 
 def _max_refund() -> float:  # pragma: no cover - requires boto3 at runtime
@@ -156,7 +175,7 @@ def handler(event, _context):  # pragma: no cover - exercised live only
         # Defensive: should never happen in the deployed container.
         return _response(502, {"error": "assistant unavailable"})
 
-    req_ctx = {"pending_refunds": [], "placed_orders": []}
+    req_ctx = {"pending_refunds": [], "placed_orders": [], "receipts": []}
     try:
         agent = _build_agent(req_ctx)
         with xray_recorder.in_subsegment("bedrock-invoke"):

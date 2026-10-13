@@ -27,6 +27,17 @@ except Exception:  # pragma: no cover - strands not installed in test/py_compile
 
 from . import pii
 
+# Presign helpers are imported defensively (mirroring the guarded strands import
+# above) so this module stays importable for py_compile / unit tests WITHOUT
+# boto3 installed. The signing CLIENT and URL builder are the SINGLE copy owned
+# by presign.handler — the receipt tool never duplicates the SigV4 config.
+try:
+    from presign import handler as presign_handler  # type: ignore
+    from presign.handler import EXPIRES_IN  # type: ignore
+except Exception:  # pragma: no cover - boto3 absent / presign import unavailable
+    presign_handler = None  # type: ignore
+    EXPIRES_IN = 15 * 60  # type: ignore
+
 # Pending refunds expire after this many seconds (TTL on the DynamoDB item).
 PENDING_TTL_SECONDS = 15 * 60
 
@@ -274,3 +285,53 @@ def make_initiate_refund(table, req_ctx, max_refund=50.0):
         }
 
     return initiate_refund
+
+
+def make_get_receipt_url(req_ctx, bucket, region=None, orders_table=None):
+    """Factory → @tool get_receipt_url, bound to the receipts bucket + the
+    request side channel. Mirrors the other tool factories.
+
+    The presigned URL is the SAME 15-minute SigV4 regional GET the presign
+    Lambda produces — both obtain their client from
+    presign.handler.make_s3_presign_client and build the URL via
+    presign.handler.generate_url (ONE copy of the signing code). The URL is
+    appended to the AUTHORITATIVE req_ctx['receipts'] side channel so the HTTP
+    handler emits it in the envelope WITHOUT ever parsing it from model text.
+    """
+
+    @tool
+    def get_receipt_url(order_id: str) -> dict:
+        """Get a short-lived download link for an order's receipt PDF.
+
+        Args:
+            order_id: the order id, formatted ORD-NNNNNN.
+        """
+        if not pii.validate_order_id(order_id):
+            # REJECTED — append nothing to the side channel.
+            return {"status": "REJECTED", "reason": "invalid order id format"}
+
+        # When bound to an orders table, confirm the order exists first; format
+        # validation above is the minimum guarantee.
+        if orders_table is not None:
+            got = orders_table.get_item(Key={"orderId": order_id})
+            if not got.get("Item"):
+                return {"status": "NOT_FOUND", "orderId": order_id}
+
+        # Build the signing client + URL from the single shared presign source.
+        client = presign_handler.make_s3_presign_client(region)
+        url, err = presign_handler.generate_url(client, bucket, order_id)
+        if err is not None:
+            return {"status": "REJECTED", "reason": "invalid order id format"}
+
+        # Authoritative side-channel record (never read the URL from model text).
+        req_ctx.setdefault("receipts", []).append(
+            {"orderId": order_id, "url": url, "expiresIn": EXPIRES_IN}
+        )
+        return {
+            "status": "OK",
+            "orderId": order_id,
+            "url": url,
+            "expiresIn": EXPIRES_IN,
+        }
+
+    return get_receipt_url

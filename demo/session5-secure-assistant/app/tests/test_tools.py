@@ -47,6 +47,59 @@ class _StubTable:
         return {"Item": item} if item is not None else {}
 
 
+class _FakePresignS3:
+    """A presign S3 client stub (mirrors test_presign.py's FakeS3)."""
+
+    def __init__(self):
+        self.called_with = None
+
+    def generate_presigned_url(self, op, Params, ExpiresIn):
+        self.called_with = (op, Params, ExpiresIn)
+        return f"https://example-bucket.s3.amazonaws.com/{Params['Key']}?sig=abc"
+
+
+def test_get_receipt_url_ok_populates_side_channel(monkeypatch):
+    # Inject a fake presign client so no real AWS/boto3 is touched.
+    from presign import handler as presign_handler
+
+    monkeypatch.setattr(
+        presign_handler, "make_s3_presign_client", lambda region=None: _FakePresignS3()
+    )
+
+    req_ctx = {"receipts": []}
+    get_receipt = tools.make_get_receipt_url(req_ctx, "bucket")
+
+    result = get_receipt("ORD-000123")
+
+    assert result["status"] == "OK"
+    assert result["orderId"] == "ORD-000123"
+    assert result["url"]
+    assert result["expiresIn"] == tools.EXPIRES_IN == 900
+    # Authoritative side-channel record.
+    assert req_ctx["receipts"][-1] == {
+        "orderId": "ORD-000123",
+        "url": result["url"],
+        "expiresIn": tools.EXPIRES_IN,
+    }
+
+
+def test_get_receipt_url_rejects_bad_order_id(monkeypatch):
+    from presign import handler as presign_handler
+
+    # Guard: even if a client were built, the bad id is rejected first.
+    monkeypatch.setattr(
+        presign_handler, "make_s3_presign_client", lambda region=None: _FakePresignS3()
+    )
+
+    req_ctx = {"receipts": []}
+    get_receipt = tools.make_get_receipt_url(req_ctx, "bucket")
+
+    result = get_receipt("nope")
+
+    assert result["status"] == "REJECTED"
+    assert req_ctx["receipts"] == []
+
+
 def test_initiate_refund_pending_and_no_money():
     table = FakeTable()
     req_ctx = {"pending_refunds": []}
