@@ -1,135 +1,175 @@
-# Verification — in-chat receipt download fix (Tasks A + B + C)
+# Verification — X-Ray tracing of assistant DynamoDB (and Bedrock) calls
 
 ## Iteration note
 
-`.agents/tasks/review.json` was present with `{"verdict": "APPROVED"}`, but its
-companion `review.md` describes a *different, already-approved* task (the coffee
-storefront landing page) and contains **no findings** about the receipt-download
-work. The current source (`app/assistant/tools.py`, etc.) did **not** yet contain
-Tasks A/B, so this was implemented as a first pass for the receipt fix. The stale
-review surfaced nothing to fix for this feature.
+`.agents/tasks/review.json` was present but contained `{"verdict":"APPROVED"}` and
+its companion `review.md` describes a *different, already-approved* task (the
+receipt write-on-order / head-check-before-presign fix). Neither file contains
+any finding about X-Ray tracing. The current source had **no** `traced` helper,
+no `xray_entity` params on the tool factories, and `_build_agent` was still being
+called BEFORE the `with xray_recorder.in_subsegment(...)` block — so the X-Ray
+tracing fix had not yet been implemented. This pass implements it from scratch.
 
 ## Root cause (given, confirmed)
 
-A receipt PDF object only existed for the deploy-seeded `ORD-000123`. No code
-wrote a receipt when a NEW order was placed, so in-session orders had no
-`receipts/{orderId}.pdf`. The assistant role had `s3:GetObject` but not
-`s3:ListBucket`, so a missing object returned **403 AccessDenied** (mentioning
-`s3:ListBucket`) instead of 404. Confirmed live before the fix.
+The assistant Lambda has Active tracing, the role has `xray:PutTraceSegments`,
+and `aws-xray-sdk==2.14.0` calls `patch_all()` at module import before any boto3
+client is created — so the Lambda's own segment is emitted and the Lambda node
+appears. BUT the Strands Agent (`strands-agents==1.23.0`) runs tool calls on a
+ThreadPoolExecutor and the model invocation on its own async event loop — OFF
+the Lambda main thread. `aws-xray-sdk`'s default context is THREAD-LOCAL, so a
+subsegment opened on the main thread is invisible to boto3 calls on worker
+threads; those calls find no active segment on their thread, hit the default
+`AWS_XRAY_CONTEXT_MISSING` behavior, and the subsegments are silently dropped.
+That is why DynamoDB/Bedrock were missing while the Lambda node still appeared.
+
+## Fix approach (option 2 — make off-thread calls attach to the Lambda trace)
+
+1. **New `app/assistant/tracing.py`** with two guarded helpers:
+   - `capture_entity()` → `xray_recorder.get_trace_entity()` on the MAIN thread
+     (returns `None` when aws-xray-sdk is absent or there is no active entity).
+   - `traced(name, parent_entity, fn, *args, **kwargs)` → when aws-xray-sdk is
+     available AND `parent_entity` is non-None, it calls
+     `xray_recorder.set_trace_entity(parent_entity)` on the current (worker)
+     thread, then wraps `fn` in `xray_recorder.in_subsegment(name)`. Otherwise it
+     is a plain pass-through that just calls `fn`. The `aws_xray_sdk` import is
+     guarded exactly like the existing optional-import patterns, so the module
+     imports and the pytest suite stays green WITHOUT aws-xray-sdk installed.
+
+2. **Where the parent entity is captured (correctness):** in
+   `app/assistant/handler.handler()` the agent build + invoke were MOVED INSIDE
+   the `with xray_recorder.in_subsegment("bedrock-invoke"):` block, and
+   `capture_entity()` is called there so the captured entity is the LIVE Lambda
+   subsegment (non-None in the deployed Lambda), not `None`. The captured entity
+   is threaded into `_build_agent(req_ctx, xray_entity=...)` and from there into
+   every tool factory.
+
+3. **Tool factories** (`app/assistant/tools.py`) each gained an optional
+   `xray_entity=None` parameter (default preserves every existing call /
+   signature):
+   - `make_look_up_order` wraps the GetItem via `traced("ddb-get_item", ...)`.
+   - `make_place_order` wraps the PutItem via `traced("ddb-put_item", ...)` and
+     the receipt S3 put via `traced("s3-put_object", ...)`.
+   - `make_initiate_refund` wraps the PutItem via `traced("ddb-put_item", ...)`.
+   - `make_get_receipt_url` wraps the GetItem via `traced("ddb-get_item", ...)`
+     and the S3 head via `traced("s3-head_object", ...)`.
+   Both guard patterns (the `@tool` identity fallback and the defensive
+   boto3/botocore references) are preserved.
+
+4. **Env var (defense in depth):** `AWS_XRAY_CONTEXT_MISSING=LOG_ERROR` added to
+   the assistant Lambda environment in `infra/lib/app-edge-ai-stack.ts` (all
+   existing env vars kept intact: AWS_REGION_PINNED, GUARDRAIL_ID,
+   GUARDRAIL_VERSION, NOVA_MODEL_ID, ORDERS_TABLE, PENDING_REFUNDS_TABLE,
+   PAYMENT_SECRET_NAME, CONFIG_PARAM_NAME, RECEIPTS_BUCKET). So any residual
+   off-thread call that still finds no segment logs a warning instead of raising.
+
+5. **Bedrock:** no special wrapping was needed. Because the Strands model
+   invocation ultimately uses the `patch_all()`-instrumented bedrock-runtime
+   client and the parent entity is re-attached inside `bedrock-invoke`, the
+   `bedrock-runtime ConverseStream` subsegment DOES appear as a downstream edge
+   in the live traces (see evidence). Bedrock traces.
 
 ## Files changed
 
-- `app/presign/handler.py` — added `make_s3_client(region)` (plain SigV4 regional
-  S3 client for in-process head/put calls) and `receipt_key(order_id)` so the
-  `receipts/{id}.pdf` layout has ONE definition. `generate_url` now calls
-  `receipt_key`. The presign/signing client (`make_s3_presign_client`) is
-  unchanged. This module remains the SINGLE owner of S3 client construction.
-- `app/assistant/tools.py`
-  - **Task A**: `make_place_order(orders_table, req_ctx, receipts_bucket=None, region=None)`
-    (backward-compatible defaults). After a successful DynamoDB write (right where
-    it appends to `req_ctx['placed_orders']`), it uploads a minimal receipt PDF via
-    `presign_handler.make_s3_client(region).put_object(...)`. New `build_receipt_pdf`
-    helper produces a tiny valid ASCII `%PDF-1.4` body carrying the order id,
-    masked summary, and total. `ContentType='application/pdf'`. The upload is
-    wrapped in `try/except` and is best-effort — a failed upload never changes the
-    `RECEIVED` result (order is already committed).
-  - **Task B**: `make_get_receipt_url` now calls `head_object(Bucket, receipt_key)`
-    on the shared plain client BEFORE presigning. Any exception
-    (403/404/NoSuchKey/ClientError) is treated as missing → returns
-    `{"status": "NOT_FOUND", "orderId": ...}` and appends NOTHING to
-    `req_ctx['receipts']`. Only when the object exists is the presigned URL
-    generated and the side-channel entry appended. Existing order-id format
-    validation and optional `orders_table` existence check are preserved. No
-    top-level botocore import (defensive pattern retained).
-- `app/assistant/handler.py` — `_build_agent` wires the real bucket + region into
-  `make_place_order(orders_table, req_ctx, bucket, region)` from
-  `os.environ['RECEIPTS_BUCKET']` and `AWS_REGION_PINNED`.
-- `infra/lib/app-edge-ai-stack.ts` — **Task C**: the assistant role's
-  `ReadReceipts` statement actions extended to `['s3:GetObject', 's3:PutObject']`,
-  still scoped to `receiptsBucket.arnForObjects('*')`. No `s3:ListBucket`, no other
-  bucket. KMS write (`GenerateDataKey*/Encrypt`) is already covered by the existing
-  `kmsKey.grantEncryptDecrypt(assistantRole)`.
-- `app/tests/test_tools.py` — added `_FakeS3Client` (records `put_object`, answers
-  `head_object` from an existing-keys set) and new tests:
-  - `test_get_receipt_url_ok_populates_side_channel` (now asserts head_object was
-    consulted) and `test_get_receipt_url_missing_object_returns_not_found`.
-  - `test_place_order_writes_receipt_object`,
-    `test_place_order_still_received_when_receipt_upload_fails`,
-    `test_place_order_no_bucket_skips_upload`.
-
-## How the PDF is written + encrypted
-
-A plain `put_object` with **no SSE params** is used. The receipts bucket has
-default encryption `aws:kms` with the CMK
-(`arn:aws:kms:ap-southeast-1:875692608981:key/26c3f7fe-9a27-4b49-a6ba-3a7bc0e7de38`)
-and `BucketKeyEnabled`, confirmed live via `get-bucket-encryption`. Relying on
-bucket default encryption means the object is CMK-encrypted automatically without
-hardcoding the CMK ARN in app code; the role's existing
-`kms:GenerateDataKey*/Encrypt` grant covers the write. Verified live: the uploaded
-`ORD-086516.pdf` object exists and downloads 200.
-
-## Task B missing-object handling
-
-`head_object` with only `s3:GetObject` (no `s3:ListBucket`) returns 403 for a
-missing key; the code treats any `head_object` error as "not found" and returns
-`NOT_FOUND` with nothing appended to the side channel. No `s3:ListBucket` added.
-
-## IAM grant path
-
-Applied via **`cdk deploy SecureAssistantAppEdgeAI --exclusively --require-approval never`**
-— the EarlyValidation CFN hook did NOT block the IAM change (deploy succeeded in
-~49s). The `put-role-policy` fallback was not needed. Live confirmation:
-`get-role-policy` on `AssistantFnServiceRoleDefaultPolicy9630C8FC` shows
-`ReadReceipts -> ['s3:GetObject', 's3:PutObject']` and no `s3:ListBucket`.
+- `app/assistant/tracing.py` — **new** guarded `capture_entity()` + `traced()`.
+- `app/assistant/handler.py` — import `capture_entity`; move agent build+invoke
+  inside the active `bedrock-invoke` subsegment; capture the live entity there;
+  thread `xray_entity` into `_build_agent` and all four tool factories.
+- `app/assistant/tools.py` — add optional `xray_entity=None` to all four tool
+  factories; wrap each DynamoDB / S3 boto3 call in `traced(...)`.
+- `infra/lib/app-edge-ai-stack.ts` — add `AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR'`
+  to the assistant Lambda environment (all other env vars untouched).
+- `app/tests/test_tracing.py` — **new** tests for the no-xray degrade path.
+- `app/tests/test_tools.py` — new test that all four factories accept
+  `xray_entity=None` and still work.
 
 ## Build / test results
 
 - `python3 -m py_compile $(find app -name '*.py')` → OK.
-- `python3 -m pytest app/tests -q` → **53 passed**.
-- `cd infra && npx tsc --noEmit` → clean.
-- `cdk synth SecureAssistantAppEdgeAI` → OK. Synthesized template confirms the
-  assistant role `ReadReceipts` statement = `['s3:GetObject', 's3:PutObject']`
-  (presign role stays GetObject-only).
-- `npm test` → **2 pre-existing failures only**, both in the SecurityData stack and
-  OUT OF SCOPE (guardrail config untouched):
-  1. "Bedrock Guardrail with full feature surface"
-  2. "raw Bedrock invocation-logging config on CMK-encrypted destinations"
-  Both reproduce on the unmodified tree (verified via `git stash`), so neither is
-  caused by this change. Not fixed per constraints.
+- `python3 -m pytest app/tests -q` → **58 passed** (was 53; +4 in test_tracing,
+  +1 in test_tools). Still green WITHOUT strands/boto3/aws-xray-sdk installed.
+- `cd infra && npx tsc --noEmit` → clean (exit 0).
+- `cdk synth SecureAssistantAppEdgeAI` → OK; synthesized template shows
+  `AWS_XRAY_CONTEXT_MISSING: LOG_ERROR` on the AssistantFn.
+- `npm test` → only the **2 known pre-existing out-of-scope SecurityData**
+  failures remain ("Bedrock Guardrail with full feature surface" and "raw Bedrock
+  invocation-logging config on CMK-encrypted destinations"). All AppEdgeAI
+  assertions pass, including "three Lambda functions have Active X-Ray tracing".
 
-## Image rebuild / push / update
+## Image rebuild / push / Lambda update
 
-- `docker login` to ECR OK.
-- `docker buildx build --platform linux/amd64 --provenance=false --sbom=false … --push app` OK.
-- New digest: `sha256:e81f1eac2cef7949130e42a4ffd907f29015036c9887a244fb78a06a198cd84f`.
+- `aws ecr get-login-password | docker login …` → Login Succeeded.
+- `BUILDX_NO_DEFAULT_ATTESTATIONS=1 docker buildx build --platform linux/amd64
+  --provenance=false --sbom=false -t …/session5-secure-assistant:latest --push app`
+  → pushed.
+- New digest: `sha256:e7472dc28672a4ec2e1a48ccf24f303bd6e1c143f93dc9bbc5df7a2ff0106f68`.
+- Env var deployed via `cdk deploy SecureAssistantAppEdgeAI --exclusively
+  --require-approval never` (the EarlyValidation hook did NOT block it; deploy
+  succeeded ~43s). The `update-function-configuration` fallback was not needed.
 - `aws lambda update-function-code … --image-uri …@<digest>` → InProgress, then
   `aws lambda wait function-updated` → done.
+- `GetFunctionConfiguration` confirms: `AWS_XRAY_CONTEXT_MISSING=LOG_ERROR`,
+  TracingConfig Mode=Active, State=Active, LastUpdateStatus=Successful, all
+  original env vars present.
 
-## Live end-to-end (https://cafe-nova.aws.yikyakyuk.com)
+## LIVE TRACE EVIDENCE (the whole point)
 
-1. Warm-up `POST /api/chat {"message":"hello"}` → 200.
-2. **New order** (5a): after an explicit confirm message, envelope returned
-   `placedOrder.orderId = **ORD-086516**`, total 7.75, status RECEIVED. (The first,
-   less explicit phrasing made Nova Micro ask to confirm instead of calling the
-   tool; the explicit retry placed it — expected model non-determinism.)
-3. **S3 object** (5b): `aws s3 ls .../receipts/` lists `ORD-086516.pdf` (107 bytes)
-   plus `ORD-000123.pdf` (48 bytes).
-4. **New-order receipt link** (5c): envelope has a `receipt` object; curl of the
-   presigned URL → **HTTP 200, SIZE 107**.
-5. **Regression** (5d): ORD-000123 receipt link → **HTTP 200, SIZE 48**.
-6. **Graceful missing** (5e): asking for `ORD-999999` → envelope has **NO
-   `receipt`** key (NOT_FOUND path); assistant replies no receipt available.
-7. **Custom domain** (5f): `GET https://cafe-nova.aws.yikyakyuk.com/` → **HTTP 200**
-   (custom domain + WAF intact).
+Warmed the function, then drove two tool calls against
+`https://cafe-nova.aws.yikyakyuk.com/api/chat`:
 
-All checks were verified **live** against the deployed stack and image (no reliance
-on model prose — order id and receipt pulled from the JSON envelope).
+- `{"message":"look up order ORD-000123"}` → HTTP 200, reply carried real
+  DynamoDB data (summary "1x Flat White, 1x Croissant", total $7.50, READY) →
+  `look_up_order` → DynamoDB **GetItem**.
+- `{"message":"order 1x Latte"}` → HTTP 200, `placedOrder.orderId=ORD-015114`,
+  `receipt` object returned → `place_order` → DynamoDB **PutItem** + S3 put.
+
+`aws xray get-trace-summaries` (last ~8 min) found 3 AssistantFn traces; 2 list
+`AWS::DynamoDB::Table` (OrdersTable) — and one also `AWS::S3::Bucket` — plus
+`bedrock-runtime` as downstream service ids (previously absent).
+
+`aws xray batch-get-traces` segment documents confirm the subsegment tree now
+nests the AWS calls UNDER the Lambda segment via our named subsegments:
+
+Lookup trace `1-6acdb989-55e9ea0b40fd8ca428bb1791`:
+```
+AssistantFn (AWS::Lambda::Function)
+└─ bedrock-invoke            (namespace local)
+   ├─ bedrock-runtime        (namespace aws, op ConverseStream)
+   └─ ddb-get_item           (namespace local)      ← our wrapper
+      └─ DynamoDB            (namespace aws, op GetItem, table …OrdersTable…)  ← NOW PRESENT
+```
+
+Place-order trace `1-6acdb996-25865025525d10d50485365e`:
+```
+AssistantFn (AWS::Lambda::Function)
+└─ bedrock-invoke            (namespace local)
+   ├─ bedrock-runtime        (namespace aws, op ConverseStream)
+   ├─ s3-put_object          (namespace local)  → S3 (aws, op PutObject)
+   ├─ ddb-put_item           (namespace local)  → DynamoDB (aws, op PutItem, …OrdersTable…)
+   ├─ s3-head_object         (namespace local)  → S3 (aws, op HeadObject)
+   └─ ddb-get_item           (namespace local)  → DynamoDB (aws, op GetItem, …OrdersTable…)
+```
+
+**Confirmed DynamoDB subsegments present:** `ddb-get_item` → `DynamoDB GetItem`
+and `ddb-put_item` → `DynamoDB PutItem`, both nested under the Lambda segment and
+pointing at `SecureAssistantSecurityData-OrdersTable315BB997-13G3WOYNBZXJU`.
+Baseline before the fix: no DynamoDB subsegment appeared on the assistant trace.
+
+**Bedrock:** `bedrock-runtime` (op `ConverseStream`) appears as a subsegment and a
+downstream service-map edge in both traces — Bedrock traces too.
+
+## Regression
+
+- `get_receipt_url` for ORD-015114 → `receipt` object returned; curl of the
+  presigned URL → **HTTP 200, 798 bytes, body starts `%PDF-1.4`** (valid PDF).
+- `GET https://cafe-nova.aws.yikyakyuk.com/` → **HTTP 200** (custom domain + WAF
+  intact). Chat lookup / place-order / receipt flows all still function.
 
 ## Commit
 
-- Single commit on `main` (HEAD), message:
-  `fix: write receipt PDF on order placement and head-check before presign (A/B/C)`.
-  (The commit's own short hash is `e97a674` at the time this note was written;
-  because this file is part of that commit, the final hash after this edit was
-  amended in may differ by the trailing documentation line. Resolve the exact
-  hash via `git log -1 --oneline`.)
+- Single commit on `main` (NOT pushed), hash **`177d51c`**, message
+  `fix(xray): trace assistant DynamoDB calls across Strands worker threads`
+  (7 files changed). This note was then re-staged into the same commit via a
+  single `--amend`, so the final hash may differ by this trailing line; resolve
+  the exact hash via `git log -1 --oneline`. The stale `review.json`/`review.md`
+  (prior receipt task) were intentionally left OUT of this commit.

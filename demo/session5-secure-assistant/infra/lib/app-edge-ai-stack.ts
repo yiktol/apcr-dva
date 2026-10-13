@@ -232,6 +232,13 @@ export class AppEdgeAIStack extends cdk.Stack {
         // bucket the presign Lambda uses). receiptsBucket is declared above, so
         // this is not a forward reference.
         RECEIPTS_BUCKET: receiptsBucket.bucketName,
+        // Defense in depth for X-Ray cross-thread tracing: Strands runs tool /
+        // model calls on worker threads whose thread-local X-Ray context may be
+        // empty. The tools re-attach to the Lambda trace (see assistant/
+        // tracing.py), but any residual off-thread boto3 call that still finds
+        // no segment should LOG a warning rather than RAISE and break the
+        // request (the SDK default would raise on a missing context).
+        AWS_XRAY_CONTEXT_MISSING: 'LOG_ERROR',
       },
     });
 

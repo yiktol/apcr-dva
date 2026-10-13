@@ -26,6 +26,7 @@ except Exception:  # pragma: no cover - strands not installed in test/py_compile
         return func
 
 from . import pii
+from .tracing import traced
 
 # Presign helpers are imported defensively (mirroring the guarded strands import
 # above) so this module stays importable for py_compile / unit tests WITHOUT
@@ -196,7 +197,9 @@ def build_receipt_pdf(order_id: str, summary: str, total) -> bytes:
     return bytes(pdf)
 
 
-def make_place_order(orders_table, req_ctx, receipts_bucket=None, region=None):
+def make_place_order(
+    orders_table, req_ctx, receipts_bucket=None, region=None, xray_entity=None
+):
     """Factory → @tool place_order, bound to the real OrdersTable + the request
     side channel. Mirrors make_initiate_refund.
 
@@ -204,6 +207,13 @@ def make_place_order(orders_table, req_ctx, receipts_bucket=None, region=None):
     receipts/{orderId}.pdf after a successful order write so the in-session
     order has a downloadable receipt. `receipts_bucket=None` (the default) skips
     the upload, keeping the old two-arg signature working for existing tests.
+
+    `xray_entity` is the Lambda's live X-Ray entity captured on the MAIN thread.
+    Strands runs this tool on a worker thread whose thread-local X-Ray context
+    is empty, so the DynamoDB/S3 boto3 calls are wrapped via `traced(...)` to
+    re-attach that worker thread to the Lambda trace — otherwise the DynamoDB
+    PutItem / S3 subsegments are dropped. Defaults to None (no tracing) so the
+    unit tests and the no-xray path are unaffected.
     """
 
     @tool
@@ -236,7 +246,10 @@ def make_place_order(orders_table, req_ctx, receipts_bucket=None, region=None):
                 "gsiPk": "ORDER",
             }
             try:
-                orders_table.put_item(
+                traced(
+                    "ddb-put_item",
+                    xray_entity,
+                    orders_table.put_item,
                     Item=item,
                     ConditionExpression="attribute_not_exists(orderId)",
                 )
@@ -275,7 +288,10 @@ def make_place_order(orders_table, req_ctx, receipts_bucket=None, region=None):
             if receipts_bucket:
                 try:
                     client = presign_handler.make_s3_client(region)
-                    client.put_object(
+                    traced(
+                        "s3-put_object",
+                        xray_entity,
+                        client.put_object,
                         Bucket=receipts_bucket,
                         Key=presign_handler.receipt_key(order_id),
                         Body=build_receipt_pdf(order_id, summary, total),
@@ -297,9 +313,14 @@ def make_place_order(orders_table, req_ctx, receipts_bucket=None, region=None):
     return place_order
 
 
-def make_look_up_order(orders_table):
+def make_look_up_order(orders_table, xray_entity=None):
     """Factory → @tool look_up_order, bound to the real OrdersTable. Replaces
-    the hardcoded stub. Read-only GetItem."""
+    the hardcoded stub. Read-only GetItem.
+
+    `xray_entity` (captured on the MAIN thread) lets the DynamoDB GetItem call —
+    which Strands runs on a worker thread — attach to the Lambda trace via
+    `traced(...)` so DynamoDB appears as a subsegment. Defaults to None.
+    """
 
     @tool
     def look_up_order(order_id: str) -> dict:
@@ -310,7 +331,12 @@ def make_look_up_order(orders_table):
         """
         if not pii.validate_order_id(order_id):
             return {"status": "REJECTED", "reason": "invalid order id format"}
-        got = orders_table.get_item(Key={"orderId": order_id})
+        got = traced(
+            "ddb-get_item",
+            xray_entity,
+            orders_table.get_item,
+            Key={"orderId": order_id},
+        )
         item = got.get("Item")
         if not item:
             return {"status": "NOT_FOUND", "orderId": order_id}
@@ -326,7 +352,7 @@ def make_look_up_order(orders_table):
     return look_up_order
 
 
-def make_initiate_refund(table, req_ctx, max_refund=50.0):
+def make_initiate_refund(table, req_ctx, max_refund=50.0, xray_entity=None):
     """Factory returning the initiate_refund @tool bound to a table + req_ctx.
 
     `table` is an injected DynamoDB Table-like object (so tests pass a stub).
@@ -336,6 +362,10 @@ def make_initiate_refund(table, req_ctx, max_refund=50.0):
     build the HTTP response envelope from it WITHOUT parsing model text (the
     model may paraphrase a tool result, so the token must never be read back
     from model output).
+
+    `xray_entity` (captured on the MAIN thread) lets the DynamoDB PutItem — run
+    on a Strands worker thread — attach to the Lambda trace via `traced(...)`.
+    Defaults to None.
     """
 
     @tool
@@ -372,7 +402,9 @@ def make_initiate_refund(table, req_ctx, max_refund=50.0):
             "ttl": now + PENDING_TTL_SECONDS,
         }
         # Write the pending record. No raw PII is present in `item`.
-        table.put_item(Item=item)
+        # Wrapped via traced(...) so the DynamoDB PutItem attaches to the Lambda
+        # trace from the Strands worker thread.
+        traced("ddb-put_item", xray_entity, table.put_item, Item=item)
 
         # Append to the request-scoped side channel (authoritative token source
         # for the HTTP envelope).
@@ -397,7 +429,9 @@ def make_initiate_refund(table, req_ctx, max_refund=50.0):
     return initiate_refund
 
 
-def make_get_receipt_url(req_ctx, bucket, region=None, orders_table=None):
+def make_get_receipt_url(
+    req_ctx, bucket, region=None, orders_table=None, xray_entity=None
+):
     """Factory → @tool get_receipt_url, bound to the receipts bucket + the
     request side channel. Mirrors the other tool factories.
 
@@ -407,6 +441,10 @@ def make_get_receipt_url(req_ctx, bucket, region=None, orders_table=None):
     presign.handler.generate_url (ONE copy of the signing code). The URL is
     appended to the AUTHORITATIVE req_ctx['receipts'] side channel so the HTTP
     handler emits it in the envelope WITHOUT ever parsing it from model text.
+
+    `xray_entity` (captured on the MAIN thread) lets the DynamoDB GetItem and S3
+    head_object calls — run on a Strands worker thread — attach to the Lambda
+    trace via `traced(...)`. Defaults to None.
     """
 
     @tool
@@ -428,7 +466,12 @@ def make_get_receipt_url(req_ctx, bucket, region=None, orders_table=None):
         # When bound to an orders table, confirm the order exists first; format
         # validation above is the minimum guarantee.
         if orders_table is not None:
-            got = orders_table.get_item(Key={"orderId": order_id})
+            got = traced(
+                "ddb-get_item",
+                xray_entity,
+                orders_table.get_item,
+                Key={"orderId": order_id},
+            )
             if not got.get("Item"):
                 return {"status": "NOT_FOUND", "orderId": order_id}
 
@@ -440,8 +483,12 @@ def make_get_receipt_url(req_ctx, bucket, region=None, orders_table=None):
         # module stays importable for py_compile / unit tests.
         head_client = presign_handler.make_s3_client(region)
         try:
-            head_client.head_object(
-                Bucket=bucket, Key=presign_handler.receipt_key(order_id)
+            traced(
+                "s3-head_object",
+                xray_entity,
+                head_client.head_object,
+                Bucket=bucket,
+                Key=presign_handler.receipt_key(order_id),
             )
         except Exception:
             # Missing object (or no permission to confirm) → surface NOT_FOUND

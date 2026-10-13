@@ -44,6 +44,7 @@ except Exception:  # pragma: no cover
     _STRANDS = False
 
 from . import pii
+from .tracing import capture_entity
 from .tools import (
     make_get_receipt_url,
     make_initiate_refund,
@@ -118,8 +119,14 @@ def build_response(reply_text: str, req_ctx: dict) -> dict:
     return body
 
 
-def _build_agent(req_ctx: dict):  # pragma: no cover - requires strands + boto3
-    """Construct the Strands Agent with Nova Micro + the guardrail."""
+def _build_agent(req_ctx: dict, xray_entity=None):  # pragma: no cover - requires strands + boto3
+    """Construct the Strands Agent with Nova Micro + the guardrail.
+
+    `xray_entity` is the Lambda's live X-Ray entity captured on the MAIN thread
+    (inside the active segment). It is threaded into every tool factory so the
+    tools' boto3 calls — executed on Strands worker threads — re-attach to the
+    Lambda trace and emit DynamoDB/S3 subsegments.
+    """
     orders_table = None
     pending_table = None
     if boto3 is not None:
@@ -139,13 +146,17 @@ def _build_agent(req_ctx: dict):  # pragma: no cover - requires strands + boto3
         guardrail_trace="enabled",
     )
     initiate_refund = make_initiate_refund(
-        pending_table, req_ctx, max_refund=_max_refund()
+        pending_table, req_ctx, max_refund=_max_refund(), xray_entity=xray_entity
     )
-    look_up_order = make_look_up_order(orders_table)
+    look_up_order = make_look_up_order(orders_table, xray_entity=xray_entity)
     bucket = os.environ["RECEIPTS_BUCKET"]
     region = os.environ.get("AWS_REGION_PINNED", "ap-southeast-1")
-    place_order = make_place_order(orders_table, req_ctx, bucket, region)
-    get_receipt_url = make_get_receipt_url(req_ctx, bucket, region, orders_table)
+    place_order = make_place_order(
+        orders_table, req_ctx, bucket, region, xray_entity=xray_entity
+    )
+    get_receipt_url = make_get_receipt_url(
+        req_ctx, bucket, region, orders_table, xray_entity=xray_entity
+    )
     return Agent(
         model=model,
         tools=[look_up_order, place_order, initiate_refund, get_receipt_url],
@@ -177,8 +188,16 @@ def handler(event, _context):  # pragma: no cover - exercised live only
 
     req_ctx = {"pending_refunds": [], "placed_orders": [], "receipts": []}
     try:
-        agent = _build_agent(req_ctx)
+        # Capture + build + invoke INSIDE the active X-Ray subsegment so the
+        # entity we hand to the tools is the LIVE Lambda trace (not None).
+        # Strands runs the tools / model on worker threads whose thread-local
+        # X-Ray context is empty; threading this captured entity into the tool
+        # factories lets their boto3 calls (DynamoDB/S3, and the Bedrock
+        # InvokeModel via patch_all) re-attach to this trace and show up as
+        # downstream subsegments.
         with xray_recorder.in_subsegment("bedrock-invoke"):
+            xray_entity = capture_entity()
+            agent = _build_agent(req_ctx, xray_entity=xray_entity)
             result = agent(message)
         # Strip the model's internal <thinking> reasoning BEFORE masking so only
         # the user-facing reply (with PII masked) is returned.

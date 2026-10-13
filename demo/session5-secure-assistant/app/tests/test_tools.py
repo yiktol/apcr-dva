@@ -374,6 +374,70 @@ def test_place_order_no_bucket_skips_upload(monkeypatch):
     assert fake_s3.put_calls == []
 
 
+def test_tool_factories_accept_xray_entity_none_and_still_work(monkeypatch):
+    """Every tool factory accepts the optional xray_entity param (default None)
+    and behaves identically on the no-entity / no-xray path (traced is a plain
+    pass-through). This guards the cross-thread X-Ray wiring without needing
+    aws-xray-sdk or real AWS."""
+    from presign import handler as presign_handler
+
+    fake_s3 = _FakeS3Client(existing_keys={"receipts/ORD-000123.pdf"})
+    monkeypatch.setattr(
+        presign_handler, "make_s3_presign_client", lambda region=None: _FakePresignS3()
+    )
+    monkeypatch.setattr(
+        presign_handler, "make_s3_client", lambda region=None: fake_s3
+    )
+
+    # place_order with explicit xray_entity=None still writes + uploads.
+    place_table = _StubTable()
+    place_ctx = {"placed_orders": []}
+    place = tools.make_place_order(
+        place_table, place_ctx, receipts_bucket="receipts-bucket", xray_entity=None
+    )
+    placed = place("1x Latte")
+    assert placed["status"] == "RECEIVED"
+    assert len(place_table.put_items) == 1
+    assert len(fake_s3.put_calls) == 1
+
+    # look_up_order with xray_entity=None still does the GetItem.
+    now = int(__import__("time").time())
+    found = _StubTable(
+        get_items={
+            "ORD-000123": {
+                "orderId": "ORD-000123",
+                "summary": "1x Flat White",
+                "total": Decimal("4.50"),
+                "status": "RECEIVED",
+                "createdAt": now,
+                "gsiPk": "ORDER",
+            }
+        }
+    )
+    look_up = tools.make_look_up_order(found, xray_entity=None)
+    assert look_up("ORD-000123")["status"] == "OK"
+    assert found.get_calls == [{"orderId": "ORD-000123"}]
+
+    # initiate_refund with xray_entity=None still writes the pending record.
+    refund_table = FakeTable()
+    refund_ctx = {"pending_refunds": []}
+    initiate = tools.make_initiate_refund(
+        refund_table, refund_ctx, max_refund=50, xray_entity=None
+    )
+    assert initiate("ORD-000123", 10)["status"] == "PENDING_CONFIRMATION"
+    assert len(refund_table.items) == 1
+
+    # get_receipt_url with xray_entity=None still head-checks + presigns.
+    receipt_ctx = {"receipts": []}
+    get_receipt = tools.make_get_receipt_url(
+        receipt_ctx, "receipts-bucket", xray_entity=None
+    )
+    got = get_receipt("ORD-000123")
+    assert got["status"] == "OK"
+    assert got["url"]
+    assert fake_s3.head_calls[-1]["Key"] == "receipts/ORD-000123.pdf"
+
+
 def test_place_order_rejected_input_writes_nothing():
     table = _StubTable()
     req_ctx = {"placed_orders": []}
