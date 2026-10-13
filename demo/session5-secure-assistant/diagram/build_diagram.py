@@ -18,11 +18,16 @@ LAYOUT MODEL (readability-first, rewritten to remove arrow overlap):
     * Observability (X-Ray / CloudWatch) sits on the right, kept on its own
       lane so it never crosses the request path.
 
-Flows encoded (unchanged from the architecture):
-  Viewer -> CloudFront; CloudFront -> S3 SPA (OAC); CloudFront -> WAF -> API GW
+Flows encoded:
+  Viewer -> CloudFront (custom domain cafe-nova.aws.yikyakyuk.com)
+  Route53 alias + us-east-1 ACM cert -> CloudFront (custom domain, config)
+  CLOUDFRONT-scope WAF -> CloudFront (global web ACL, distinct from the
+    REGIONAL web ACL on API GW)
+  CloudFront -> S3 SPA (OAC); CloudFront -> REGIONAL WAF -> API GW
   API GW -> assistant Lambda (VPC); API GW -> orders-list Lambda (read-only)
-  assistant -> PrivateLink -> Bedrock (Nova Micro + Guardrail)
+  assistant -> PrivateLink -> Bedrock (Nova Micro + expanded Guardrail)
   assistant -> DynamoDB (place/look-up) + Secrets + SSM
+  assistant -> receipts S3 (write receipt PDF on order; presign GET link in chat)
   orders-list -> DynamoDB byCreatedAt GSI (GET /api/orders)
   refund-confirm -> DynamoDB (human confirmation); presign -> receipts S3
   receipts -> KMS (SSE-KMS); Bedrock -> CloudWatch (invocation logs); X-Ray
@@ -59,6 +64,8 @@ ICONS = {
     "ssm":         "Arch_Management-Tools/64/Arch_AWS-Systems-Manager_64.svg",
     "xray":        "Arch_Developer-Tools/64/Arch_AWS-X-Ray_64.svg",
     "cloudwatch":  "Arch_Management-Tools/64/Arch_Amazon-CloudWatch_64.svg",
+    "route53":     "Arch_Networking-Content-Delivery/64/Arch_Amazon-Route-53_64.svg",
+    "acm":         "Arch_Security-Identity/64/Arch_AWS-Certificate-Manager_64.svg",
 }
 
 
@@ -69,7 +76,7 @@ def data_uri(rel):
 
 U = {k: data_uri(v) for k, v in ICONS.items()}
 
-W, H = 1600, 1120
+W, H = 1600, 1200
 ICON = 56
 
 # Act-color-coded zones (fill, stroke, title color).
@@ -104,6 +111,7 @@ ROW = {
     "mid":    610,   # Bedrock / PrivateLink lane
     "data":   820,   # shared data plane (DynamoDB / secrets / ssm / refund)
     "store":  1000,  # storage / crypto sinks (receipts / kms / presign)
+    "floor":  1130,  # transit lane below the store band (assistant->receipts)
 }
 
 # Node centre (cx, cy). Top of the icon is cy - ICON/2.
@@ -122,10 +130,17 @@ NODE = {
     "ssm":        (COL["edge"],    ROW["data"]),
     "refund":     (COL["ai"],      ROW["data"]),
     "presign":    (COL["api"],     ROW["store"]),
-    "receipts":   (COL["edge"],    ROW["store"]),
+    "receipts":   (COL["edge"],    ROW["floor"]),
     "kms":        (COL["viewer"],  ROW["store"]),
     "cloudwatch": (COL["sink"],    ROW["data"]),
     "xray":       (COL["ai"],      ROW["sat"]),
+    # Custom-domain front door: Route53 alias + us-east-1 ACM cert configure the
+    # CloudFront distribution (control-plane / DNS, not the request hot path).
+    "route53":    (COL["viewer"],  ROW["sat"]),
+    "acm":        (COL["viewer"],  ROW["mid"]),
+    # Second WAF: a CLOUDFRONT-scope (global) web ACL on the distribution,
+    # distinct from the REGIONAL web ACL that fronts API Gateway.
+    "cfwaf":      (COL["edge"],    ROW["mid"]),
 }
 
 
@@ -329,7 +344,7 @@ p.append(f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" font-
 </style>
 <rect x="0" y="0" width="{W}" height="{H}" fill="url(#bg)"/>
 <text x="34" y="44" class="title">Secure Coffee-Shop AI Assistant &#8212; Strands + Nova Micro</text>
-<text x="34" y="66" class="cap">Left&#8594;right request path: Viewer &#8594; CloudFront+WAF+OAC &#8594; API &#8594; private-subnet Strands assistant &#8594; Bedrock (Nova Micro + Guardrail) via PrivateLink. Shared data plane below; observability on the right. Region ap-southeast-1.</text>
+<text x="34" y="66" class="cap">Request path: Viewer &#8594; CloudFront (cafe-nova custom domain, ACM + Route53, CLOUDFRONT-scope WAF) + OAC &#8594; REGIONAL WAF &#8594; API &#8594; private-subnet Strands assistant &#8594; Bedrock (Nova Micro + full Guardrail) via PrivateLink. Assistant writes/presigns receipts in S3. Shared data plane below; observability on the right. Region ap-southeast-1.</text>
 ''')
 
 # ---- Act zones (behind nodes), sized to the new grid ----------------------
@@ -348,8 +363,9 @@ def _zone_for(members, title, kind, pad_top=30, pad=14):
     return zone(x0, y0, x1 - x0, y1 - y0, title, kind)
 
 
-p.append(_zone_for(["spa", "cloudfront"], "Act 1 &#8212; edge: CloudFront + OAC", "act1"))
-p.append(_zone_for(["waf"], "Act 2 &#8212; WAF", "act2"))
+p.append(_zone_for(["spa", "cloudfront", "cfwaf"], "Act 1 &#8212; edge", "act1"))
+p.append(_zone_for(["route53", "acm"], "Custom domain", "act1"))
+p.append(_zone_for(["waf"], "Act 2 &#8212; API WAF", "act2"))
 p.append(_zone_for(["orderslist", "assistant"], "Act 3 &#8212; Strands assistant (secured)", "act3"))
 p.append(_zone_for(["xray"], "Act 4 &#8212; observability", "act4"))
 p.append(_zone_for(
@@ -360,14 +376,17 @@ p.append(_zone_for(
 
 # ---- Nodes ----------------------------------------------------------------
 p.append(user_node("viewer"))
-p.append(icon("cloudfront", "cloudfront", "CloudFront", "default domain + OAC"))
+p.append(icon("route53", "route53", "Route 53", "cafe-nova alias (A/AAAA)"))
+p.append(icon("acm", "acm", "ACM cert", "us-east-1 wildcard"))
+p.append(icon("cloudfront", "cloudfront", "CloudFront", "cafe-nova custom domain + OAC"))
+p.append(icon("cfwaf", "waf", "CloudFront WAF", "CLOUDFRONT scope (global)"))
 p.append(icon("spa", "s3", "S3 SPA", "private via OAC"))
-p.append(icon("waf", "waf", "WAF", "REGIONAL, count mode"))
+p.append(icon("waf", "waf", "API WAF", "REGIONAL, count mode"))
 p.append(icon("apigw", "apigw", "API Gateway", "/api/* (X-Ray on)"))
 p.append(icon("orderslist", "lambda", "Orders list", "read-only"))
 p.append(icon("assistant", "lambda", "Assistant", "VPC private subnets"))
 p.append(icon("privatelink", "privatelink", "PrivateLink", "bedrock-runtime EP"))
-p.append(icon("bedrock", "bedrock", "Bedrock", "Nova Micro + Guardrail"))
+p.append(icon("bedrock", "bedrock", "Bedrock", "Nova Micro + full Guardrail"))
 p.append(icon("dynamodb", "dynamodb", "DynamoDB", "orders / pending-refunds"))
 p.append(icon("secrets", "secrets", "Secrets Mgr", "payment key"))
 p.append(icon("ssm", "ssm", "SSM Param", "assistant config"))
@@ -387,6 +406,11 @@ ALL_BOXES = {k: node_box(k) for k in NODE}
 p.append(orth("viewer", "r", "cloudfront", "l", "https", BLUE, num=1))
 p.append(orth("cloudfront", "t", "spa", "b", "SPA (OAC)", BLUE, num=2))
 p.append(orth("cloudfront", "r", "waf", "b", "/api/*", ORANGE, num=3))
+
+# Custom-domain front door (DNS + cert configure CloudFront) and the global WAF.
+p.append(orth("route53", "r", "cloudfront", "l", "alias", GREY, dash=True, num=18))
+p.append(orth("acm", "r", "cloudfront", "l", "TLS cert", GREY, dash=True, num=19))
+p.append(orth("cfwaf", "t", "cloudfront", "b", "global web ACL", ORANGE, num=20))
 p.append(orth("waf", "b", "apigw", "t", "allow / count", ORANGE, num=4))
 p.append(orth("apigw", "r", "assistant", "l", "invoke", ORANGE, num=5))
 p.append(orth("apigw", "t", "orderslist", "b", "GET /api/orders", ORANGE, num=11))
@@ -397,9 +421,9 @@ p.append(orth("privatelink", "r", "bedrock", "l", "Nova + Guardrail", PURPLE, nu
 
 # Compute -> data plane (downward connectors into the data band). The router
 # auto-selects a clear vertical gutter for each.
-p.append(orth("assistant", "b", "dynamodb", "t", "place / look-up", BLUE, num=8))
+p.append(orth("assistant", "b", "dynamodb", "t", "place / look-up", BLUE, num=8, lx=820, ly=560))
 p.append(orth("assistant", "b", "secrets", "t", "payment key", BLUE, dash=True, num=9))
-p.append(orth("assistant", "b", "ssm", "t", "config", BLUE, dash=True, num=10))
+p.append(orth("assistant", "b", "ssm", "t", "config", BLUE, dash=True, num=10, lx=330, ly=720))
 # Orders list and DynamoDB share the compute column with the Assistant sitting
 # between them, so exit LEFT and let the router find a clear gutter down to
 # DynamoDB's left side (avoids crossing the Assistant icon).
@@ -409,9 +433,15 @@ p.append(orth("refund", "l", "dynamodb", "r", "confirm (human)", ORANGE, num=13)
 # Presign -> receipts -> KMS (store band).
 p.append(orth("presign", "b", "receipts", "t", "presigned GET", BLUE, num=14))
 p.append(orth("receipts", "l", "kms", "r", "SSE-KMS", BLUE, dash=True, num=15))
+# Assistant get_receipt_url / place_order touch receipts S3 directly: write the
+# receipt PDF on order placement and presign a 15-min GET for the chat link.
+# Routed down the clear gutter right of the compute column, along the floor lane
+# below the store band, and up into receipts from the bottom — avoids the dense
+# store band (presign/kms) and the data band (dynamodb).
+p.append(orth("assistant", "r", "receipts", "b", "write PDF / presign", PURPLE, num=21, mid=950, lx=640, ly=1178))
 
 # Observability (own right-hand lane; never crosses the request spine).
-p.append(orth("bedrock", "b", "cloudwatch", "t", "invocation logs", GREEN, dash=True, num=16))
+p.append(orth("bedrock", "b", "cloudwatch", "t", "invocation logs", GREEN, dash=True, num=16, lx=1360, ly=730))
 p.append(orth("xray", "b", "assistant", "t", "trace", GREEN, dash=True, num=17))
 
 # ---- Legend ---------------------------------------------------------------
