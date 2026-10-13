@@ -138,6 +138,15 @@ check('CloudFront distribution with imported (not created) ACM cert + custom dom
   });
 });
 
+check('CloudFront distribution is protected by the global TrainingWebACL', () => {
+  edge.hasResourceProperties('AWS::CloudFront::Distribution', {
+    DistributionConfig: Match.objectLike({
+      WebACLId:
+        'arn:aws:wafv2:us-east-1:875692608981:global/webacl/TrainingWebACL/c1a632aa-32f6-49fe-b2cd-63927eb3131e',
+    }),
+  });
+});
+
 check('Route53 A + AAAA alias records for the custom domain', () => {
   edge.hasResourceProperties('AWS::Route53::RecordSet', {
     Type: 'A',

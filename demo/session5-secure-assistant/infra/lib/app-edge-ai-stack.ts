@@ -477,6 +477,10 @@ export class AppEdgeAIStack extends cdk.Stack {
       // domain keeps working automatically.
       domainNames: [CUSTOM_DOMAIN],
       certificate,
+      // Attach the existing CLOUDFRONT-scope (global, us-east-1) WAFv2 Web ACL.
+      // For WAFv2 the webAclId takes the FULL Web ACL ARN (not the bare id).
+      webAclId:
+        'arn:aws:wafv2:us-east-1:875692608981:global/webacl/TrainingWebACL/c1a632aa-32f6-49fe-b2cd-63927eb3131e',
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(spaBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
