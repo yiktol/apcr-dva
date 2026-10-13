@@ -115,26 +115,85 @@ def derive_status(created_at: int, now: int) -> str:
 
 
 def build_receipt_pdf(order_id: str, summary: str, total) -> bytes:
-    """Build a minimal, valid single-page PDF for an order receipt.
+    """Build a minimal, VALID single-page PDF for an order receipt.
+
+    Emits a real PDF object tree (Catalog -> Pages -> Page -> Contents, plus a
+    standard Helvetica font) with a correct cross-reference table and %%EOF, so
+    the file actually opens and renders in a PDF viewer — not just a header stub.
 
     Plain ASCII only — `summary` is already the PII-masked server summary, so no
-    raw PII reaches the object. Mirrors the tiny demo PDF deploy.sh seeds; this
-    is a demo artifact, not a production invoice.
+    raw PII reaches the object. This is a demo artifact, not a production invoice.
     """
     try:
         total_str = f"{float(total):.2f}"
     except (TypeError, ValueError):
         total_str = str(total)
-    # Keep the body ASCII and short. A couple of plain comment lines carrying
-    # the order details is enough for a browser/curl GET to return 200 bytes.
-    body = (
-        "%PDF-1.4\n"
-        "%% session5 demo receipt\n"
-        f"%% orderId: {order_id}\n"
-        f"%% summary: {summary}\n"
-        f"%% total: {total_str}\n"
+
+    def _esc(s: str) -> str:
+        # Escape the characters that are special inside a PDF literal string,
+        # and drop anything non-ASCII so the content stream stays 1 byte/char
+        # (keeps our byte-offset math for the xref table correct).
+        s = str(s).encode("ascii", "replace").decode("ascii")
+        return s.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+
+    # Page text lines drawn with the Tj operator, one per line via T* / leading.
+    lines = [
+        "Coffee Shop - Order Receipt",
+        "",
+        f"Order ID: {order_id}",
+        f"Items:    {summary}",
+        f"Total:    USD {total_str}",
+        "",
+        "Thank you for your order!",
+        "(session5 secure-assistant demo receipt)",
+    ]
+    # Build the content stream: start a text object, pick Helvetica 12 at 14pt
+    # leading, move to a start position, then emit each line followed by T*.
+    content_parts = ["BT", "/F1 12 Tf", "14 TL", "72 760 Td"]
+    for ln in lines:
+        content_parts.append(f"({_esc(ln)}) Tj")
+        content_parts.append("T*")
+    content_parts.append("ET")
+    content = "\n".join(content_parts) + "\n"
+    content_bytes = content.encode("ascii", "replace")
+
+    # Five PDF objects: Catalog, Pages, Page, Contents stream, Font.
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        b"<< /Length "
+        + str(len(content_bytes)).encode("ascii")
+        + b" >>\nstream\n"
+        + content_bytes
+        + b"endstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+
+    # Assemble the file, tracking the byte offset of each object for the xref.
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, obj in enumerate(objects, start=1):
+        offsets.append(len(pdf))
+        pdf += f"{i} 0 obj\n".encode("ascii") + obj + b"\nendobj\n"
+
+    # Cross-reference table: one free entry (object 0) + one per object.
+    xref_pos = len(pdf)
+    n = len(objects) + 1
+    xref = bytearray(f"xref\n0 {n}\n".encode("ascii"))
+    xref += b"0000000000 65535 f \n"
+    for off in offsets:
+        xref += f"{off:010d} 00000 n \n".encode("ascii")
+    pdf += xref
+
+    pdf += (
+        f"trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref_pos}\n".encode(
+            "ascii"
+        )
+        + b"%%EOF\n"
     )
-    return body.encode("ascii", "replace")
+    return bytes(pdf)
 
 
 def make_place_order(orders_table, req_ctx, receipts_bucket=None, region=None):
