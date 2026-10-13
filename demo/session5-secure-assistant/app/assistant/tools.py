@@ -303,6 +303,11 @@ def make_get_receipt_url(req_ctx, bucket, region=None, orders_table=None):
     def get_receipt_url(order_id: str) -> dict:
         """Get a short-lived download link for an order's receipt PDF.
 
+        IMPORTANT: Do NOT repeat, quote, or paste the returned `url` value in
+        your reply text. The download link is delivered to the user through the
+        app's UI automatically. In your reply, simply tell the user their
+        receipt download link is ready below — never emit the raw URL string.
+
         Args:
             order_id: the order id, formatted ORD-NNNNNN.
         """

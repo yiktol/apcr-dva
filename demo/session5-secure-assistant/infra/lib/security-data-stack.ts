@@ -150,16 +150,17 @@ export class SecurityDataStack extends cdk.Stack {
     //   - wordPolicyConfig: the PROFANITY managed list + custom blocked words,
     //   - sensitiveInformationPolicyConfig: PII BLOCK/ANONYMIZE entities plus a
     //     custom loyalty-card regex,
-    //   - topicPolicyConfig: three DENY topics (legal/medical/investment advice),
-    //   - contextualGroundingPolicyConfig: GROUNDING + RELEVANCE filters.
+    //   - topicPolicyConfig: three DENY topics (legal/medical/investment advice).
     // NOTE: contentPolicyConfig.tierConfig is NOT present in 2.160.0's
     // ContentPolicyConfigProperty (filtersConfig only), so it is intentionally
-    // omitted. Published as a version so it can be referenced by id+version
-    // from the Strands BedrockModel.
+    // omitted. contextualGroundingPolicyConfig is also intentionally omitted —
+    // see the detailed note at the policy site below (it blocks the tool-
+    // generated receipt URL). Published as a version so it can be referenced
+    // by id+version from the Strands BedrockModel.
     const guardrail = new bedrock.CfnGuardrail(this, 'AssistantGuardrail', {
       name: 'session5-secure-assistant',
       description:
-        'session5 secure assistant guardrail: six content filters (HATE/VIOLENCE/INSULTS/MISCONDUCT/SEXUAL HIGH + PROMPT_ATTACK input-only), PROFANITY + custom word blocks, expanded PII BLOCK/ANONYMIZE + loyalty regex, legal/medical/investment-advice DENY topics, and contextual-grounding filters.',
+        'session5 secure assistant guardrail: six content filters (HATE/VIOLENCE/INSULTS/MISCONDUCT/SEXUAL HIGH + PROMPT_ATTACK input-only), PROFANITY + custom word blocks, expanded PII BLOCK/ANONYMIZE + loyalty regex, and legal/medical/investment-advice DENY topics. Contextual grounding is intentionally omitted (incompatible with tool-generated receipt URLs).',
       blockedInputMessaging:
         'I can only help with coffee-shop orders, receipts, and refunds. I cannot help with that request.',
       blockedOutputsMessaging:
@@ -257,14 +258,17 @@ export class SecurityDataStack extends cdk.Stack {
           },
         ],
       },
-      // Contextual grounding: flag responses that are not grounded in the
-      // provided context (GROUNDING) or not relevant to the query (RELEVANCE).
-      contextualGroundingPolicyConfig: {
-        filtersConfig: [
-          { type: 'GROUNDING', threshold: 0.7 },
-          { type: 'RELEVANCE', threshold: 0.7 },
-        ],
-      },
+      // Contextual grounding (GROUNDING + RELEVANCE) is INTENTIONALLY OMITTED.
+      // This assistant returns tool-generated artifacts — notably a long,
+      // opaque SigV4 presigned receipt URL — that have no "source" document to
+      // be grounded against. With grounding enabled the model's receipt reply
+      // scored below threshold and the guardrail replaced the ENTIRE output
+      // (including the receipt) with blockedOutputsMessaging, breaking the
+      // download feature. Grounding/relevance filtering suits RAG-style
+      // answers grounded in retrieved context, not a tool-calling agent that
+      // emits URLs/tokens; it is omitted here by design. The receipt URL is
+      // still delivered safely via the server-side side channel (never model
+      // text), so dropping grounding does not weaken data protection.
     });
 
     const guardrailVersion = new bedrock.CfnGuardrailVersion(
