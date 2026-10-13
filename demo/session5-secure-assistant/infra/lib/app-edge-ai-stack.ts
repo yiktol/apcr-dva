@@ -15,9 +15,19 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as targets from 'aws-cdk-lib/aws-route53-targets';
 import { importVpc, privateSubnetSelection } from './vpc-import';
 
 const REGION = 'ap-southeast-1';
+// Custom domain + the pre-existing us-east-1 wildcard ACM cert (CloudFront
+// requires its viewer cert in us-east-1). The cert is IMPORTED by ARN as an
+// unresolved cross-region reference — not created, not DnsValidated — so no
+// AWS::CertificateManager::Certificate resource is synthesized.
+const CUSTOM_DOMAIN = 'cafe-nova.aws.yikyakyuk.com';
+const CERT_ARN =
+  'arn:aws:acm:us-east-1:875692608981:certificate/417df345-28ea-4c39-8e5d-d985abb59908';
 // The APAC Nova Micro inference-profile id doubles as the model_id passed to the
 // Strands BedrockModel. Both the inference-profile ARN and the foundation-model
 // ARN form are granted (the AWS-required dual-ARN shape for inference profiles).
@@ -452,9 +462,21 @@ export class AppEdgeAIStack extends cdk.Stack {
     });
 
     // ---- CloudFront distribution (OAC SPA default + /api/* API) ------------
+    // Import the existing us-east-1 ACM cert by ARN (unresolved cross-region
+    // reference — no lookup, no new cert resource).
+    const certificate = acm.Certificate.fromCertificateArn(
+      this,
+      'CloudFrontCert',
+      CERT_ARN,
+    );
+
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       comment: 'session5 secure assistant (SPA + /api/*)',
       defaultRootObject: 'index.html',
+      // Attach the custom domain + imported cert. The default *.cloudfront.net
+      // domain keeps working automatically.
+      domainNames: [CUSTOM_DOMAIN],
+      certificate,
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(spaBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -472,8 +494,33 @@ export class AppEdgeAIStack extends cdk.Stack {
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
         },
       },
-      // Default CloudFront domain + default *.cloudfront.net cert — no custom
-      // domain, no Route53, no ACM certificate.
+    });
+
+    // ---- Route53 alias records for the custom domain -----------------------
+    // Import the existing parent hosted zone (never created here).
+    const hostedZone = route53.HostedZone.fromHostedZoneAttributes(
+      this,
+      'ParentZone',
+      {
+        hostedZoneId: 'Z09170582IZGKC67IAX17',
+        zoneName: 'aws.yikyakyuk.com',
+      },
+    );
+    // recordName 'cafe-nova' resolves to exactly cafe-nova.aws.yikyakyuk.com
+    // under the zone. A + AAAA alias records both target the distribution.
+    new route53.ARecord(this, 'CustomDomainA', {
+      zone: hostedZone,
+      recordName: 'cafe-nova',
+      target: route53.RecordTarget.fromAlias(
+        new targets.CloudFrontTarget(distribution),
+      ),
+    });
+    new route53.AaaaRecord(this, 'CustomDomainAAAA', {
+      zone: hostedZone,
+      recordName: 'cafe-nova',
+      target: route53.RecordTarget.fromAlias(
+        new targets.CloudFrontTarget(distribution),
+      ),
     });
 
     // ---- SPA deploy --------------------------------------------------------
@@ -488,6 +535,10 @@ export class AppEdgeAIStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'CloudFrontUrl', {
       value: `https://${distribution.distributionDomainName}`,
       description: 'The single entry point (SPA + /api/*).',
+    });
+    new cdk.CfnOutput(this, 'CustomDomainUrl', {
+      value: 'https://cafe-nova.aws.yikyakyuk.com',
+      description: 'Custom-domain entry point.',
     });
     new cdk.CfnOutput(this, 'ApiUrl', {
       value: api.url,

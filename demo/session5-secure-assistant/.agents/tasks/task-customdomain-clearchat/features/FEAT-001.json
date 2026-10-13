@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "TASK 1 — Add custom domain cafe-nova.aws.yikyakyuk.com to the CloudFront distribution in infra/lib/app-edge-ai-stack.ts. Import the existing us-east-1 wildcard ACM cert by ARN (acm.Certificate.fromCertificateArn), add it + domainNames to the existing Distribution while keeping the default *.cloudfront.net domain working, add Route53 A + AAAA alias records in the existing hosted zone (imported via fromHostedZoneAttributes), add a CfnOutput for the custom URL, and update the template assertion test. Independent of FEAT-002 (CDK/test files only; no SPA overlap).",
+  "status": "completed",
+  "steps": [
+    "In infra/lib/app-edge-ai-stack.ts, add imports if missing: `import * as acm from 'aws-cdk-lib/aws-certificatemanager';`, `import * as route53 from 'aws-cdk-lib/aws-route53';`, `import * as targets from 'aws-cdk-lib/aws-route53-targets';` (all part of monolithic aws-cdk-lib v2; no new dependency).",
+    "Add constants near the existing top-of-file consts: `const CUSTOM_DOMAIN = 'cafe-nova.aws.yikyakyuk.com';` and `const CERT_ARN = 'arn:aws:acm:us-east-1:875692608981:certificate/417df345-28ea-4c39-8e5d-d985abb59908';`.",
+    "Before the existing `const distribution = new cloudfront.Distribution(this, 'Distribution', {...})`, import the cert: `const certificate = acm.Certificate.fromCertificateArn(this, 'CloudFrontCert', CERT_ARN);` (unresolved cross-region ARN import — do NOT use DnsValidatedCertificate and do NOT create a new cert).",
+    "Add two props to the existing Distribution constructor object WITHOUT removing any existing props: `domainNames: [CUSTOM_DOMAIN],` and `certificate,`. The default CloudFront domain keeps working automatically.",
+    "After the Distribution is created, import the hosted zone: `const hostedZone = route53.HostedZone.fromHostedZoneAttributes(this, 'ParentZone', { hostedZoneId: 'Z09170582IZGKC67IAX17', zoneName: 'aws.yikyakyuk.com' });`.",
+    "Add alias records: `new route53.ARecord(this, 'CustomDomainA', { zone: hostedZone, recordName: 'cafe-nova', target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)) });` and `new route53.AaaaRecord(this, 'CustomDomainAAAA', { zone: hostedZone, recordName: 'cafe-nova', target: route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)) });` (recordName 'cafe-nova' resolves to exactly cafe-nova.aws.yikyakyuk.com under the zone).",
+    "Add a CfnOutput: `new cdk.CfnOutput(this, 'CustomDomainUrl', { value: 'https://cafe-nova.aws.yikyakyuk.com', description: 'Custom-domain entry point.' });`.",
+    "In infra/test/template.test.ts, update the check currently titled 'CloudFront distribution with no ACM cert': keep `edge.resourceCountIs('AWS::CertificateManager::Certificate', 0);` (cert is imported, not created) but retitle it to reflect an imported cert, and add positive assertions that the distribution DistributionConfig has `Aliases: Match.arrayWith(['cafe-nova.aws.yikyakyuk.com'])` and a `ViewerCertificate` referencing the imported ARN.",
+    "In infra/test/template.test.ts, add a new check asserting the template has one AWS::Route53::RecordSet with Type 'A' and one with Type 'AAAA', both Name 'cafe-nova.aws.yikyakyuk.com.' (trailing dot), each with an AliasTarget."
+  ],
+  "acceptance_criteria": [
+    "From infra/, `npx tsc --noEmit` completes with no type errors.",
+    "From infra/, `CDK_DEFAULT_ACCOUNT=875692608981 JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 npx cdk synth SecureAssistantAppEdgeAI` succeeds; the synthesized distribution shows Aliases ['cafe-nova.aws.yikyakyuk.com'] and ViewerCertificate.AcmCertificateArn equal to the given ARN; the template has one A and one AAAA RecordSet for cafe-nova.aws.yikyakyuk.com. and a CustomDomainUrl output.",
+    "From infra/, `npm test` prints all checks as ok and exits 0 (including the new Aliases/Route53 assertions and the retained CertificateManager count == 0).",
+    "security-data-stack.ts, app/ Lambda code, Guardrail config, deploy.sh and destroy.sh are unchanged."
+  ],
+  "verification": [
+    "cd infra && npx tsc --noEmit",
+    "cd infra && CDK_DEFAULT_ACCOUNT=875692608981 JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 npx cdk synth SecureAssistantAppEdgeAI >/dev/null && echo synth-ok",
+    "cd infra && npm test"
+  ],
+  "blocked_reason": null,
+  "findings": "Implemented in infra/lib/app-edge-ai-stack.ts and infra/test/template.test.ts. Logical IDs added: CloudFront cert import construct 'CloudFrontCert' (acm.Certificate.fromCertificateArn, unresolved cross-region ARN); 'ParentZone' (HostedZone.fromHostedZoneAttributes zoneId Z09170582IZGKC67IAX17 / aws.yikyakyuk.com); Route53 records 'CustomDomainA' (A) and 'CustomDomainAAAA' (AAAA), both recordName 'cafe-nova' -> cafe-nova.aws.yikyakyuk.com.; CfnOutput 'CustomDomainUrl' = https://cafe-nova.aws.yikyakyuk.com. CERT_ARN = arn:aws:acm:us-east-1:875692608981:certificate/417df345-28ea-4c39-8e5d-d985abb59908. Distribution now has domainNames:[CUSTOM_DOMAIN] + certificate; default *.cloudfront.net domain still works and CloudFrontUrl output retained. No AWS::CertificateManager::Certificate resource is synthesized (cert imported), so the count==0 assertion still holds. Region pinning (ap-southeast-1) and imported VPC untouched. VERIFICATION: `npx tsc --noEmit` clean; `cdk synth SecureAssistantAppEdgeAI` -> synth-ok; `npm test` -> all AppEdgeAI checks ok including the new Aliases/ViewerCertificate + A/AAAA RecordSet assertions. DEVIATION/NOTE: one PRE-EXISTING, UNRELATED test failure remains on main — 'raw Bedrock invocation-logging config on CMK-encrypted destinations' in the SecurityData stack (AWS::Bedrock::ModelInvocationLoggingConfiguration count 0). Confirmed failing on HEAD before my changes (git stash verified); it is outside FEAT-001 scope and in security-data-stack.ts which must not be modified. Not caused by this task."
+}

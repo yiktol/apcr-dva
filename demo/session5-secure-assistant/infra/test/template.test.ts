@@ -123,9 +123,32 @@ check('no AWS::EC2::VPC in AppEdgeAI', () => {
   edge.resourceCountIs('AWS::EC2::VPC', 0);
 });
 
-check('CloudFront distribution with no ACM cert', () => {
+check('CloudFront distribution with imported (not created) ACM cert + custom domain alias', () => {
   edge.resourceCountIs('AWS::CloudFront::Distribution', 1);
+  // Cert is imported by ARN, so no Certificate resource is synthesized.
   edge.resourceCountIs('AWS::CertificateManager::Certificate', 0);
+  edge.hasResourceProperties('AWS::CloudFront::Distribution', {
+    DistributionConfig: Match.objectLike({
+      Aliases: Match.arrayWith(['cafe-nova.aws.yikyakyuk.com']),
+      ViewerCertificate: Match.objectLike({
+        AcmCertificateArn:
+          'arn:aws:acm:us-east-1:875692608981:certificate/417df345-28ea-4c39-8e5d-d985abb59908',
+      }),
+    }),
+  });
+});
+
+check('Route53 A + AAAA alias records for the custom domain', () => {
+  edge.hasResourceProperties('AWS::Route53::RecordSet', {
+    Type: 'A',
+    Name: 'cafe-nova.aws.yikyakyuk.com.',
+    AliasTarget: Match.anyValue(),
+  });
+  edge.hasResourceProperties('AWS::Route53::RecordSet', {
+    Type: 'AAAA',
+    Name: 'cafe-nova.aws.yikyakyuk.com.',
+    AliasTarget: Match.anyValue(),
+  });
 });
 
 check('CloudFront has an /api/* cache behavior', () => {
