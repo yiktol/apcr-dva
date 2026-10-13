@@ -1,0 +1,7 @@
+{
+  "task_id": "task-guardrail-and-receipt-presign",
+  "task_description": "Two independent changes to the session5-secure-assistant demo: (1) expand the Bedrock CfnGuardrail in security-data-stack.ts to exercise the full feature surface supported by the installed aws-cdk-lib 2.160.0; (2) add an Option-A Strands @tool get_receipt_url that produces a 15-minute SigV4 presigned receipt download link via a SHARED signing helper, surfaced through the req_ctx side channel into a top-level `receipt` HTTP envelope object and rendered as a clickable link in the SPA, with unit tests and the mandatory ECR image rebuild+push on deploy.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}
