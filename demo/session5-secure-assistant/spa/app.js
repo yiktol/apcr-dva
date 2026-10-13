@@ -5,6 +5,7 @@
 const log = document.getElementById("log");
 const chatForm = document.getElementById("chatForm");
 const messageInput = document.getElementById("message");
+const clearBtn = document.getElementById("clearChat");
 
 function append(cls, text) {
   const el = document.createElement("div");
@@ -89,6 +90,22 @@ async function confirmRefund(token, btn) {
     append("sys", "Network error confirming the refund.");
     btn.disabled = false;
   }
+}
+
+// Clear-chat control: resets the panel to a clean, ready-to-chat state.
+// No chat history is persisted (no localStorage/sessionStorage keys, no in-memory
+// array) — the whole conversation lives in #log, so emptying it (which also drops
+// any .pending refund box) is the full reset. This is DOM + input only and makes
+// NO /api call.
+if (clearBtn) {
+  clearBtn.addEventListener("click", function () {
+    log.textContent = "";
+    messageInput.value = "";
+    messageInput.disabled = false;
+    const submitBtn = chatForm.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = false;
+    messageInput.focus();
+  });
 }
 
 chatForm.addEventListener("submit", (e) => {

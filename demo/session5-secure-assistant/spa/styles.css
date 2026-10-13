@@ -389,6 +389,19 @@ h3 {
 .chat-close:hover {
   background: rgba(247, 239, 230, 0.15);
 }
+.chat-clear {
+  background: transparent;
+  border: 0;
+  color: var(--cream);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 8px;
+}
+.chat-clear:hover {
+  background: rgba(247, 239, 230, 0.15);
+}
 
 /* The chat panel's inner padding wraps the ported chat controls. */
 .chat-panel .log,
